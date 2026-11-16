@@ -1,19 +1,12 @@
 // src/main.rs
-mod tensor;
-mod autograd;
-mod nn;
-mod loss;
-mod optim;
-mod data;
-mod tokenizer;
-mod transformer;
-mod gpu;
-use tensor::Matrix;
-use autograd::Tensor;
-use nn::{Linear, save_model, load_model};
-use loss::softmax_cross_entropy;
-use optim::SGD;
-use data::{load_images, load_labels_onehot, load_labels_raw, slice_rows};
+// CLI kabuğu. Motorun tamamı `stonefish_ai` kütüphanesinde (src/lib.rs).
+use stonefish_ai::{data, gpu, optim, tensor, tokenizer, transformer};
+use stonefish_ai::autograd::Tensor;
+use stonefish_ai::data::{load_images, load_labels_onehot, load_labels_raw, slice_rows};
+use stonefish_ai::loss::softmax_cross_entropy;
+use stonefish_ai::nn::{load_model, save_model, Linear};
+use stonefish_ai::optim::SGD;
+use stonefish_ai::tensor::Matrix;
 
 const MODEL_PATH: &str = "stonefish.bin";
 const GPT_PATH: &str = "stonefish_gpt.bin";
@@ -528,7 +521,7 @@ fn test_cuda() {
 
 fn test_gpu_matmul() {
     use cudarc::driver::CudaContext;
-    use crate::gpu::GpuMatrix;
+    use gpu::GpuMatrix;
 
     println!("🐟 GPU matmul testi\n");
 
@@ -564,7 +557,7 @@ fn test_gpu_matmul() {
 
 fn test_gpu_bench() {
     use cudarc::driver::CudaContext;
-    use crate::gpu::GpuMatrix;
+    use gpu::GpuMatrix;
     use std::time::Instant;
 
     println!("🐟 GPU matmul hız testi\n");
@@ -608,7 +601,7 @@ fn test_gpu_bench() {
 
 fn test_gpu_bench_big() {
     use cudarc::driver::CudaContext;
-    use crate::gpu::GpuMatrix;
+    use gpu::GpuMatrix;
     use std::time::Instant;
 
     println!("🐟 GPU matmul hız testi (büyük matrisler)\n");
@@ -745,7 +738,7 @@ fn test_gpt_gpu() {
 }
 
 fn test_tensor3d() {
-    use crate::tensor::Tensor3D;
+    use tensor::Tensor3D;
 
     println!("🐟 Tensor3D testi\n");
 
@@ -779,7 +772,7 @@ fn test_tensor3d() {
 }
 
 fn test_tensor3d_full() {
-    use crate::tensor::Tensor3D;
+    use tensor::Tensor3D;
 
     println!("🐟 Tensor3D tam testi\n");
 
