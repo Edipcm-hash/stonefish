@@ -79,7 +79,7 @@ pub fn make_sequences(
 ) -> Vec<(Vec<usize>, Vec<usize>)> {
     let mut out = Vec::new();
     let mut start = 0;
-    while start + seq_len + 1 <= ids.len() {
+    while start + seq_len < ids.len() {
         let input = ids[start..start + seq_len].to_vec();
         let target = ids[start + 1..start + seq_len + 1].to_vec();
         out.push((input, target));

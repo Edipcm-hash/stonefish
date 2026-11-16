@@ -1,6 +1,7 @@
 // examples/grad_probe.rs
 // Geçici teşhis aracı: küçük GPT'de tek bir parametrenin analitik ve numerik
 // gradyanını yan yana basar. (Gradyan hatası avlamak için.)
+#![allow(clippy::needless_range_loop)]
 
 use stonefish_ai::transformer::{GptConfig, GPT};
 

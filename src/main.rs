@@ -1,5 +1,9 @@
 // src/main.rs
 // CLI kabuğu. Motorun tamamı `stonefish_ai` kütüphanesinde (src/lib.rs).
+//
+// İç döngüler aynı anda birden çok diziyi indeksliyor (bkz. src/lib.rs).
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::manual_is_multiple_of)]
 use stonefish_ai::autograd::Tensor;
 use stonefish_ai::checkpoint;
 use stonefish_ai::data::{load_images, load_labels_onehot, load_labels_raw, slice_rows};

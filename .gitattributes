@@ -1,0 +1,11 @@
+# Satır sonlarını tekilleştir: repoda daima LF.
+* text=auto eol=lf
+
+# Windows'a özgü betikler (varsa) CRLF kalsın
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# İkili dosyalar
+*.bin binary
+*.gz binary
+*.png binary

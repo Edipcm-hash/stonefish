@@ -5,6 +5,15 @@
 // Bu ayrım sayesinde op'lar `tests/` altından (gradcheck, birim testleri) doğrudan
 // kullanılabilir.
 
+// `needless_range_loop`: bu motorda iç döngüler aynı anda birden fazla diziyi
+// (q/k/v, skorlar, x_hat, dx_hat…) aynı indeksle tarıyor ve sınırlar döngü
+// değişkeninden türüyor. Iterator zincirine çevirmek hot path'lerde hem
+// okunabilirliği hem de derleyicinin vektörleştirme şansını düşürüyor.
+#![allow(clippy::needless_range_loop)]
+// `manual_is_multiple_of`: `is_multiple_of` yeni bir stabilizasyon; MSRV'yi
+// yükseltmemek için `% n == 0` tercih ediliyor.
+#![allow(clippy::manual_is_multiple_of)]
+
 pub mod autograd;
 pub mod checkpoint;
 pub mod data;

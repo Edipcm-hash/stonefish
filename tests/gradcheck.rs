@@ -6,11 +6,19 @@
 // ((L(θ+ε) − L(θ−ε)) / 2ε) karşılaştırılır.
 // Amaç: elle türetilmiş backward formüllerinin tek tek ve *birlikte* doğruluğunu kilitlemek.
 
+// Bu dosyada iç döngüler aynı anda birden çok diziyi indeksliyor (bkz. src/lib.rs).
+#![allow(clippy::needless_range_loop)]
+
 use stonefish_ai::autograd::Tensor;
 use stonefish_ai::tensor::Matrix;
 
 const EPS: f32 = 1e-3;
 const TOL: f32 = 2e-2;
+
+/// Tek parametreli op'lar için: `&[t.clone()]` yerine klonsuz dilim.
+fn one(t: &Tensor) -> &[Tensor] {
+    std::slice::from_ref(t)
+}
 
 fn scalar(t: &Tensor) -> f32 {
     let d = t.data.borrow();
@@ -159,21 +167,21 @@ fn mul_elem() {
 fn scale_op() {
     let mut s = 16u64;
     let a = leaf(3, 4, &mut s);
-    gradient_check("scale", &[a.clone()], || a.scale(2.75).sum());
+    gradient_check("scale", one(&a), || a.scale(2.75).sum());
 }
 
 #[test]
 fn relu() {
     let mut s = 17u64;
     let a = leaf_away_from_zero(3, 5, &mut s);
-    gradient_check("relu", &[a.clone()], || a.relu().sum());
+    gradient_check("relu", one(&a), || a.relu().sum());
 }
 
 #[test]
 fn sigmoid() {
     let mut s = 18u64;
     let a = leaf(3, 5, &mut s);
-    gradient_check("sigmoid", &[a.clone()], || a.sigmoid().sum());
+    gradient_check("sigmoid", one(&a), || a.sigmoid().sum());
 }
 
 // ------------------------------------------------------------
@@ -206,7 +214,7 @@ fn transpose_op() {
     let mut s = 21u64;
     let a = leaf(3, 4, &mut s);
     let w = frozen(4, 3, &mut s);
-    gradient_check("transpose", &[a.clone()], || {
+    gradient_check("transpose", one(&a), || {
         a.transpose().mul_elem(&w).sum()
     });
 }
@@ -215,7 +223,7 @@ fn transpose_op() {
 fn sum_op() {
     let mut s = 22u64;
     let a = leaf(3, 4, &mut s);
-    gradient_check("sum", &[a.clone()], || a.sum().scale(2.0));
+    gradient_check("sum", one(&a), || a.sum().scale(2.0));
 }
 
 // ------------------------------------------------------------
@@ -231,7 +239,7 @@ fn softmax_cross_entropy() {
         t[i * 6 + cls] = 1.0;
     }
     let target = Tensor::leaf(Matrix::from_vec(4, 6, t), false);
-    gradient_check("softmax_cross_entropy", &[logits.clone()], || {
+    gradient_check("softmax_cross_entropy", one(&logits), || {
         logits.softmax_cross_entropy(&target)
     });
 }
@@ -242,7 +250,7 @@ fn softmax_op() {
     let a = leaf(3, 5, &mut s);
     // Düz toplam sabit (1) olduğu için gradyan sıfır çıkar; ağırlıklı toplam kullan.
     let w = frozen(3, 5, &mut s);
-    gradient_check("softmax", &[a.clone()], || {
+    gradient_check("softmax", one(&a), || {
         a.softmax().mul_elem(&w).sum()
     });
 }
@@ -266,7 +274,7 @@ fn mask_causal() {
     }
     let w = Tensor::leaf(w_mat, false);
 
-    gradient_check("mask_causal", &[a.clone()], || {
+    gradient_check("mask_causal", one(&a), || {
         a.mask_causal().mul_elem(&w).sum()
     });
 }
@@ -277,7 +285,7 @@ fn softmax_after_mask() {
     let mut s = 26u64;
     let a = leaf(4, 4, &mut s);
     let w = frozen(4, 4, &mut s);
-    gradient_check("mask_causal + softmax", &[a.clone()], || {
+    gradient_check("mask_causal + softmax", one(&a), || {
         a.mask_causal().softmax().mul_elem(&w).sum()
     });
 }
@@ -290,7 +298,7 @@ fn softmax_after_mask() {
 fn gelu() {
     let mut s = 27u64;
     let a = leaf(3, 5, &mut s);
-    gradient_check("gelu", &[a.clone()], || a.gelu().sum());
+    gradient_check("gelu", one(&a), || a.gelu().sum());
 }
 
 #[test]
@@ -489,7 +497,7 @@ fn sparse_ce_gradient() {
     let (rows, classes) = (4usize, 6usize);
     let logits = leaf(rows, classes, &mut s);
     let targets: Vec<usize> = vec![5, 0, 3, 1];
-    gradient_check("softmax_cross_entropy_ids", &[logits.clone()], || {
+    gradient_check("softmax_cross_entropy_ids", one(&logits), || {
         logits.softmax_cross_entropy_ids(&targets)
     });
 }
