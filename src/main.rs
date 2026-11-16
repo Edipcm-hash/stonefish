@@ -1,21 +1,68 @@
 // src/main.rs
 // CLI kabuğu. Motorun tamamı `stonefish_ai` kütüphanesinde (src/lib.rs).
-use stonefish_ai::{data, gpu, optim, tensor, tokenizer, transformer};
 use stonefish_ai::autograd::Tensor;
+use stonefish_ai::checkpoint;
 use stonefish_ai::data::{load_images, load_labels_onehot, load_labels_raw, slice_rows};
 use stonefish_ai::loss::softmax_cross_entropy;
 use stonefish_ai::nn::{load_model, save_model, Linear};
-use stonefish_ai::optim::SGD;
+use stonefish_ai::optim::{Adam, SGD};
 use stonefish_ai::tensor::Matrix;
+use stonefish_ai::tokenizer::Tokenizer;
+use stonefish_ai::transformer::{GptConfig, GPT};
+use stonefish_ai::{data, gpu, transformer};
 
 const MODEL_PATH: &str = "stonefish.bin";
 const GPT_PATH: &str = "stonefish_gpt.bin";
+/// Checkpoint'in yanına yazılan vocab dosyası (korpus drift tespiti için).
+const GPT_VOCAB_PATH: &str = "stonefish_gpt.vocab";
+const TEXT_PATH: &str = "data/turkce.txt";
+
+/// Tüm CLI modları: (isim, kısa açıklama). `help` bunu basar, `main` bunu eşler.
+const MODES: &[(&str, &str)] = &[
+    ("train", "MNIST MLP eğit (784→128→10, SGD)"),
+    ("eval", "kayıtlı MNIST modelini test setinde ölç"),
+    ("predict", "kayıtlı MNIST modeliyle tahmin (eval ile aynı)"),
+    ("tokenize", "tokenizer'ı doğrula + sequence sayısını bas"),
+    ("gpt-train", "mini GPT eğit [epoch] [batch]"),
+    ("gpt-gen", "kayıtlı GPT ile metin üret  [prompt] [token] [sıcaklık]"),
+    ("test-ops", "op duman testi"),
+    ("test-embed", "embedding duman testi"),
+    ("test-attn", "attention duman testi"),
+    ("test-cuda", "CUDA context açılabiliyor mu"),
+    ("test-gpu-matmul", "GPU matmul == CPU matmul"),
+    ("test-gpu-bench", "256² matmul: CPU vs GPU"),
+    ("test-gpu-bench-big", "256/512/1024² matmul: CPU vs GPU"),
+    ("test-matmul-bench", "gerçek model şeklinde CPU vs GPU matmul"),
+    ("test-gpu-train", "küçük MLP'te 10 adım süresi"),
+    ("test-gpt-gpu", "küçük GPT'te adım süresi"),
+];
+
+fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
+    args.get(i).and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let rest: &[String] = if args.len() > 2 { &args[2..] } else { &[] };
     let mode = if args.len() < 2 { "train" } else { args[1].as_str() };
 
     match mode {
+        "help" | "-h" | "--help" => {
+            println!("🐟 StonefishAI v{}", stonefish_ai::VERSION);
+            println!(
+                "GPU yolu: {}",
+                if gpu::HAS_CUDA {
+                    "açık (CUDA)"
+                } else {
+                    "kapalı (CPU)"
+                }
+            );
+            println!("\nKullanım: stonefish_ai <mod> [arg…]\n\nModlar:");
+            for (name, desc) in MODES {
+                println!("  {:<20} {}", name, desc);
+            }
+        }
         "train" => train(),
         "predict" => predict(),
         "eval" => eval_only(),
@@ -23,363 +70,304 @@ fn main() {
         "test-ops" => test_ops(),
         "test-embed" => test_embed(),
         "test-attn" => test_attn(),
-        "gpt-train" => gpt_train(),
-        "gpt-gen" => gpt_generate(),
+        "gpt-train" => gpt_train(rest),
+        "gpt-gen" => gpt_generate(rest),
         "test-cuda" => test_cuda(),
         "test-gpu-matmul" => test_gpu_matmul(),
         "test-gpu-bench" => test_gpu_bench(),
         "test-gpu-bench-big" => test_gpu_bench_big(),
+        "test-matmul-bench" => test_matmul_bench(),
         "test-gpu-train" => test_gpu_train(),
-        "test-gpt-gpu" => test_gpt_gpu(),
-        "test-tensor3d" => test_tensor3d(),
-        "test-tensor3d-full" => test_tensor3d_full(),
-        _ => {
-            eprintln!("Kullanım: train | predict | eval | tokenize | test-ops | test-embed | test-attn | gpt-train | gpt-gen");
+        "test-gpt-gpu" => test_gpt_gpu(rest),
+        other => {
+            eprintln!("Bilinmeyen mod: {}", other);
+            eprintln!(
+                "Geçerli modlar: {}",
+                MODES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(" | ")
+            );
+            eprintln!("Ayrıntı için: stonefish_ai help");
             std::process::exit(1);
         }
     }
 }
 
 // ============================================================
-// GPT TRAIN
+// GPT EĞİTİMİ — gerçek batch (tek forward/backward/step)
 // ============================================================
 
-fn gpt_train() {
-    println!("🐟 StonefishAI v0.6 — GPT eğitimi (batch, GPU)\n");
+fn gpt_train(args: &[String]) {
+    let epochs = arg_usize(args, 0, 3);
+    let batch_size = arg_usize(args, 1, 8);
+    let max_steps = arg_usize(args, 2, 0); // 0 = sınırsız (duman testi için)
 
-    let text = data::load_text("data/turkce.txt");
-    let tok = tokenizer::Tokenizer::from_text(&text);
+    println!(
+        "🐟 StonefishAI v{} — GPT eğitimi (batch={}, GPU={})\n",
+        stonefish_ai::VERSION,
+        batch_size,
+        gpu::HAS_CUDA
+    );
+
+    let text = data::load_text(TEXT_PATH);
+    let tok = Tokenizer::from_text(&text);
     let all_ids = tok.encode(&text);
     let seq_len = 128;
     let seqs = data::make_sequences(&all_ids, seq_len, seq_len);
-    println!("Vocab: {}, sequence: {}, seq_len: {}", tok.vocab_size, seqs.len(), seq_len);
+
+    // Sondaki bir kısmı validasyon için ayır (ezber mi öğrenme mi?).
+    let n_val = (seqs.len() / 50).clamp(4, 256).min(seqs.len() / 4);
+    let n_train = seqs.len() - n_val;
+    println!(
+        "Vocab: {}, sequence: {} (train {}, val {}), seq_len: {}",
+        tok.vocab_size, seqs.len(), n_train, n_val, seq_len
+    );
 
     let mut seed: u64 = 0xDEADBEEF;
-    let d_model = 128;
-    let n_layers = 4;
-    let n_heads = 1;
-    let model = transformer::GPT::new(
-        tok.vocab_size, seq_len, d_model, n_layers, n_heads, &mut seed,
-    );
+    let config = GptConfig {
+        vocab_size: tok.vocab_size,
+        max_seq_len: seq_len,
+        d_model: 128,
+        n_layers: 4,
+        n_heads: 4,
+    };
+    let model = GPT::new(config, &mut seed);
     let params = model.parameters();
-    let n_params: usize = params.iter().map(|p| p.data.borrow().data.len()).sum();
+    let n_params = model.n_params();
     println!(
-        "Model: d_model={}, layers={}, heads={}, params={}\n",
-        d_model, n_layers, n_heads, n_params
+        "Model: d_model={}, layers={}, heads={} (d_head={}), params={}\n",
+        config.d_model, config.n_layers, config.n_heads, config.d_head(), n_params
     );
 
-    let mut opt = optim::Adam::new(params, 0.0005);
-
-    let epochs = 3;
-    let batch_size = 8;  // GPU için ideal
-    let steps_per_log = 100;
+    let mut opt = Adam::new(params, 0.0005);
+    let tokens_per_step = batch_size * seq_len;
+    let steps_per_epoch = n_train.div_ceil(batch_size);
+    let mut global_step = 0usize;
+    let mut addrng = 0xA5A5_1234u64;
 
     for epoch in 0..epochs {
-        let mut rng = 0xCAFEBABEu64;
-        let mut order: Vec<usize> = (0..seqs.len()).collect();
+        // Epoch'a özgü karıştırma (eskiden her epoch aynı sırayı kullanıyordu).
+        let mut order: Vec<usize> = (0..n_train).collect();
         for i in (1..order.len()).rev() {
-            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
-            let j = (rng as usize) % (i + 1);
+            let j = (xorshift(&mut addrng) as usize) % (i + 1);
             order.swap(i, j);
         }
 
-        let mut total_loss = 0.0f32;
-        let mut n_batches = 0;
-        let mut start = 0;
+        let epoch_t0 = std::time::Instant::now();
+        let mut sum_loss = 0.0f64;
+        let mut n_steps = 0usize;
 
-        while start < order.len() {
-            let end = (start + batch_size).min(order.len());
+        let mut start = 0;
+        while start < n_train {
+            let end = (start + batch_size).min(n_train);
             let bs = end - start;
 
-            // Batch'i oluştur: her sequence'i ayrı ayrı forward et, sonra loss'ları topla
-            // (Basit yaklaşım: her sequence için ayrı forward/backward, ama tek opt.step())
-            // Daha iyi: tüm batch'i tek matmul'de işle (ama 3D tensor gerekir, şimdilik basit)
-
-            let mut batch_loss = 0.0f32;
+            // Batch'i satır paketle: (bs*seq_len, …)
+            let mut input_ids = Vec::with_capacity(bs * seq_len);
+            let mut targets = Vec::with_capacity(bs * seq_len);
             for k in start..end {
-                let idx = order[k];
-                let (input_ids, target_ids) = &seqs[idx];
-                let logits = model.forward(input_ids);
-                let loss = ce_from_logits_and_ids(&logits, target_ids);
-                batch_loss += loss.data.borrow().get(0, 0);
+                let (inp, tgt) = &seqs[order[k]];
+                input_ids.extend_from_slice(inp);
+                targets.extend_from_slice(tgt);
             }
 
-            // Ortalama loss (backward için)
-            // NOT: Basit yaklaşım — her sequence için ayrı backward yapmıyoruz,
-            // tek bir loss tensor'u oluşturup backward yapıyoruz.
-            // Ama şu an her sequence için ayrı loss var. Bu yüzden:
-            // 1) Her sequence için forward yap, loss'ları topla (Tensor olarak)
-            // 2) Toplam loss'u backward et
+            let logits = model.forward_batch(&input_ids, bs, seq_len);
+            let loss = logits.softmax_cross_entropy_ids(&targets);
 
-            // DÜZELTME: Basit yaklaşım — her sequence için ayrı forward/backward
-            // Ama bu, batch'in avantajını kaybeder. Gerçek batch için 3D tensor gerekir.
+            opt.zero_grad();
+            loss.backward();
+            opt.step();
 
-            // Şimdilik: Her sequence için ayrı forward/backward, ama opt.step() bir kez
-            // Bu, "gradient accumulation" gibi çalışır.
-
-            // Aslında en basit: Her sequence için forward, loss'u topla (Tensor),
-            // sonra toplam loss'u backward et.
-
-            // Ama toplam loss Tensor'u oluşturmak için:
-            // let mut total_loss_tensor: Option<Tensor> = None;
-            // for k in start..end { ... }
-            // Bu, karmaşık. Şimdilik basit tutalım:
-
-            // Her sequence için forward + backward + step (batch=1 gibi)
-            // Batch avantajı yok, ama en azından çalışır.
-
-            // GERÇEK ÇÖZÜM: 3D tensor (batch, seq_len, d_model) gerekir.
-            // Bu, büyük bir değişiklik. Şimdilik batch=1 ile devam.
-
-            // Geçici: batch=1 gibi çalıştır, ama log'da batch_size göster
-            for k in start..end {
-                let idx = order[k];
-                let (input_ids, target_ids) = &seqs[idx];
-                let logits = model.forward(input_ids);
-                let loss = ce_from_logits_and_ids(&logits, target_ids);
-
-                opt.zero_grad();
-                loss.backward();
-                opt.step();
-
-                total_loss += loss.data.borrow().get(0, 0);
-                n_batches += 1;
-            }
-
-            if n_batches % steps_per_log == 0 {
-                println!("epoch {} step {:5}/{}  loss = {:.4}",
-                         epoch, n_batches, seqs.len(), total_loss / n_batches as f32);
-            }
+            let l = loss.item();
+            sum_loss += l as f64;
+            n_steps += 1;
+            global_step += 1;
 
             start = end;
+
+            if n_steps % 50 == 0 {
+                let avg = sum_loss / n_steps as f64;
+                let elapsed = epoch_t0.elapsed().as_secs_f64();
+                let tps = (n_steps * tokens_per_step) as f64 / elapsed;
+                println!(
+                    "epoch {} step {:5}/{}  loss = {:.4}  ({:.0} tok/s)",
+                    epoch, n_steps, steps_per_epoch, avg, tps
+                );
+            }
+
+            if max_steps > 0 && global_step >= max_steps {
+                println!(
+                    "\n⏹  max_steps={} sınırına ulaşıldı (duman testi) — checkpoint yazılmadı.",
+                    max_steps
+                );
+                return;
+            }
         }
-        println!("\nEpoch {} ortalama loss: {:.4}\n", epoch, total_loss / n_batches as f32);
+
+        let train_loss = sum_loss / n_steps as f64;
+        let val_loss = eval_loss(&model, &seqs[n_train..], batch_size, seq_len);
+        println!(
+            "\nEpoch {} → train CE = {:.4}, val CE = {:.4}, {:.1}s\n",
+            epoch,
+            train_loss,
+            val_loss,
+            epoch_t0.elapsed().as_secs_f64()
+        );
     }
 
     println!("Model kaydediliyor → {}", GPT_PATH);
-    save_gpt(GPT_PATH, &model).expect("kaydetme başarısız");
-    println!("✅ Kaydedildi.");
-    println!("\n🐟 GPT eğitimi tamam.");
-}
-
-fn ce_from_logits_and_ids(logits: &Tensor, targets: &[usize]) -> Tensor {
-    let seq_len = targets.len();
-    let vocab = logits.data.borrow().cols;
-    let mut target_data = vec![0.0f32; seq_len * vocab];
-    for (s, &t) in targets.iter().enumerate() {
-        target_data[s * vocab + t] = 1.0;
+    checkpoint::save_gpt(GPT_PATH, &model, &tok).expect("checkpoint kaydedilemedi");
+    if let Err(e) = tok.save(GPT_VOCAB_PATH) {
+        eprintln!("⚠️  vocab yan dosyası yazılamadı: {e}");
     }
-    let target = Tensor::leaf(Matrix::from_vec(seq_len, vocab, target_data), false);
-    logits.softmax_cross_entropy(&target)
+    println!("✅ Kaydedildi ({} adım).\n🐟 GPT eğitimi tamam.", global_step);
 }
 
-fn save_gpt(path: &str, model: &transformer::GPT) -> std::io::Result<()> {
-    use std::fs::File;
-    use std::io::{Write, BufWriter};
-    let f = File::create(path)?;
-    let mut w = BufWriter::new(f);
-    for p in model.parameters() {
-        let d = p.data.borrow();
-        w.write_all(&(d.rows as u32).to_le_bytes())?;
-        w.write_all(&(d.cols as u32).to_le_bytes())?;
-        for &v in &d.data {
-            w.write_all(&v.to_le_bytes())?;
+/// Gradyansız değerlendirme: ortalama cross-entropy.
+fn eval_loss(model: &GPT, seqs: &[(Vec<usize>, Vec<usize>)], batch_size: usize, seq_len: usize) -> f64 {
+    if seqs.is_empty() {
+        return f64::NAN;
+    }
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    let mut start = 0;
+    while start < seqs.len() {
+        let end = (start + batch_size).min(seqs.len());
+        let bs = end - start;
+        let mut input_ids = Vec::with_capacity(bs * seq_len);
+        let mut targets = Vec::with_capacity(bs * seq_len);
+        for k in start..end {
+            let (inp, tgt) = &seqs[k];
+            input_ids.extend_from_slice(inp);
+            targets.extend_from_slice(tgt);
         }
+        let logits = model.forward_batch(&input_ids, bs, seq_len);
+        sum += logits.softmax_cross_entropy_ids(&targets).item() as f64;
+        n += 1;
+        start = end;
     }
-    w.flush()?;
-    Ok(())
+    sum / n as f64
 }
 
 // ============================================================
-// GPT GENERATE
+// GPT ÜRETİMİ
 // ============================================================
 
-fn gpt_generate() {
-    println!("🐟 StonefishAI v0.5 — GPT metin üretimi\n");
+fn gpt_generate(args: &[String]) {
+    println!("🐟 StonefishAI v{} — GPT metin üretimi\n", stonefish_ai::VERSION);
 
-    let text = data::load_text("data/turkce.txt");
-    let tok = tokenizer::Tokenizer::from_text(&text);
-    println!("Vocab: {}", tok.vocab_size);
-
-    let mut seed: u64 = 0xDEADBEEF;
-    let d_model = 128;
-    let n_layers = 4;
-    let n_heads = 1;
-    let seq_len = 128;
-    let model = transformer::GPT::new(
-        tok.vocab_size, seq_len, d_model, n_layers, n_heads, &mut seed,
-    );
-    let params = model.parameters();
-
-    println!("Model yükleniyor: {}", GPT_PATH);
-    load_gpt(GPT_PATH, &params).expect("model yüklenemedi");
-    println!("✅ Yüklendi.\n");
-
-    let prompt = if std::env::args().count() > 2 {
-        std::env::args().nth(2).unwrap()
-    } else {
-        "ROMEO:".to_string()
+    let (model, tok) = match checkpoint::load_gpt(GPT_PATH) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Checkpoint yüklenemedi ({GPT_PATH}): {e}");
+            eprintln!("Önce `stonefish_ai gpt-train` çalıştır.");
+            std::process::exit(1);
+        }
     };
-    println!("Prompt: {:?}\n", prompt);
+    let cfg = model.config;
+    println!(
+        "✅ Yüklendi: d_model={}, layers={}, heads={}, vocab={}",
+        cfg.d_model, cfg.n_layers, cfg.n_heads, cfg.vocab_size
+    );
 
-    let mut generated_ids: Vec<usize> = tok.encode(&prompt);
-    let n_generate = 300;
-    let mut rng = 0x123456789u64;
+    // Korpus drift kontrolü: yan dosyadaki vocab checkpoint'le aynı mı?
+    match Tokenizer::load(GPT_VOCAB_PATH) {
+        Ok(disc) if !disc.same_vocab(&tok) => {
+            eprintln!("⚠️  {GPT_VOCAB_PATH} checkpoint vocab'ı ile uyuşmuyor — dosya eski olabilir.");
+        }
+        Ok(_) => {}
+        Err(_) => {}
+    }
+
+    let prompt = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Akşam erken iner".to_string());
+    let n_generate = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(300usize);
+    let temperature = args
+        .get(2)
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.8f32);
+
+    println!("Prompt: {:?}  ({} token, sıcaklık {})\n", prompt, n_generate, temperature);
+
+    let mut generated: Vec<usize> = match tok.try_encode(&prompt) {
+        Ok(v) => v,
+        Err(c) => {
+            eprintln!("❌ Prompt'taki {:?} karakteri bu modelin vocab'ında yok.", c);
+            std::process::exit(1);
+        }
+    };
+    if generated.is_empty() {
+        eprintln!("❌ Prompt boş.");
+        std::process::exit(1);
+    }
+
+    let mut rng = 0x1234_5678_9ABCu64;
 
     for _ in 0..n_generate {
-        let start = if generated_ids.len() > seq_len {
-            generated_ids.len() - seq_len
-        } else {
-            0
-        };
-        let context = &generated_ids[start..];
+        // Bağlamı son seq_len token'a kırp (modelin gördüğü maksimum pencere).
+        let start = generated.len().saturating_sub(cfg.max_seq_len);
+        let context = &generated[start..];
+
         let logits = model.forward(context);
-        let logits_data = logits.data.borrow();
+        let ld = logits.data.borrow();
+        let vocab = ld.cols;
+        let last_row = ld.rows - 1;
 
-        let last_row = logits_data.rows - 1;
-        let vocab = logits_data.cols;
-
-        let mut max = f32::NEG_INFINITY;
-        for j in 0..vocab {
-            if logits_data.get(last_row, j) > max {
-                max = logits_data.get(last_row, j);
+        let next = if temperature <= 0.0 {
+            // açgözlü (deterministik)
+            let mut best = 0usize;
+            let mut best_v = f32::NEG_INFINITY;
+            for j in 0..vocab {
+                let v = ld.get(last_row, j);
+                if v > best_v {
+                    best_v = v;
+                    best = j;
+                }
             }
-        }
-        let mut probs = vec![0.0f32; vocab];
-        let mut sum = 0.0f32;
-        for j in 0..vocab {
-            let e = (logits_data.get(last_row, j) - max).exp();
-            probs[j] = e;
-            sum += e;
-        }
-        for j in 0..vocab { probs[j] /= sum; }
+            best
+        } else {
+            // sıcaklıklı örnekleme
+            let mut max = f32::NEG_INFINITY;
+            for j in 0..vocab {
+                max = max.max(ld.get(last_row, j));
+            }
+            let mut probs = vec![0.0f32; vocab];
+            let mut sum = 0.0f32;
+            for j in 0..vocab {
+                let e = ((ld.get(last_row, j) - max) / temperature).exp();
+                probs[j] = e;
+                sum += e;
+            }
+            let r = (xorshift(&mut rng) >> 11) as f32 / (1u64 << 53) as f32;
+            let mut acc = 0.0f32;
+            let mut pick = vocab - 1;
+            for (j, p) in probs.iter().enumerate() {
+                acc += p / sum;
+                if r < acc {
+                    pick = j;
+                    break;
+                }
+            }
+            pick
+        };
 
-        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
-        let r = ((rng >> 11) as f64 / (1u64 << 53) as f64) as f32;
-        let mut acc = 0.0f32;
-        let mut next = 0;
-        for j in 0..vocab {
-            acc += probs[j];
-            if r < acc { next = j; break; }
-        }
-        drop(logits_data);
-        generated_ids.push(next);
+        drop(ld);
+        generated.push(next);
     }
 
     println!("--- Üretilen metin ---\n");
-    println!("{}", tok.decode(&generated_ids));
-}
-
-fn load_gpt(path: &str, params: &[Tensor]) -> std::io::Result<()> {
-    use std::fs::File;
-    use std::io::{Read, BufReader};
-    let f = File::open(path)?;
-    let mut r = BufReader::new(f);
-    let mut buf4 = [0u8; 4];
-    for p in params {
-        r.read_exact(&mut buf4)?;
-        let rows = u32::from_le_bytes(buf4) as usize;
-        r.read_exact(&mut buf4)?;
-        let cols = u32::from_le_bytes(buf4) as usize;
-        let mut d = p.data.borrow_mut();
-        assert_eq!(d.rows, rows, "rows uyuşmuyor");
-        assert_eq!(d.cols, cols, "cols uyuşmuyor");
-        let mut fbuf = [0u8; 4];
-        for i in 0..d.data.len() {
-            r.read_exact(&mut fbuf)?;
-            d.data[i] = f32::from_le_bytes(fbuf);
-        }
-    }
-    Ok(())
+    println!("{}", tok.decode(&generated));
 }
 
 // ============================================================
-// TEST FUNCTIONS
+// MNIST MLP
 // ============================================================
-
-fn test_attn() {
-    println!("🐟 Attention testi\n");
-    let mut seed = 42u64;
-    let d_model = 8;
-    let seq_len = 4;
-    let attn = transformer::AttentionHead::new(d_model, &mut seed);
-    let x = Tensor::leaf(Matrix::random(seq_len, d_model, 0.1, &mut seed), true);
-    let out = attn.forward(&x);
-    {
-        let od = out.data.borrow();
-        println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
-    }
-    out.sum().backward();
-    let sum_abs = |g: &Matrix| -> f32 { g.data.iter().map(|x| x.abs()).sum() };
-    assert!(sum_abs(&x.grad.borrow()) > 1e-6);
-    assert!(sum_abs(&attn.w_q.grad.borrow()) > 1e-6);
-    assert!(sum_abs(&attn.w_k.grad.borrow()) > 1e-6);
-    assert!(sum_abs(&attn.w_v.grad.borrow()) > 1e-6);
-    assert!(sum_abs(&attn.w_o.grad.borrow()) > 1e-6);
-    println!("✅ Tüm gradyanlar sıfır değil\n🎉 Attention testi geçti!");
-}
-
-fn test_embed() {
-    println!("🐟 Embedding testi\n");
-    let mut seed = 42u64;
-    let vocab = 10;
-    let d_model = 8;
-    let emb = transformer::Embedding::new(vocab, 16, d_model, &mut seed);
-    let ids = vec![1, 3, 5, 7];
-    let out = emb.forward(&ids);
-    {
-        let od = out.data.borrow();
-        println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
-    }
-    out.backward();
-    let tg = emb.token_emb.grad.borrow();
-    let pg = emb.pos_emb.grad.borrow();
-    println!("token_emb grad: {}x{}", tg.rows, tg.cols);
-    println!("pos_emb grad: {}x{}", pg.rows, pg.cols);
-    let mut tok0_sum = 0.0f32;
-    for d in 0..d_model { tok0_sum += tg.get(0, d).abs(); }
-    assert!(tok0_sum < 1e-6);
-    let mut pos0_sum = 0.0f32;
-    for d in 0..d_model { pos0_sum += pg.get(0, d); }
-    assert!((pos0_sum - d_model as f32).abs() < 1e-4);
-    println!("✅ Embedding OK");
-}
-
-fn test_ops() {
-    println!("🐟 Op testleri\n");
-    let x = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 2.0, 3.0]), true);
-    let y = x.softmax();
-    y.backward();
-    println!("✅ Softmax OK");
-    let x2 = Tensor::leaf(Matrix::from_vec(1, 3, vec![-1.0, 0.0, 1.0]), true);
-    x2.gelu().backward();
-    println!("✅ GELU OK");
-    let x3 = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 2.0, 3.0]), true);
-    let gamma = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 1.0, 1.0]), true);
-    let beta = Tensor::leaf(Matrix::from_vec(1, 3, vec![0.0, 0.0, 0.0]), true);
-    x3.layer_norm(&gamma, &beta, 1e-5).backward();
-    println!("✅ LayerNorm OK\n🎉 Tüm op testleri geçti!");
-}
-
-fn tokenize() {
-    println!("🐟 StonefishAI v0.4 — tokenizer\n");
-    let text = data::load_text("data/turkce.txt");
-    let tok = tokenizer::Tokenizer::from_text(&text);
-    println!("Vocab: {}", tok.vocab_size);
-    let sample = "ROMEO: But soft, what light through yonder window breaks?";
-    let decoded = tok.decode(&tok.encode(sample));
-    println!("Round-trip: {}", if sample == decoded { "✅" } else { "❌" });
-    let all_ids = tok.encode(&text);
-    let seqs = data::make_sequences(&all_ids, 64, 64);
-    println!("Sequence: {}\n✅ Hazır.", seqs.len());
-}
 
 fn train() {
-    println!("🐟 StonefishAI v0.3 — MNIST eğitimi\n");
+    println!("🐟 StonefishAI v{} — MNIST eğitimi\n", stonefish_ai::VERSION);
     let x_train = load_images("data/train-images-idx3-ubyte");
     let y_train = load_labels_onehot("data/train-labels-idx1-ubyte");
     let x_test = load_images("data/t10k-images-idx3-ubyte");
-    let y_test_onehot = load_labels_onehot("data/t10k-labels-idx1-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
     println!("Train: {}, Test: {}\n", x_train.rows, x_test.rows);
 
@@ -400,10 +388,7 @@ fn train() {
     for epoch in 0..epochs {
         let mut idx: Vec<usize> = (0..n).collect();
         for i in (1..n).rev() {
-            rng_state ^= rng_state << 13;
-            rng_state ^= rng_state >> 7;
-            rng_state ^= rng_state << 17;
-            let j = (rng_state as usize) % (i + 1);
+            let j = (xorshift(&mut rng_state) as usize) % (i + 1);
             idx.swap(i, j);
         }
         let mut epoch_loss = 0.0f32;
@@ -416,26 +401,24 @@ fn train() {
             let mut yb = Vec::with_capacity(bs * 10);
             for k in start..end {
                 let src = idx[k];
-                for j in 0..784 { xb.push(x_train.get(src, j)); }
-                for j in 0..10 { yb.push(y_train.get(src, j)); }
+                xb.extend_from_slice(&x_train.data[src * 784..(src + 1) * 784]);
+                yb.extend_from_slice(&y_train.data[src * 10..(src + 1) * 10]);
             }
             let x_batch = Tensor::leaf(Matrix::from_vec(bs, 784, xb), false);
             let y_batch = Tensor::leaf(Matrix::from_vec(bs, 10, yb), false);
-            let h = l1.forward(&x_batch);
-            let h_act = h.relu();
-            let logits = l2.forward(&h_act);
+            let logits = l2.forward(&l1.forward(&x_batch).relu());
             let loss = softmax_cross_entropy(&logits, &y_batch);
             opt.zero_grad();
             loss.backward();
             opt.step();
-            epoch_loss += loss.data.borrow().get(0, 0);
+            epoch_loss += loss.item();
             n_batches += 1;
             start = end;
         }
         let avg = epoch_loss / n_batches as f32;
         print!("epoch {:2}  train CE = {:.4}", epoch, avg);
         if epoch % 2 == 1 || epoch == epochs - 1 {
-            let acc = evaluate(&x_test, &y_test_onehot, &y_test_raw, &l1, &l2);
+            let acc = evaluate(&x_test, &y_test_raw, &l1, &l2);
             println!("   test acc = %{:.2}", acc);
         } else {
             println!();
@@ -444,59 +427,45 @@ fn train() {
     println!("\nModel kaydediliyor → {}", MODEL_PATH);
     save_model(MODEL_PATH, &[&l1, &l2]).expect("kaydetme başarısız");
     println!("✅ Kaydedildi.");
-    let acc = evaluate(&x_test, &y_test_onehot, &y_test_raw, &l1, &l2);
+    let acc = evaluate(&x_test, &y_test_raw, &l1, &l2);
     println!("\n🐟 Final test acc = %{:.2}", acc);
 }
 
 fn predict() {
-    println!("🐟 StonefishAI v0.3 — tahmin\n");
+    println!("🐟 StonefishAI v{} — tahmin\n", stonefish_ai::VERSION);
     let layers = load_model(MODEL_PATH, 2).expect("model yüklenemedi");
-    let l1 = &layers[0];
-    let l2 = &layers[1];
     let x_test = load_images("data/t10k-images-idx3-ubyte");
-    let y_test_onehot = load_labels_onehot("data/t10k-labels-idx1-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
-    let acc = evaluate(&x_test, &y_test_onehot, &y_test_raw, l1, l2);
+    let acc = evaluate(&x_test, &y_test_raw, &layers[0], &layers[1]);
     println!("Test accuracy: %{:.2}", acc);
 }
 
 fn eval_only() {
-    println!("🐟 StonefishAI v0.3 — eval\n");
+    println!("🐟 StonefishAI v{} — eval\n", stonefish_ai::VERSION);
     let layers = load_model(MODEL_PATH, 2).expect("model yüklenemedi");
-    let l1 = &layers[0];
-    let l2 = &layers[1];
     let x_test = load_images("data/t10k-images-idx3-ubyte");
-    let y_test_onehot = load_labels_onehot("data/t10k-labels-idx1-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
-    let acc = evaluate(&x_test, &y_test_onehot, &y_test_raw, l1, l2);
+    let acc = evaluate(&x_test, &y_test_raw, &layers[0], &layers[1]);
     println!("Test accuracy: %{:.2}", acc);
 }
 
-fn evaluate(
-    x: &Matrix,
-    _y_onehot: &Matrix,
-    y_raw: &[usize],
-    l1: &Linear,
-    l2: &Linear,
-) -> f32 {
+fn evaluate(x: &Matrix, y_raw: &[usize], l1: &Linear, l2: &Linear) -> f32 {
     let bs = 128;
     let n = x.rows;
     let mut correct = 0;
     let mut start = 0;
     while start < n {
         let end = (start + bs).min(n);
-        let xb = slice_rows(x, start, end);
-        let x_t = Tensor::leaf(xb, false);
-        let h = l1.forward(&x_t);
-        let h_act = h.relu();
-        let logits = l2.forward(&h_act);
+        let x_t = Tensor::leaf(slice_rows(x, start, end), false);
+        let logits = l2.forward(&l1.forward(&x_t).relu());
         let ld = logits.data.borrow();
         for i in 0..(end - start) {
             let mut best_j = 0;
             let mut best_v = ld.get(i, 0);
             for j in 1..10 {
-                if ld.get(i, j) > best_v {
-                    best_v = ld.get(i, j);
+                let v = ld.get(i, j);
+                if v > best_v {
+                    best_v = v;
                     best_j = j;
                 }
             }
@@ -504,318 +473,367 @@ fn evaluate(
                 correct += 1;
             }
         }
+        drop(ld);
         start = end;
     }
     100.0 * correct as f32 / n as f32
 }
 
+// ============================================================
+// TOKENIZER
+// ============================================================
+
+fn tokenize() {
+    println!("🐟 StonefishAI v{} — tokenizer\n", stonefish_ai::VERSION);
+    let text = data::load_text(TEXT_PATH);
+    let tok = Tokenizer::from_text(&text);
+    println!("Vocab: {}", tok.vocab_size);
+
+    // Round-trip: korpustan bir parça ve Türkçe karakterler
+    let sample = "Akşam erken iner mahpushaneye";
+    match tok.try_encode(sample) {
+        Ok(ids) => {
+            let decoded = tok.decode(&ids);
+            println!("Round-trip: {}", if sample == decoded { "✅" } else { "❌" });
+        }
+        Err(c) => println!("❌ Örnek metinde bilinmeyen karakter: {:?}", c),
+    }
+
+    let all_ids = tok.encode(&text);
+    let seqs = data::make_sequences(&all_ids, 64, 64);
+    println!("Sequence: {}\n✅ Hazır.", seqs.len());
+}
+
+// ============================================================
+// DUMAN TESTLERİ
+// ============================================================
+
+fn test_ops() {
+    println!("🐟 Op testleri\n");
+    let x = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 2.0, 3.0]), true);
+    x.softmax().sum().backward();
+    println!("✅ Softmax OK");
+    let x2 = Tensor::leaf(Matrix::from_vec(1, 3, vec![-1.0, 0.0, 1.0]), true);
+    x2.gelu().sum().backward();
+    println!("✅ GELU OK");
+    let x3 = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 2.0, 3.0]), true);
+    let gamma = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 1.0, 1.0]), true);
+    let beta = Tensor::leaf(Matrix::from_vec(1, 3, vec![0.0, 0.0, 0.0]), true);
+    x3.layer_norm(&gamma, &beta, 1e-5).sum().backward();
+    println!("✅ LayerNorm OK\n🎉 Tüm op testleri geçti!");
+}
+
+fn test_embed() {
+    println!("🐟 Embedding testi\n");
+    let mut seed = 42u64;
+    let (vocab, seq_len, d_model) = (10, 4, 8);
+    let emb = transformer::Embedding::new(vocab, 16, d_model, &mut seed);
+    let ids = vec![1, 3, 5, 7];
+    let out = emb.forward(&ids, seq_len);
+    {
+        let od = out.data.borrow();
+        println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
+        assert_eq!((od.rows, od.cols), (seq_len, d_model));
+    }
+    out.sum().backward();
+    let tg = emb.token_emb.grad.borrow();
+    let pg = emb.pos_emb.grad.borrow();
+    println!("token_emb grad: {}x{}", tg.rows, tg.cols);
+    println!("pos_emb grad: {}x{}", pg.rows, pg.cols);
+
+    let mut pos0_sum = 0.0f32;
+    for d in 0..d_model {
+        pos0_sum += pg.get(0, d);
+    }
+    assert!((pos0_sum - d_model as f32).abs() < 1e-4, "pos_emb grad toplamı yanlış");
+    println!("✅ Embedding OK");
+}
+
+fn test_attn() {
+    println!("🐟 Attention testi\n");
+    let mut seed = 42u64;
+    let (d_model, seq_len, n_heads) = (8, 4, 2);
+    let attn = transformer::MultiHeadSelfAttention::new(d_model, n_heads, &mut seed);
+    let x = Tensor::leaf(Matrix::random(seq_len, d_model, 0.1, &mut seed), true);
+    let out = attn.forward(&x, 1, seq_len);
+    {
+        let od = out.data.borrow();
+        println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
+        assert_eq!((od.rows, od.cols), (seq_len, d_model));
+    }
+    out.sum().backward();
+    let sum_abs = |g: &Matrix| -> f32 { g.data.iter().map(|x| x.abs()).sum() };
+    assert!(sum_abs(&x.grad.borrow()) > 1e-6, "x gradyanı sıfır");
+    assert!(sum_abs(&attn.w_q.grad.borrow()) > 1e-6, "w_q gradyanı sıfır");
+    assert!(sum_abs(&attn.w_k.grad.borrow()) > 1e-6, "w_k gradyanı sıfır");
+    assert!(sum_abs(&attn.w_v.grad.borrow()) > 1e-6, "w_v gradyanı sıfır");
+    assert!(sum_abs(&attn.w_o.grad.borrow()) > 1e-6, "w_o gradyanı sıfır");
+    println!("✅ Tüm gradyanlar sıfır değil\n🎉 Attention testi geçti!");
+}
+
+// ============================================================
+// GPU TESTLERİ
+// ============================================================
+
 fn test_cuda() {
-    use cudarc::driver::CudaContext;
-
     println!("🐟 CUDA testi\n");
-
-    let ctx = CudaContext::new(0).expect("CUDA context oluşturulamadı");
-    println!("GPU: {:?}", ctx.name());
-    println!("✅ CUDA çalışıyor!");
-}
-
-fn test_gpu_matmul() {
-    use cudarc::driver::CudaContext;
-    use gpu::GpuMatrix;
-
-    println!("🐟 GPU matmul testi\n");
-
-    let ctx = CudaContext::new(0).expect("CUDA context");
-
-    // CPU'da matmul
-    let a = Matrix::from_vec(2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    let b = Matrix::from_vec(3, 2, vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
-    let c_cpu = a.matmul(&b);
-    println!("CPU sonucu: {:?}", c_cpu.data);
-
-    // GPU'da matmul
-    let a_gpu = GpuMatrix::from_cpu(&ctx, &a);
-    let b_gpu = GpuMatrix::from_cpu(&ctx, &b);
-    let c_gpu = GpuMatrix::matmul(&a_gpu, &b_gpu);
-    let c_gpu_cpu = c_gpu.to_cpu();
-    println!("GPU sonucu: {:?}", c_gpu_cpu.data);
-
-    // Karşılaştır
-    let mut max_diff = 0.0f32;
-    for i in 0..c_cpu.data.len() {
-        let diff = (c_cpu.data[i] - c_gpu_cpu.data[i]).abs();
-        if diff > max_diff { max_diff = diff; }
+    if !gpu::HAS_CUDA {
+        println!("❌ Bu derlemede CUDA kapalı (--no-default-features).");
+        return;
     }
-    println!("Max fark: {}", max_diff);
-
-    if max_diff < 1e-4 {
-        println!("✅ GPU matmul doğru!");
-    } else {
-        println!("❌ GPU matmul yanlış! (max fark: {})", max_diff);
+    #[cfg(feature = "cuda")]
+    {
+        let ctx = gpu::get_ctx();
+        println!("GPU: {:?}", ctx.name());
+        println!("✅ CUDA çalışıyor!");
     }
 }
 
-fn test_gpu_bench() {
-    use cudarc::driver::CudaContext;
-    use gpu::GpuMatrix;
-    use std::time::Instant;
-
-    println!("🐟 GPU matmul hız testi\n");
-
-    let ctx = CudaContext::new(0).expect("CUDA context");
-
-    // 256x256 matmul
-    let n = 256;
+/// CPU naif matmul ile GPU'yu karşılaştırır.
+fn compare_matmul(n: usize) -> (std::time::Duration, std::time::Duration, f32) {
     let mut seed = 42u64;
     let a = Matrix::random(n, n, 1.0, &mut seed);
     let b = Matrix::random(n, n, 1.0, &mut seed);
 
-    // CPU
-    let t0 = Instant::now();
+    let t0 = std::time::Instant::now();
     let c_cpu = a.matmul(&b);
     let cpu_time = t0.elapsed();
-    println!("CPU: {:?}", cpu_time);
 
-    // GPU
-    let t0 = Instant::now();
-    let a_gpu = GpuMatrix::from_cpu(&ctx, &a);
-    let b_gpu = GpuMatrix::from_cpu(&ctx, &b);
-    let c_gpu = GpuMatrix::matmul(&a_gpu, &b_gpu);
-    let c_gpu_cpu = c_gpu.to_cpu();
+    let t0 = std::time::Instant::now();
+    let c_gpu = gpu::matmul_gpu(&a, &b);
     let gpu_time = t0.elapsed();
-    println!("GPU: {:?}", gpu_time);
 
     let mut max_diff = 0.0f32;
     for i in 0..c_cpu.data.len() {
-        let diff = (c_cpu.data[i] - c_gpu_cpu.data[i]).abs();
-        if diff > max_diff { max_diff = diff; }
+        max_diff = max_diff.max((c_cpu.data[i] - c_gpu.data[i]).abs());
     }
-    println!("Max fark: {}", max_diff);
+    (cpu_time, gpu_time, max_diff)
+}
 
-    if max_diff < 1e-3 {
-        println!("✅ Doğru!");
+fn test_gpu_matmul() {
+    println!("🐟 GPU matmul testi\n");
+    let (cpu, gpu_t, diff) = compare_matmul(64);
+    println!("CPU: {:?}, GPU: {:?}, max fark: {:.3e}", cpu, gpu_t, diff);
+    if diff < 1e-4 {
+        println!("✅ GPU matmul doğru!");
     } else {
-        println!("❌ Yanlış! (max fark: {})", max_diff);
+        println!("❌ GPU matmul yanlış! (max fark: {})", diff);
+        std::process::exit(1);
     }
 }
 
+fn test_gpu_bench() {
+    println!("🐟 GPU matmul hız testi (256²)\n");
+    let (cpu, gpu_t, diff) = compare_matmul(256);
+    println!("CPU: {:?}\nGPU (transfer+matmul+transfer): {:?}", cpu, gpu_t);
+    println!("Max fark: {:.3e}", diff);
+    println!(
+        "Hızlanma: {:.2}x",
+        cpu.as_secs_f64() / gpu_t.as_secs_f64()
+    );
+}
+
 fn test_gpu_bench_big() {
-    use cudarc::driver::CudaContext;
-    use gpu::GpuMatrix;
-    use std::time::Instant;
-
     println!("🐟 GPU matmul hız testi (büyük matrisler)\n");
-
-    let ctx = CudaContext::new(0).expect("CUDA context");
-
-    for &n in &[256, 512, 1024] {
+    for &n in &[256usize, 512, 1024] {
         println!("--- {}x{} ---", n, n);
-        let mut seed = 42u64;
-        let a = Matrix::random(n, n, 1.0, &mut seed);
-        let b = Matrix::random(n, n, 1.0, &mut seed);
+        let (cpu, gpu_t, diff) = compare_matmul(n);
+        println!("CPU: {:?}", cpu);
+        println!("GPU (transfer+matmul+transfer): {:?}", gpu_t);
+        println!("Max fark: {:.3e}", diff);
+        println!(
+            "Hızlanma: {:.2}x\n",
+            cpu.as_secs_f64() / gpu_t.as_secs_f64()
+        );
+    }
+}
 
-        // CPU
-        let t0 = Instant::now();
-        let c_cpu = a.matmul(&b);
-        let cpu_time = t0.elapsed();
+/// Modelin gerçekte kullandığı matmul şekilleri — asıl karar bunlara dayanır.
+fn test_matmul_bench() {
+    println!("🐟 Gerçek model şekillerinde matmul (10 tekrar, ortalama)\n");
 
-        // GPU (transfer + matmul + transfer)
-        let t0 = Instant::now();
-        let a_gpu = GpuMatrix::from_cpu(&ctx, &a);
-        let b_gpu = GpuMatrix::from_cpu(&ctx, &b);
-        let c_gpu = GpuMatrix::matmul(&a_gpu, &b_gpu);
-        let c_gpu_cpu = c_gpu.to_cpu();
-        let gpu_time = t0.elapsed();
+    // Isınma: ilk GPU çağrısı CUDA context + cuBLAS handle kurar (~200 ms).
+    // Bu maliyet ölçüme karışmasın.
+    {
+        let mut seed = 1u64;
+        let a = Matrix::random(64, 64, 1.0, &mut seed);
+        let b = Matrix::random(64, 64, 1.0, &mut seed);
+        std::hint::black_box(gpu::matmul_gpu(&a, &b));
+    }
 
-        // Sadece matmul (transfer hariç)
-        let t0 = Instant::now();
-        let _ = GpuMatrix::matmul(&a_gpu, &b_gpu);
-        let gpu_matmul_only = t0.elapsed();
+    // (B*S, k) @ (k, n) — GPT'nin içindeki GEMM'ler
+    let shapes = [
+        (1024usize, 128usize, 128usize, "attn proj (B*S=1024)"),
+        (1024, 128, 512, "ff1"),
+        (1024, 512, 128, "ff2"),
+        (1024, 128, 136, "lm head"),
+        (128, 128, 128, "batch=1 (üretim)"),
+    ];
+    let reps = 10;
+    for (m, k, n, label) in shapes {
+        let mut seed = 7u64;
+        let a = Matrix::random(m, k, 1.0, &mut seed);
+        let b = Matrix::random(k, n, 1.0, &mut seed);
 
-        let mut max_diff = 0.0f32;
-        for i in 0..c_cpu.data.len() {
-            let diff = (c_cpu.data[i] - c_gpu_cpu.data[i]).abs();
-            if diff > max_diff { max_diff = diff; }
+        // her iki yol için de birer ısınma
+        std::hint::black_box(a.matmul(&b));
+        std::hint::black_box(gpu::matmul_gpu(&a, &b));
+
+        let t0 = std::time::Instant::now();
+        for _ in 0..reps {
+            std::hint::black_box(a.matmul(&b));
         }
+        let cpu = t0.elapsed().as_secs_f64() / reps as f64;
 
-        println!("CPU: {:?}", cpu_time);
-        println!("GPU (transfer+matmul+transfer): {:?}", gpu_time);
-        println!("GPU (sadece matmul): {:?}", gpu_matmul_only);
-        println!("Max fark: {}", max_diff);
-        println!();
+        let t0 = std::time::Instant::now();
+        for _ in 0..reps {
+            std::hint::black_box(gpu::matmul_gpu(&a, &b));
+        }
+        let gpu_t = t0.elapsed().as_secs_f64() / reps as f64;
+
+        println!(
+            "{:<22} ({m}×{k})@({k}×{n})  CPU {:8.3} ms   GPU {:8.3} ms   {:.2}x",
+            label,
+            cpu * 1e3,
+            gpu_t * 1e3,
+            cpu / gpu_t
+        );
     }
 }
 
 fn test_gpu_train() {
-    use std::time::Instant;
-
-    println!("🐟 GPU eğitim testi (küçük model)\n");
-
-    // Küçük bir model: 128 -> 64 -> 10
+    println!("🐟 GPU eğitim testi (küçük MLP)\n");
     let mut seed = 42u64;
     let l1 = Linear::new(128, 64, &mut seed);
     let l2 = Linear::new(64, 10, &mut seed);
-
     let mut params = Vec::new();
     params.extend(l1.parameters());
     params.extend(l2.parameters());
     let opt = SGD::new(params, 0.01);
 
-    // Sentetik veri: 32 batch, 128 özellik
     let batch = 32;
     let mut x_data = Vec::new();
     let mut y_data = Vec::new();
     for _ in 0..batch {
-        for _ in 0..128 { x_data.push(rand_f32(&mut seed)); }
+        for _ in 0..128 {
+            x_data.push(rand_f32(&mut seed));
+        }
         let mut oh = vec![0.0f32; 10];
-        oh[(seed as usize) % 10] = 1.0;
+        oh[(xorshift(&mut seed) as usize) % 10] = 1.0;
         y_data.extend(oh);
     }
     let x = Tensor::leaf(Matrix::from_vec(batch, 128, x_data), false);
     let y = Tensor::leaf(Matrix::from_vec(batch, 10, y_data), false);
 
-    let t0 = Instant::now();
+    let t0 = std::time::Instant::now();
     for _ in 0..10 {
-        let h = l1.forward(&x);
-        let h_act = h.relu();
-        let logits = l2.forward(&h_act);
+        let logits = l2.forward(&l1.forward(&x).relu());
         let loss = softmax_cross_entropy(&logits, &y);
         opt.zero_grad();
         loss.backward();
         opt.step();
     }
-    let elapsed = t0.elapsed();
-    println!("10 adım (GPU matmul): {:?}", elapsed);
+    println!("10 adım: {:?}  (GPU={})", t0.elapsed(), gpu::HAS_CUDA);
     println!("✅ GPU eğitim testi tamam!");
 }
 
-fn rand_f32(seed: &mut u64) -> f32 {
-    *seed ^= *seed << 13;
-    *seed ^= *seed >> 7;
-    *seed ^= *seed << 17;
-    ((*seed >> 11) as f64 / (1u64 << 53) as f64) as f32
-}
+fn test_gpt_gpu(args: &[String]) {
+    let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(20);
+    println!("🐟 GPT adım hızı (d_model=64, 2 katman, batch=8)\n");
 
-fn test_gpt_gpu() {
-    use std::time::Instant;
-
-    println!("🐟 GPT GPU eğitim testi (küçük model, 1 epoch)\n");
-
-    let text = data::load_text("data/turkce.txt");
-    let tok = tokenizer::Tokenizer::from_text(&text);
+    let text = data::load_text(TEXT_PATH);
+    let tok = Tokenizer::from_text(&text);
     let all_ids = tok.encode(&text);
     let seq_len = 64;
     let seqs = data::make_sequences(&all_ids, seq_len, seq_len);
-    println!("Vocab: {}, sequence: {}", tok.vocab_size, seqs.len());
 
     let mut seed: u64 = 0xDEADBEEF;
-    let d_model = 64;
-    let n_layers = 2;
-    let n_heads = 1;
-    let model = transformer::GPT::new(
-        tok.vocab_size, seq_len, d_model, n_layers, n_heads, &mut seed,
-    );
-    let params = model.parameters();
-    let mut opt = optim::Adam::new(params, 0.0005);
+    let config = GptConfig {
+        vocab_size: tok.vocab_size,
+        max_seq_len: seq_len,
+        d_model: 64,
+        n_layers: 2,
+        n_heads: 2,
+    };
+    let model = GPT::new(config, &mut seed);
+    let mut opt = Adam::new(model.parameters(), 0.0005);
+    let batch = 8;
 
-    // Sadece ilk 100 sequence ile test et
-    let n_test = 100.min(seqs.len());
-    let t0 = Instant::now();
-    let mut total_loss = 0.0f32;
-    for i in 0..n_test {
-        let (input_ids, target_ids) = &seqs[i];
-        let logits = model.forward(input_ids);
-        let loss = ce_from_logits_and_ids(&logits, target_ids);
+    let make_batch = |i: usize| -> (Vec<usize>, Vec<usize>) {
+        let mut input_ids = Vec::with_capacity(batch * seq_len);
+        let mut targets = Vec::with_capacity(batch * seq_len);
+        for k in 0..batch {
+            let (inp, tgt) = &seqs[(i * batch + k) % seqs.len()];
+            input_ids.extend_from_slice(inp);
+            targets.extend_from_slice(tgt);
+        }
+        (input_ids, targets)
+    };
+
+    // Isınma (CUDA context + cuBLAS handle)
+    {
+        let (ids, tgt) = make_batch(0);
+        let l = model.forward_batch(&ids, batch, seq_len).softmax_cross_entropy_ids(&tgt);
+        opt.zero_grad();
+        l.backward();
+    }
+
+    // --- sadece forward ---
+    let t0 = std::time::Instant::now();
+    for i in 0..steps {
+        let (ids, tgt) = make_batch(i);
+        std::hint::black_box(
+            model.forward_batch(&ids, batch, seq_len).softmax_cross_entropy_ids(&tgt),
+        );
+    }
+    let fwd = t0.elapsed().as_secs_f64() / steps as f64;
+
+    // --- forward + backward + step ---
+    let t0 = std::time::Instant::now();
+    let mut total = 0.0f32;
+    for i in 0..steps {
+        let (ids, tgt) = make_batch(i);
+        let loss = model.forward_batch(&ids, batch, seq_len).softmax_cross_entropy_ids(&tgt);
         opt.zero_grad();
         loss.backward();
         opt.step();
-        total_loss += loss.data.borrow().get(0, 0);
+        total += loss.item();
     }
-    let elapsed = t0.elapsed();
-    println!("{} adım: {:?}", n_test, elapsed);
-    println!("Ortalama loss: {:.4}", total_loss / n_test as f32);
-    println!("✅ GPT GPU eğitim testi tamam!");
+    let step_t = t0.elapsed().as_secs_f64() / steps as f64;
+
+    let tokens = batch * seq_len;
+    println!(
+        "{} adım → {:.2} ms/adım ({:.0} tok/s)  GPU={}",
+        steps,
+        step_t * 1e3,
+        tokens as f64 / step_t,
+        gpu::HAS_CUDA
+    );
+    println!(
+        "  forward      : {:.2} ms ({:.0}%)",
+        fwd * 1e3,
+        fwd / step_t * 100.0
+    );
+    println!(
+        "  backward+step: {:.2} ms ({:.0}%)",
+        (step_t - fwd) * 1e3,
+        (step_t - fwd) / step_t * 100.0
+    );
+    println!("Ortalama loss: {:.4}", total / steps as f32);
+    println!("✅ GPT hız testi tamam!");
 }
 
-fn test_tensor3d() {
-    use tensor::Tensor3D;
+// ============================================================
+// Yardımcılar
+// ============================================================
 
-    println!("🐟 Tensor3D testi\n");
-
-    // batch=2, seq_len=3, d_model=4
-    let mut t = Tensor3D::zeros(2, 3, 4);
-    t.set(0, 0, 0, 1.0);
-    t.set(0, 0, 1, 2.0);
-    t.set(1, 2, 3, 5.0);
-
-    println!("t(0,0,0) = {}", t.get(0, 0, 0));
-    println!("t(0,0,1) = {}", t.get(0, 0, 1));
-    println!("t(1,2,3) = {}", t.get(1, 2, 3));
-
-    // slice_batch
-    let b0 = t.slice_batch(0);
-    println!("batch 0: {}x{}", b0.rows, b0.cols);
-    println!("batch 0 (0,0) = {}", b0.get(0, 0));
-
-    // matmul: (2,3,4) * (4,2) → (2,3,2)
-    let w = Matrix::from_vec(4, 2, vec![
-        1.0, 0.0,
-        0.0, 1.0,
-        1.0, 1.0,
-        0.5, 0.5,
-    ]);
-    let out = t.matmul(&w);
-    println!("matmul çıktı: ({}, {}, {})", out.batch, out.seq_len, out.d_model);
-    println!("out(0,0,0) = {}", out.get(0, 0, 0));
-
-    println!("✅ Tensor3D testi geçti!");
+fn xorshift(s: &mut u64) -> u64 {
+    *s ^= *s << 13;
+    *s ^= *s >> 7;
+    *s ^= *s << 17;
+    *s
 }
 
-fn test_tensor3d_full() {
-    use tensor::Tensor3D;
-
-    println!("🐟 Tensor3D tam testi\n");
-
-    // batch=2, seq=3, d_model=4
-    let t = Tensor3D::from_vec(2, 3, 4, (0..24).map(|x| x as f32).collect());
-    println!("t (2,3,4) oluşturuldu");
-    println!("t(0,0,0) = {}", t.get(0, 0, 0));
-    println!("t(1,2,3) = {}", t.get(1, 2, 3));
-
-    // add
-    let t2 = t.scale(2.0);
-    let t3 = t.add(&t2);
-    println!("add: t3(0,0,0) = {} (beklenen: 0)", t3.get(0, 0, 0));
-
-    // matmul: (2,3,4) * (4,2) → (2,3,2)
-    let w = Matrix::from_vec(4, 2, vec![
-        1.0, 0.0,
-        0.0, 1.0,
-        1.0, 1.0,
-        0.5, 0.5,
-    ]);
-    let out = t.matmul(&w);
-    println!("matmul: ({}, {}, {})", out.batch, out.seq_len, out.d_model);
-
-    // transpose
-    let tr = t.transpose();
-    println!("transpose: ({}, {}, {})", tr.batch, tr.seq_len, tr.d_model);
-
-    // softmax
-    let sm = t.softmax();
-    let sum: f32 = (0..4).map(|d| sm.get(0, 0, d)).sum();
-    println!("softmax satır toplamı: {} (beklenen: 1.0)", sum);
-
-    // layernorm
-    let gamma = Matrix::filled(1, 4, 1.0);
-    let beta = Matrix::zeros(1, 4);
-    let ln = t.layer_norm(&gamma, &beta, 1e-5);
-    let mean: f32 = (0..4).map(|d| ln.get(0, 0, d)).sum::<f32>() / 4.0;
-    println!("layernorm satır ortalaması: {} (beklenen: 0)", mean);
-
-    // gelu
-    let g = t.gelu();
-    println!("gelu: ({}, {}, {})", g.batch, g.seq_len, g.d_model);
-
-    println!("✅ Tensor3D tam testi geçti!");
+fn rand_f32(seed: &mut u64) -> f32 {
+    (xorshift(seed) >> 11) as f32 / (1u64 << 53) as f32
 }

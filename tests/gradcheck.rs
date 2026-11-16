@@ -314,44 +314,25 @@ fn layer_norm() {
 
 #[test]
 fn embedding() {
+    // Gerçek `transformer::Embedding` üzerinden — batch'li (B=2, S=4) satır paketleme.
+    use stonefish_ai::transformer::Embedding;
+
     let mut s = 29u64;
-    let vocab = 7;
-    let max_seq = 5;
-    let d = 3;
-    let tok = leaf(vocab, d, &mut s);
-    let pos = leaf(max_seq, d, &mut s);
-    let ids: Vec<usize> = vec![1, 3, 0, 6, 2];
+    let (vocab, max_seq, d) = (7usize, 6usize, 3usize);
+    let (batch, seq_len) = (2usize, 4usize);
+    let emb = Embedding::new(vocab, max_seq, d, &mut s);
+    let ids: Vec<usize> = vec![1, 3, 0, 6, 2, 2, 5, 1];
+    assert_eq!(ids.len(), batch * seq_len);
 
-    // Embedding::forward ile aynı grafiği kur (tok + pos toplamı).
-    let build = |tok: &Tensor, pos: &Tensor| -> Tensor {
-        let d_model = tok.data.borrow().cols;
-        let mut out = Matrix::zeros(ids.len(), d_model);
-        {
-            let te = tok.data.borrow();
-            let pe = pos.data.borrow();
-            for (s, &id) in ids.iter().enumerate() {
-                for k in 0..d_model {
-                    out.set(s, k, te.get(id, k) + pe.get(s, k));
-                }
-            }
-        }
-        let ids_mat = Matrix::from_vec(
-            ids.len(),
-            1,
-            ids.iter().map(|&x| x as f32).collect(),
-        );
-        let ids_t = Tensor::leaf(ids_mat, false);
-        Tensor::from_op(
-            out,
-            stonefish_ai::autograd::Op::Embedding,
-            vec![tok.clone(), pos.clone(), ids_t],
-        )
+    let w = {
+        let mut s2 = 999u64;
+        frozen_positive(ids.len(), d, &mut s2)
     };
-
-    let w = { let mut s2 = 999u64; frozen_positive(ids.len(), d, &mut s2) };
-    gradient_check("embedding (tok+pos)", &[tok.clone(), pos.clone()], || {
-        build(&tok, &pos).mul_elem(&w).sum()
-    });
+    gradient_check(
+        "embedding (tok+pos, B=2 S=4)",
+        &[emb.token_emb.clone(), emb.pos_emb.clone()],
+        || emb.forward(&ids, seq_len).mul_elem(&w).sum(),
+    );
 }
 
 // ------------------------------------------------------------
@@ -385,36 +366,242 @@ fn gpu_matmul_matches_cpu() {
 }
 
 // ------------------------------------------------------------
+// Fused causal multi-head attention
+// ------------------------------------------------------------
+
+#[test]
+fn causal_attention_single_head() {
+    let mut s = 40u64;
+    let (batch, seq, d) = (1usize, 4usize, 3usize);
+    let rows = batch * seq;
+    let q = leaf(rows, d, &mut s);
+    let k = leaf(rows, d, &mut s);
+    let v = leaf(rows, d, &mut s);
+    let w = frozen_positive(rows, d, &mut s);
+    gradient_check(
+        "causal_attention (h=1)",
+        &[q.clone(), k.clone(), v.clone()],
+        || q.causal_attention(&k, &v, batch, seq, 1).mul_elem(&w).sum(),
+    );
+}
+
+#[test]
+fn causal_attention_multi_head_batched() {
+    // B=2, S=3, d_model=6, n_heads=3 → d_head=2
+    let mut s = 41u64;
+    let (batch, seq, d, n_heads) = (2usize, 3usize, 6usize, 3usize);
+    let rows = batch * seq;
+    let q = leaf(rows, d, &mut s);
+    let k = leaf(rows, d, &mut s);
+    let v = leaf(rows, d, &mut s);
+    let w = frozen_positive(rows, d, &mut s);
+    gradient_check(
+        "causal_attention (B=2,h=3)",
+        &[q.clone(), k.clone(), v.clone()],
+        || {
+            q.causal_attention(&k, &v, batch, seq, n_heads)
+                .mul_elem(&w)
+                .sum()
+        },
+    );
+}
+
+#[test]
+fn causal_attention_is_causal() {
+    // Gelecekteki bir token'ı değiştirmek, geçmiş pozisyonların çıktısını
+    // ETKİLEMEMELİ. (nedensellik sözleşmesi)
+    let mut s = 42u64;
+    let (batch, seq, d) = (1usize, 4usize, 3usize);
+    let q = leaf(batch * seq, d, &mut s);
+    let k = leaf(batch * seq, d, &mut s);
+    let v = leaf(batch * seq, d, &mut s);
+
+    let before = q.causal_attention(&k, &v, batch, seq, 1).data.borrow().clone();
+
+    // Son pozisyonun V'sini boz
+    {
+        let mut vd = v.data.borrow_mut();
+        for j in 0..d {
+            let cur = vd.get(seq - 1, j);
+            vd.set(seq - 1, j, cur + 5.0);
+        }
+    }
+    let after = q.causal_attention(&k, &v, batch, seq, 1).data.borrow().clone();
+
+    for i in 0..seq - 1 {
+        for j in 0..d {
+            assert!(
+                (before.get(i, j) - after.get(i, j)).abs() < 1e-6,
+                "nedensellik ihlali: pozisyon {i} son token değişince değişti"
+            );
+        }
+    }
+    println!("  ✅ causal_attention nedensellik sözleşmesini koruyor");
+}
+
+// ------------------------------------------------------------
+// Seyrek cross-entropy
+// ------------------------------------------------------------
+
+#[test]
+fn sparse_ce_matches_dense() {
+    let mut s = 43u64;
+    let (rows, classes) = (5usize, 4usize);
+    let logits = leaf(rows, classes, &mut s);
+    let targets: Vec<usize> = vec![0, 3, 1, 2, 0];
+
+    // dense one-hot yol
+    let mut t = vec![0.0f32; rows * classes];
+    for (i, &c) in targets.iter().enumerate() {
+        t[i * classes + c] = 1.0;
+    }
+    let onehot = Tensor::leaf(Matrix::from_vec(rows, classes, t), false);
+
+    // (a) dense
+    logits.zero_grad();
+    let l_dense = logits.softmax_cross_entropy(&onehot);
+    l_dense.backward();
+    let g_dense = logits.grad.borrow().data.clone();
+    let loss_dense = l_dense.item();
+
+    // (b) sparse
+    logits.zero_grad();
+    let l_sparse = logits.softmax_cross_entropy_ids(&targets);
+    l_sparse.backward();
+    let g_sparse = logits.grad.borrow().data.clone();
+    let loss_sparse = l_sparse.item();
+
+    assert!(
+        (loss_dense - loss_sparse).abs() < 1e-5,
+        "loss farkı: dense={loss_dense} sparse={loss_sparse}"
+    );
+    let mut max_diff = 0.0f32;
+    for i in 0..g_dense.len() {
+        max_diff = max_diff.max((g_dense[i] - g_sparse[i]).abs());
+    }
+    assert!(max_diff < 1e-6, "gradyan farkı: {max_diff}");
+    println!("  ✅ sparse CE == dense CE (loss ve gradyan)");
+}
+
+#[test]
+fn sparse_ce_gradient() {
+    let mut s = 44u64;
+    let (rows, classes) = (4usize, 6usize);
+    let logits = leaf(rows, classes, &mut s);
+    let targets: Vec<usize> = vec![5, 0, 3, 1];
+    gradient_check("softmax_cross_entropy_ids", &[logits.clone()], || {
+        logits.softmax_cross_entropy_ids(&targets)
+    });
+}
+
+// ------------------------------------------------------------
 // Uçtan uca: küçük GPT — kompozisyonu doğrular
 // ------------------------------------------------------------
 
 #[test]
 fn tiny_gpt_end_to_end() {
-    use stonefish_ai::transformer::GPT;
+    use stonefish_ai::transformer::{GptConfig, GPT};
 
     let mut s = 31u64;
-    let vocab = 5;
-    let seq_len = 3;
-    let d_model = 4;
-    let model = GPT::new(vocab, seq_len, d_model, 1, 1, &mut s);
+    let config = GptConfig {
+        vocab_size: 5,
+        max_seq_len: 4,
+        d_model: 4,
+        n_layers: 1,
+        n_heads: 2,
+    };
+    let model = GPT::new(config, &mut s);
+
+    // EPS KALİBRASYONU: Embedding init ölçeği 0.02, d_model=4 → satır std'si ~0.01.
+    // LayerNorm tam bu std'ye böler, yani eps=1e-3 satırın ~%10'u demektir ve
+    // merkezi farkın doğrusallık varsayımı çöker (ikinci türev terimi baskın çıkar).
+    // Ölçüldü: dokunulmazsa gömme gradyanlarında 1.4e-1 sahte sapma; ×50 ölçekle
+    // 8e-5'e iner ve diğer tüm parametrelerle aynı seviyeye gelir.
+    for p in [&model.embedding.token_emb, &model.embedding.pos_emb] {
+        let scaled = p.data.borrow().scale(50.0);
+        *p.data.borrow_mut() = scaled;
+    }
+
     let params = model.parameters();
 
-    let ids: Vec<usize> = vec![1, 3, 0];
-    let mut t = vec![0.0f32; seq_len * vocab];
-    for (i, &cls) in [2usize, 4, 1].iter().enumerate() {
-        t[i * vocab + cls] = 1.0;
-    }
-    let target = Tensor::leaf(Matrix::from_vec(seq_len, vocab, t), false);
+    // Batch'li: B=2, S=3
+    let (batch, seq_len) = (2usize, 3usize);
+    let ids: Vec<usize> = vec![1, 3, 0, 2, 4, 1];
+    let targets: Vec<usize> = vec![2, 4, 1, 0, 3, 2];
 
     let total: usize = params.iter().map(|p| p.data.borrow().data.len()).sum();
-    println!("  (küçük GPT: {total} parametre, tamamı numerik kontrol ediliyor)");
+    println!("  (küçük GPT: {total} parametre, B=2 S=3, tamamı numerik kontrol ediliyor)");
 
-    assert!(
-        total < 1000,
-        "uçtan uca gradyan testi küçük model ister"
-    );
+    assert!(total < 2000, "uçtan uca gradyan testi küçük model ister");
 
-    gradient_check("GPT uçtan uca", &params, || {
-        model.forward(&ids).softmax_cross_entropy(&target)
+    gradient_check("GPT uçtan uca (B=2,S=3)", &params, || {
+        model
+            .forward_batch(&ids, batch, seq_len)
+            .softmax_cross_entropy_ids(&targets)
     });
+}
+
+/// Batch'li eğitimin tek-sequence eğitimle *matematiksel olarak aynı* gradyanı
+/// verdiğini doğrular: batch'i parçalayıp gradyanları toplamak, tek pakette
+/// hesaplanan gradyana eşit olmalı (linearite).
+#[test]
+fn batch_grad_equals_sum_of_single_sequence_grads() {
+    use stonefish_ai::transformer::{GptConfig, GPT};
+
+    let mut s = 77u64;
+    let config = GptConfig {
+        vocab_size: 6,
+        max_seq_len: 4,
+        d_model: 4,
+        n_layers: 1,
+        n_heads: 2,
+    };
+    let model = GPT::new(config, &mut s);
+    for p in [&model.embedding.token_emb, &model.embedding.pos_emb] {
+        let scaled = p.data.borrow().scale(50.0);
+        *p.data.borrow_mut() = scaled;
+    }
+    let params = model.parameters();
+
+    let (batch, seq_len) = (3usize, 3usize);
+    let ids: Vec<usize> = vec![1, 3, 0, 2, 4, 1, 5, 2, 3];
+    let targets: Vec<usize> = vec![2, 4, 1, 0, 3, 2, 1, 5, 0];
+
+    // (a) tek pakette batch gradyanı
+    for p in &params {
+        p.zero_grad();
+    }
+    model
+        .forward_batch(&ids, batch, seq_len)
+        .softmax_cross_entropy_ids(&targets)
+        .backward();
+    let g_batch: Vec<Vec<f32>> = params.iter().map(|p| p.grad.borrow().data.clone()).collect();
+
+    // (b) sequence'leri tek tek forward edip gradyanları topla
+    for p in &params {
+        p.zero_grad();
+    }
+    for b in 0..batch {
+        let lo = b * seq_len;
+        let hi = lo + seq_len;
+        let l = model
+            .forward_batch(&ids[lo..hi], 1, seq_len)
+            .softmax_cross_entropy_ids(&targets[lo..hi]);
+        // CE ortalamayı satır sayısına (B*S) böler. Tek sequence loss'u ise S'e
+        // böler; dolayısıyla L_batch = (1/B)·Σ_b L_b ilişkisi geçerlidir.
+        l.scale(1.0 / batch as f32).backward();
+    }
+    let g_sum: Vec<Vec<f32>> = params.iter().map(|p| p.grad.borrow().data.clone()).collect();
+
+    let mut worst = 0.0f32;
+    for (a, b) in g_batch.iter().zip(g_sum.iter()) {
+        for i in 0..a.len() {
+            worst = worst.max((a[i] - b[i]).abs());
+        }
+    }
+    assert!(
+        worst < 1e-5,
+        "batch gradyanı, tek tek gradyanların toplamına eşit değil (max fark {worst})"
+    );
+    println!("  ✅ batch gradyanı == Σ tek-sequence gradyanı (max fark {worst:.2e})");
 }

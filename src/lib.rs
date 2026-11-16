@@ -6,6 +6,7 @@
 // kullanılabilir.
 
 pub mod autograd;
+pub mod checkpoint;
 pub mod data;
 pub mod gpu;
 pub mod loss;

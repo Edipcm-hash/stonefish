@@ -1,6 +1,12 @@
 // src/autograd.rs
-// StonefishAI — autograd + Softmax + GELU + LayerNorm + Embedding + MaskCausal.
-// Düzeltmeler: SoftmaxCE'de 1/batch, LayerNorm'da eps, HashSet topo, cache.
+// StonefishAI — autograd motoru.
+//
+// Tasarım notu (batch'leme):
+// Batch'li işler ayrı bir 3D tensor tipiyle değil, **satır paketleme** ile yapılır:
+// (B, S, D) tensörü (B*S, D) matrisi olarak tutulur. LayerNorm, Linear, GELU,
+// bias-add, softmax zaten satır-bazlıdır; tek istisna attention'dır ve o da
+// `Op::CausalAttention` içinde batch/seq/head bilgisiyle çözülür.
+// Böylece tek bir autograd motoru hem MLP'yi hem GPT'yi taşır.
 
 use crate::tensor::Matrix;
 use std::cell::RefCell;
@@ -9,7 +15,6 @@ use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
-    Leaf,
     Add,
     Sub,
     MulElem,
@@ -20,11 +25,23 @@ pub enum Op {
     Transpose,
     Sum,
     SoftmaxCE,
+    /// Seyrek (index) hedefli cross-entropy: one-hot matrisi tahsis etmez.
+    /// dense `SoftmaxCE` ile aynı gradyanı üretir.
+    SoftmaxCEIds,
     Softmax,
     GELU,
-    LayerNorm(f32),   // eps
-    Embedding,
+    LayerNorm(f32), // eps
+    /// Satır paketli embedding: `seq_len` pozisyon indeksini geri türetmek için.
+    Embedding { seq_len: usize },
     MaskCausal,
+    /// Fused causal multi-head self-attention.
+    /// q, k, v: (batch*seq, d_model). Çıktı: (batch*seq, d_model).
+    /// Her head d_model/n_heads boyutlu dilimi kendi içinde softmax'lar.
+    CausalAttention {
+        batch: usize,
+        seq: usize,
+        n_heads: usize,
+    },
 }
 
 pub struct Node {
@@ -92,6 +109,11 @@ impl Tensor {
         }
     }
 
+    /// 1x1 tensörün değeri.
+    pub fn item(&self) -> f32 {
+        self.data.borrow().scalar()
+    }
+
     // ---- İleri ----
 
     pub fn add(&self, other: &Tensor) -> Tensor {
@@ -110,11 +132,11 @@ impl Tensor {
     }
 
     pub fn matmul(&self, other: &Tensor) -> Tensor {
-        let a = self.data.borrow();
-        let b = other.data.borrow();
-        let data = crate::gpu::matmul_gpu(&a, &b);
-        drop(a);
-        drop(b);
+        let data = {
+            let a = self.data.borrow();
+            let b = other.data.borrow();
+            crate::gpu::matmul_gpu(&a, &b)
+        };
         Tensor::from_op(data, Op::MatMul, vec![self.clone(), other.clone()])
     }
 
@@ -129,15 +151,8 @@ impl Tensor {
     }
 
     pub fn sigmoid(&self) -> Tensor {
-        let d = self.data.borrow();
-        let s = d.map(|x| 1.0 / (1.0 + (-x).exp()));
-        drop(d);
-        Tensor::from_op_cached(
-            s.clone(),
-            Op::Sigmoid,
-            vec![self.clone()],
-            vec![s],  // cache: sigmoid(x)
-        )
+        let s = self.data.borrow().map(|x| 1.0 / (1.0 + (-x).exp()));
+        Tensor::from_op_cached(s.clone(), Op::Sigmoid, vec![self.clone()], vec![s])
     }
 
     pub fn transpose(&self) -> Tensor {
@@ -147,8 +162,7 @@ impl Tensor {
 
     pub fn sum(&self) -> Tensor {
         let s: f32 = self.data.borrow().data.iter().sum();
-        let data = Matrix::from_vec(1, 1, vec![s]);
-        Tensor::from_op(data, Op::Sum, vec![self.clone()])
+        Tensor::from_op(Matrix::from_vec(1, 1, vec![s]), Op::Sum, vec![self.clone()])
     }
 
     pub fn softmax_cross_entropy(&self, onehot: &Tensor) -> Tensor {
@@ -159,13 +173,15 @@ impl Tensor {
         let batch = zd.rows;
         let classes = zd.cols;
         let mut total_loss = 0.0f32;
-        let mut probs = Matrix::zeros(batch, classes);  // cache: softmax
+        let mut probs = Matrix::zeros(batch, classes);
 
         for i in 0..batch {
             let mut max = f32::NEG_INFINITY;
             for j in 0..classes {
                 let v = zd.get(i, j);
-                if v > max { max = v; }
+                if v > max {
+                    max = v;
+                }
             }
             let mut sum_exp = 0.0f32;
             for j in 0..classes {
@@ -173,8 +189,7 @@ impl Tensor {
             }
             let log_sum_exp = max + sum_exp.ln();
             for j in 0..classes {
-                let p = (zd.get(i, j) - max).exp() / sum_exp;
-                probs.set(i, j, p);
+                probs.set(i, j, (zd.get(i, j) - max).exp() / sum_exp);
                 if td.get(i, j) > 0.5 {
                     total_loss += -zd.get(i, j) + log_sum_exp;
                 }
@@ -182,14 +197,59 @@ impl Tensor {
         }
 
         let mean_loss = total_loss / batch as f32;
-        let data = Matrix::from_vec(1, 1, vec![mean_loss]);
         drop(zd);
         drop(td);
         Tensor::from_op_cached(
-            data,
+            Matrix::from_vec(1, 1, vec![mean_loss]),
             Op::SoftmaxCE,
             vec![self.clone(), onehot.clone()],
-            vec![probs],  // cache: softmax probs
+            vec![probs],
+        )
+    }
+
+    /// Seyrek hedefli cross-entropy: `targets[i]`, i. satırın doğru sınıfı.
+    /// One-hot matrisi tahsis etmez — GPT eğitiminde (B*S × vocab) matrisinden
+    /// kurtarır. Dense `softmax_cross_entropy` ile aynı gradyanı verir.
+    pub fn softmax_cross_entropy_ids(&self, targets: &[usize]) -> Tensor {
+        let zd = self.data.borrow();
+        let (rows, classes) = (zd.rows, zd.cols);
+        assert_eq!(targets.len(), rows, "CE: hedef sayısı satır sayısına eşit olmalı");
+
+        let mut total_loss = 0.0f32;
+        let mut probs = Matrix::zeros(rows, classes);
+        let mut tgt = Matrix::zeros(rows, 1);
+
+        for i in 0..rows {
+            let t = targets[i];
+            assert!(t < classes, "CE: hedef {t} >= sınıf sayısı {classes}");
+            tgt.set(i, 0, t as f32);
+
+            let mut max = f32::NEG_INFINITY;
+            for j in 0..classes {
+                let v = zd.get(i, j);
+                if v > max {
+                    max = v;
+                }
+            }
+            let mut sum_exp = 0.0f32;
+            for j in 0..classes {
+                sum_exp += (zd.get(i, j) - max).exp();
+            }
+            let log_sum_exp = max + sum_exp.ln();
+            let inv_sum = 1.0 / sum_exp;
+            for j in 0..classes {
+                probs.set(i, j, (zd.get(i, j) - max).exp() * inv_sum);
+            }
+            total_loss += -zd.get(i, t) + log_sum_exp;
+        }
+
+        let mean_loss = total_loss / rows as f32;
+        drop(zd);
+        Tensor::from_op_cached(
+            Matrix::from_vec(1, 1, vec![mean_loss]),
+            Op::SoftmaxCEIds,
+            vec![self.clone()],
+            vec![probs, tgt],
         )
     }
 
@@ -201,7 +261,9 @@ impl Tensor {
             let mut max = f32::NEG_INFINITY;
             for j in 0..cols {
                 let v = zd.get(i, j);
-                if v > max { max = v; }
+                if v > max {
+                    max = v;
+                }
             }
             let mut sum = 0.0f32;
             for j in 0..cols {
@@ -216,7 +278,7 @@ impl Tensor {
             data.clone(),
             Op::Softmax,
             vec![self.clone()],
-            vec![data],  // cache: softmax
+            vec![data],
         )
     }
 
@@ -242,7 +304,9 @@ impl Tensor {
 
         for i in 0..rows {
             let mut mean = 0.0f32;
-            for j in 0..cols { mean += xd.get(i, j); }
+            for j in 0..cols {
+                mean += xd.get(i, j);
+            }
             mean /= cols as f32;
 
             let mut var = 0.0f32;
@@ -268,7 +332,7 @@ impl Tensor {
             data,
             Op::LayerNorm(eps),
             vec![self.clone(), gamma.clone(), beta.clone()],
-            vec![x_hat_cache, inv_cache],  // cache: x_hat, inv_std
+            vec![x_hat_cache, inv_cache],
         )
     }
 
@@ -288,8 +352,111 @@ impl Tensor {
         Tensor::from_op(out, Op::MaskCausal, vec![self.clone()])
     }
 
+    /// Fused causal multi-head self-attention.
+    ///
+    /// * `self` = Q, `k` = K, `v` = V; üçü de `(batch*seq, d_model)`.
+    /// * `d_model`, `n_heads`'e tam bölünmeli; her head kendi `d_head` diliminde
+    ///   softmax alır, çıkışta dilimler tekrar birleşir.
+    /// * `1/sqrt(d_head)` ölçeği ve causal maske op'un içindedir.
+    pub fn causal_attention(
+        &self,
+        k: &Tensor,
+        v: &Tensor,
+        batch: usize,
+        seq: usize,
+        n_heads: usize,
+    ) -> Tensor {
+        let (out_data, weights) = {
+            let qd = self.data.borrow();
+            let kd = k.data.borrow();
+            let vd = v.data.borrow();
+
+            let (rows, d_model) = (qd.rows, qd.cols);
+            assert_eq!(rows, batch * seq, "attention: satır = batch*seq olmalı");
+            assert_eq!(kd.rows, rows, "attention: K satır sayısı");
+            assert_eq!(vd.rows, rows, "attention: V satır sayısı");
+            assert_eq!(kd.cols, d_model, "attention: K boyutu");
+            assert_eq!(vd.cols, d_model, "attention: V boyutu");
+            assert_eq!(d_model % n_heads, 0, "attention: d_model % n_heads");
+            let d_head = d_model / n_heads;
+            let scale = 1.0 / (d_head as f32).sqrt();
+
+            // cache: (batch*n_heads*seq, seq) attention ağırlıkları
+            let mut w_cache = Matrix::zeros(batch * n_heads * seq, seq);
+            let mut out = Matrix::zeros(rows, d_model);
+            let mut scores = vec![0.0f32; seq];
+
+            // İç döngüler dilim tabanlı: sınır kontrolü yok, vektörleştirmeye açık.
+            for b in 0..batch {
+                for h in 0..n_heads {
+                    let off = h * d_head;
+                    let w_row0 = (b * n_heads + h) * seq;
+                    for i in 0..seq {
+                        let q_row = b * seq + i;
+                        let q_s = &qd.data[q_row * d_model + off..q_row * d_model + off + d_head];
+
+                        // skorlar (yalnızca j <= i)
+                        let mut max = f32::NEG_INFINITY;
+                        for j in 0..=i {
+                            let k_row = b * seq + j;
+                            let k_s = &kd.data[k_row * d_model + off..k_row * d_model + off + d_head];
+                            let mut acc = 0.0f32;
+                            for d in 0..d_head {
+                                acc += q_s[d] * k_s[d];
+                            }
+                            scores[j] = acc * scale;
+                            if scores[j] > max {
+                                max = scores[j];
+                            }
+                        }
+
+                        // nedensel softmax (j <= i)
+                        let mut sum = 0.0f32;
+                        for j in 0..=i {
+                            scores[j] = (scores[j] - max).exp();
+                            sum += scores[j];
+                        }
+                        let inv_sum = 1.0 / sum;
+                        for j in 0..=i {
+                            scores[j] *= inv_sum;
+                            w_cache.set(w_row0 + i, j, scores[j]);
+                        }
+
+                        // ağırlıklı V toplamı
+                        let out_off = q_row * d_model + off;
+                        let o_s = &mut out.data[out_off..out_off + d_head];
+                        for d in 0..d_head {
+                            o_s[d] = 0.0;
+                        }
+                        for j in 0..=i {
+                            let wj = scores[j];
+                            let v_row = b * seq + j;
+                            let v_s = &vd.data[v_row * d_model + off..v_row * d_model + off + d_head];
+                            for d in 0..d_head {
+                                o_s[d] += wj * v_s[d];
+                            }
+                        }
+                    }
+                }
+            }
+            (out, w_cache)
+        };
+
+        Tensor::from_op_cached(
+            out_data,
+            Op::CausalAttention { batch, seq, n_heads },
+            vec![self.clone(), k.clone(), v.clone()],
+            vec![weights],
+        )
+    }
+
     // ---- Backward ----
 
+    /// Kök tensörün gradyanını 1.0 ile tohumlar ve ters topolojik sırada
+    /// tüm ara gradyanları biriktirir.
+    ///
+    /// Not: gradyanlar sıfırlanmaz — ardışık `backward()` çağrıları birikir.
+    /// Eğitim döngüsünde `optimizer::zero_grad()` bunu yönetir.
     pub fn backward(&self) {
         let mut topo: Vec<Tensor> = Vec::new();
         let mut visited: HashSet<*const Node> = HashSet::new();
@@ -313,7 +480,9 @@ impl Tensor {
     fn build_topo(&self, topo: &mut Vec<Tensor>, visited: &mut HashSet<*const Node>) {
         if let Some(node) = &self.node {
             let ptr = Rc::as_ptr(node);
-            if !visited.insert(ptr) { return; }
+            if !visited.insert(ptr) {
+                return;
+            }
             for inp in &node.inputs {
                 inp.build_topo(topo, visited);
             }
@@ -324,8 +493,6 @@ impl Tensor {
 
 fn apply_backward(node: &Node, upstream: &Matrix) {
     match node.op {
-        Op::Leaf => {}
-
         Op::Add => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
@@ -347,8 +514,14 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         Op::MulElem => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
-            let ga = upstream.mul_elem(&b.data.borrow());
-            let gb = upstream.mul_elem(&a.data.borrow());
+            let ga = {
+                let raw = upstream.mul_elem(&b.data.borrow());
+                reduce_to(&raw, a.data.borrow().rows, a.data.borrow().cols)
+            };
+            let gb = {
+                let raw = upstream.mul_elem(&a.data.borrow());
+                reduce_to(&raw, b.data.borrow().rows, b.data.borrow().cols)
+            };
             accumulate(a, &ga);
             accumulate(b, &gb);
         }
@@ -356,44 +529,39 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         Op::MatMul => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
-            let ga = upstream.matmul(&b.data.borrow().transpose());
-            let gb = a.data.borrow().transpose().matmul(upstream);
+            let b_t = b.data.borrow().transpose();
+            let a_t = a.data.borrow().transpose();
+            let ga = crate::gpu::matmul_gpu(upstream, &b_t);
+            let gb = crate::gpu::matmul_gpu(&a_t, upstream);
             accumulate(a, &ga);
             accumulate(b, &gb);
         }
 
         Op::Scale(s) => {
-            let ga = upstream.scale(s);
-            accumulate(&node.inputs[0], &ga);
+            accumulate(&node.inputs[0], &upstream.scale(s));
         }
 
         Op::ReLU => {
             let x = &node.inputs[0];
             let mask = x.data.borrow().map(|v| if v > 0.0 { 1.0 } else { 0.0 });
-            let g = upstream.mul_elem(&mask);
-            accumulate(x, &g);
+            accumulate(x, &upstream.mul_elem(&mask));
         }
 
         Op::Sigmoid => {
-            // cache[0] = sigmoid(x)
             let x = &node.inputs[0];
             let s = &node.cache[0];
-            let one_minus = s.map(|v| 1.0 - v);
-            let deriv = s.mul_elem(&one_minus);
-            let g = upstream.mul_elem(&deriv);
-            accumulate(x, &g);
+            let deriv = s.mul_elem(&s.map(|v| 1.0 - v));
+            accumulate(x, &upstream.mul_elem(&deriv));
         }
 
         Op::Transpose => {
-            let g = upstream.transpose();
-            accumulate(&node.inputs[0], &g);
+            accumulate(&node.inputs[0], &upstream.transpose());
         }
 
         Op::Sum => {
-            let scalar = upstream.get(0, 0);
             let x = &node.inputs[0];
             let d = x.data.borrow();
-            let g = Matrix::filled(d.rows, d.cols, scalar);
+            let g = Matrix::filled(d.rows, d.cols, upstream.scalar());
             drop(d);
             accumulate(x, &g);
         }
@@ -403,44 +571,55 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             let t = &node.inputs[1];
             let td = t.data.borrow();
             let batch = td.rows;
-            // cache[0] = softmax probs
             let probs = &node.cache[0];
 
             // dL/dlogits = (softmax - onehot) / batch
-            let mut diff = Matrix::zeros(batch, td.cols);
+            let mut g_logits = Matrix::zeros(batch, td.cols);
+            let scalar = upstream.scalar() / batch as f32;
             for i in 0..batch {
                 for j in 0..td.cols {
-                    diff.set(i, j, probs.get(i, j) - td.get(i, j));
+                    g_logits.set(i, j, (probs.get(i, j) - td.get(i, j)) * scalar);
                 }
             }
             drop(td);
+            accumulate(z, &g_logits);
+        }
 
-            // Kritik düzeltme: 1/batch
-            let scalar = upstream.get(0, 0) / batch as f32;
-            let mut g_logits = Matrix::zeros(batch, diff.cols);
-            for i in 0..batch {
-                for j in 0..diff.cols {
-                    g_logits.set(i, j, diff.get(i, j) * scalar);
+        Op::SoftmaxCEIds => {
+            let z = &node.inputs[0];
+            let probs = &node.cache[0];
+            let tgt = &node.cache[1];
+            let zd = z.data.borrow();
+            let (rows, classes) = (zd.rows, zd.cols);
+            let scalar = upstream.scalar() / rows as f32;
+
+            let mut g_logits = Matrix::zeros(rows, classes);
+            for i in 0..rows {
+                let t = tgt.get(i, 0) as usize;
+                for j in 0..classes {
+                    let mut g = probs.get(i, j);
+                    if j == t {
+                        g -= 1.0;
+                    }
+                    g_logits.set(i, j, g * scalar);
                 }
             }
+            drop(zd);
             accumulate(z, &g_logits);
         }
 
         Op::Softmax => {
-            // cache[0] = softmax çıktısı
             let x = &node.inputs[0];
             let sm = &node.cache[0];
             let (rows, cols) = (sm.rows, sm.cols);
-            let up = upstream;
-
             let mut g = Matrix::zeros(rows, cols);
             for i in 0..rows {
                 let mut dot = 0.0f32;
                 for j in 0..cols {
-                    dot += up.get(i, j) * sm.get(i, j);
+                    dot += upstream.get(i, j) * sm.get(i, j);
                 }
                 for j in 0..cols {
-                    g.set(i, j, sm.get(i, j) * (up.get(i, j) - dot));
+                    g.set(i, j, sm.get(i, j) * (upstream.get(i, j) - dot));
                 }
             }
             accumulate(x, &g);
@@ -466,40 +645,31 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             accumulate(x, &g);
         }
 
-        Op::LayerNorm(eps) => {
+        Op::LayerNorm(_eps) => {
             let x = &node.inputs[0];
             let gamma = &node.inputs[1];
             let beta = &node.inputs[2];
-            // cache[0] = x_hat, cache[1] = inv_std
             let x_hat = &node.cache[0];
             let inv = &node.cache[1];
 
             let xd = x.data.borrow();
             let gd = gamma.data.borrow();
-            let bd = beta.data.borrow();
-
             let (rows, cols) = (xd.rows, xd.cols);
+
             let mut g_x = Matrix::zeros(rows, cols);
             let mut g_gamma = Matrix::zeros(1, cols);
             let mut g_beta = Matrix::zeros(1, cols);
-
-            let _ = eps; // cache'te var, gerekmez ama enum'da
 
             for i in 0..rows {
                 let inv_i = inv.get(i, 0);
                 let n = cols as f32;
 
-                // g_beta += upstream
                 for j in 0..cols {
-                    g_beta.set(0, j, g_beta.get(0, j) + upstream.get(i, j));
+                    let up = upstream.get(i, j);
+                    g_beta.set(0, j, g_beta.get(0, j) + up);
+                    g_gamma.set(0, j, g_gamma.get(0, j) + up * x_hat.get(i, j));
                 }
 
-                // g_gamma += upstream * x_hat
-                for j in 0..cols {
-                    g_gamma.set(0, j, g_gamma.get(0, j) + upstream.get(i, j) * x_hat.get(i, j));
-                }
-
-                // dx_hat = upstream * gamma
                 let mut dx_hat = vec![0.0f32; cols];
                 for j in 0..cols {
                     dx_hat[j] = upstream.get(i, j) * gd.get(0, j);
@@ -513,28 +683,29 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                 }
 
                 for j in 0..cols {
-                    let gx = (1.0 / n) * inv_i
-                        * (n * dx_hat[j] - sum_dxhat - x_hat.get(i, j) * sum_dxhat_xhat);
-                    g_x.set(i, j, gx);
+                    g_x.set(
+                        i,
+                        j,
+                        (1.0 / n) * inv_i
+                            * (n * dx_hat[j] - sum_dxhat - x_hat.get(i, j) * sum_dxhat_xhat),
+                    );
                 }
             }
 
             drop(xd);
             drop(gd);
-            drop(bd);
-
             accumulate(x, &g_x);
             accumulate(gamma, &g_gamma);
             accumulate(beta, &g_beta);
         }
 
-        Op::Embedding => {
+        Op::Embedding { seq_len } => {
             let tok_emb = &node.inputs[0];
             let pos_emb = &node.inputs[1];
             let ids = &node.inputs[2];
 
             let idd = ids.data.borrow();
-            let seq_len = idd.rows;
+            let rows = idd.rows;
             let d_model = upstream.cols;
 
             let vocab = tok_emb.data.borrow().rows;
@@ -542,10 +713,11 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             let mut g_tok = Matrix::zeros(vocab, d_model);
             let mut g_pos = Matrix::zeros(pos_rows, d_model);
 
-            for s in 0..seq_len {
-                let id = idd.get(s, 0) as usize;
+            for r in 0..rows {
+                let id = idd.get(r, 0) as usize;
+                let s = r % seq_len;
                 for d in 0..d_model {
-                    let g = upstream.get(s, d);
+                    let g = upstream.get(r, d);
                     g_tok.set(id, d, g_tok.get(id, d) + g);
                     g_pos.set(s, d, g_pos.get(s, d) + g);
                 }
@@ -571,11 +743,98 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             drop(d);
             accumulate(x, &g);
         }
+
+        Op::CausalAttention {
+            batch,
+            seq,
+            n_heads,
+        } => {
+            let q = &node.inputs[0];
+            let k = &node.inputs[1];
+            let v = &node.inputs[2];
+            let weights = &node.cache[0]; // (batch*n_heads*seq, seq)
+
+            let qd = q.data.borrow();
+            let kd = k.data.borrow();
+            let vd = v.data.borrow();
+            let d_model = qd.cols;
+            let d_head = d_model / n_heads;
+            let scale = 1.0 / (d_head as f32).sqrt();
+            let up = &upstream.data;
+
+            // Forward: out_i = Σ_{j<=i} w_ij v_j,  w = softmax(scale·q_i·k_j)
+            // Backward:
+            //   dV_j += w_ij · dOut_i
+            //   dS_ij  = w_ij · ( dW_ij − Σ_j' w_ij' dW_ij' ),  dW_ij = <dOut_i, v_j>
+            //   dQ_i  += scale · Σ_j dS_ij · k_j
+            //   dK_j  += scale · dS_ij · q_i
+            let total = batch * seq * d_model;
+            let mut g_q = vec![0.0f32; total];
+            let mut g_k = vec![0.0f32; total];
+            let mut g_v = vec![0.0f32; total];
+
+            let mut dw = vec![0.0f32; seq];
+            let mut ds = vec![0.0f32; seq];
+
+            for b in 0..batch {
+                for h in 0..n_heads {
+                    let off = h * d_head;
+                    let w_row0 = (b * n_heads + h) * seq;
+                    for i in 0..seq {
+                        let q_row = b * seq + i;
+                        let q_off = q_row * d_model + off;
+
+                        // dW ve softmax'ın toplam terimi
+                        let mut dsum = 0.0f32;
+                        for j in 0..=i {
+                            let v_off = (b * seq + j) * d_model + off;
+                            let mut acc = 0.0f32;
+                            for d in 0..d_head {
+                                acc += up[q_off + d] * vd.data[v_off + d];
+                            }
+                            dw[j] = acc;
+                            dsum += weights.data[(w_row0 + i) * seq + j] * acc;
+                        }
+
+                        // softmax geri yayılımı + ölçek
+                        for j in 0..=i {
+                            let wj = weights.data[(w_row0 + i) * seq + j];
+                            ds[j] = wj * (dw[j] - dsum) * scale;
+                        }
+
+                        // dV
+                        for j in 0..=i {
+                            let wj = weights.data[(w_row0 + i) * seq + j];
+                            let v_off = (b * seq + j) * d_model + off;
+                            for d in 0..d_head {
+                                g_v[v_off + d] += wj * up[q_off + d];
+                            }
+                        }
+
+                        // dQ / dK
+                        for j in 0..=i {
+                            let dsj = ds[j];
+                            let k_off = (b * seq + j) * d_model + off;
+                            for d in 0..d_head {
+                                g_q[q_off + d] += dsj * kd.data[k_off + d];
+                                g_k[k_off + d] += dsj * qd.data[q_off + d];
+                            }
+                        }
+                    }
+                }
+            }
+
+            accumulate(q, &Matrix::from_vec(batch * seq, d_model, g_q));
+            accumulate(k, &Matrix::from_vec(batch * seq, d_model, g_k));
+            accumulate(v, &Matrix::from_vec(batch * seq, d_model, g_v));
+        }
     }
 }
 
 fn accumulate(t: &Tensor, g: &Matrix) {
-    if !t.requires_grad { return; }
+    if !t.requires_grad {
+        return;
+    }
     let mut tg = t.grad.borrow_mut();
     assert_eq!((tg.rows, tg.cols), (g.rows, g.cols), "grad boyut");
     for i in 0..tg.data.len() {
