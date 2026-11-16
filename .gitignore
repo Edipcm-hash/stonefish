@@ -1,0 +1,19 @@
+# Rust build çıktıları
+/target/
+
+# Model checkpoint'leri (yeniden üretilebilir, repoda tutulmaz)
+*.bin
+
+# Eğitim verisi (büyük, dışarıdan indirilir — README'ye bak)
+/data/
+
+# Editör / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Geçici çıktılar
+*.log
+bench_results/
