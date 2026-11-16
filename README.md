@@ -76,17 +76,21 @@ birleştirme yapılamaz.
 ### Gradyanlar sayısal olarak doğrulanmış
 
 Elle türetilmiş her backward, merkezi farkla (central difference) sınanır:
-**27 test**, her op için analitik ↔ numerik karşılaştırması.
+**36 test** — 27 gradyan/op testi, 5 checkpoint testi, 4 tokenizer birim testi.
 
 ```bash
-cargo test --release
+cargo test --release                      # GPU yolu
+cargo test --release --no-default-features # CPU yolu
 ```
 
-Kapsam: `add`/`sub` (broadcast dahil), `mul_elem`, `matmul`, `scale`, `relu`,
-`sigmoid`, `transpose`, `sum`, `softmax_ce`, `softmax_ce_ids`, `softmax`,
+Gradyan kapsamı: `add`/`sub` (broadcast dahil), `mul_elem`, `matmul`, `scale`,
+`relu`, `sigmoid`, `transpose`, `sum`, `softmax_ce`, `softmax_ce_ids`, `softmax`,
 `mask_causal`, `gelu`, `layer_norm`, `embedding`, `causal_attention`
 (tek/çok head, batch'li), uçtan uca küçük GPT, GPU↔CPU matmul eşdeğerliği,
 nedensellik sözleşmesi, ve batch gradyanı = Σ tek-sequence gradyanı.
+
+Checkpoint kapsamı: roundtrip (config+vocab+ağırlıklar birebir), yanlış magic,
+yarım dosya, vocab uyuşmazlığı, vocab drift tespiti.
 
 > Not: `gradcheck`'te `eps`, parametrenin ölçeğine göre seçilmeli. Embedding init
 > ölçeği 0.02 iken `eps=1e-3` LayerNorm'un std'sine göre satırın %10'u demektir ve
@@ -147,9 +151,34 @@ böylece her çağrıda yeni device buffer ayrılmaz.
 | Model | Metrik | Değer |
 |---|---|---|
 | MNIST MLP (784→128→10, SGD lr=0.01, 20 epoch) | test doğruluğu | **%98.12** |
-| GPT (842.632 param) | eğitim/validasyon CE | aşağıdaki tablo |
+| GPT (842.632 param, 3 epoch) | final train CE | **1.7409** |
+| GPT | final val CE | **1.7247** |
 
-<!-- GPT-RESULTS -->
+### GPT eğitim eğrisi
+
+`d_model=128`, 4 katman, 4 head (`d_head=32`), `seq_len=128`, batch 8,
+char-level vocab 136, 22.359 train / 256 val sequence.
+Toplam 8.385 adım (~27 dk, ~5.400 tok/s, RTX 5070).
+
+| Epoch | train CE | val CE | süre |
+|---|---|---|---|
+| 0 | 2.3283 | 1.9907 | 518 s |
+| 1 | 1.8669 | 1.8158 | 530 s |
+| 2 | 1.7409 | 1.7247 | 566 s |
+
+Rastgele tahmin `ln(136) = 4.91`; eğri doyuma yaklaşıyor ama model hâlâ
+yetersiz eğitilmiş (8.385 adım, 8.6M token — bu ölçekteki char-LM'ler için az).
+Üretim çıktısı Türkçe'ye benzeyen ama anlamsız metin — beklenen davranış.
+
+```console
+$ stonefish_ai gpt-gen "Akşam erken iner" 300 0.8
+Akşam erken iner cü:
+olur diye hepsim avuç ama, aklım, ama bilirtmedi bilmedim artık.
+Bizden mila seviyor güneş kapılara bilmekten.
+...
+```
+
+300 token üretim ≈ 2.8 s (KV-cache yok, her token tüm bağlamı yeniden hesaplar).
 
 ---
 
