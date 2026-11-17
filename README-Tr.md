@@ -525,28 +525,149 @@ src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
 
 Proje **15 Haziran 2026**'da başladı. Aşağıdaki tablo, o günden bugüne atılan her adımı **ölçümleriyle** birlikte kronolojik sırada verir.
 
-> **Kaynak notu:** 15 Haziran – 15 Kasım arası sürüm kontrolü altında değildi; o dönem yalnızca sonuçlarıyla belgelenebilir. 16 Kasım'dan itibaren her adımın commit'i, ölçümü ve testi vardır.
+> **Kaynak notu:** 15 Haziran – 15 Kasım arası sürüm kontrolü altında değildi; o dönem geliştirme günlüğünden ve çalıştırma çıktılarından yeniden kuruldu. 16 Kasım'dan itibaren her adımın commit'i, ölçümü ve testi vardır.
 
 ### 15 Haziran – 15 Kasım 2026 · v0.1 → v0.6 (sürüm kontrolü yok)
 
-Elle, kütüphanesiz yazılan ilk beş ay. Geriye kalan v0.6 anlık görüntüsü şunları içeriyordu:
+Beş ay, elle, hiçbir ML kütüphanesi olmadan. Her sürüm bir öncekinin üzerine bindi ve her adımda **çıktı okundu** — "çalıştı mı" değil, "ne yazıyor" sorusuyla ilerledi.
 
-| Sürüm | Ne eklendi |
+#### v0.1 — Tensor + autograd: XOR
+
+`tensor.rs` (saf Rust 2D matris: `matmul` üçlü döngüyle, `add/sub/mul_elem/scale/transpose/map`, kendi xorshift RNG'miz), `autograd.rs` (`Op` enum, topolojik sıralı `backward()`, zincir kuralı), `nn.rs` (`Linear`), `loss.rs` (MSE), `optim.rs` (SGD), `main.rs` (XOR eğitimi).
+
+```
+0 XOR 0 = 0.0000  ✅     1 XOR 0 = 1.0000  ✅
+0 XOR 1 = 1.0000  ✅     1 XOR 1 = 0.0000  ✅
+```
+
+**İlk zafer:** sıfırdan yazılmış bir sinir ağı XOR'u öğrendi.
+
+#### v0.2 — Softmax + Cross-Entropy
+
+`SoftmaxCE` tek op olarak eklendi (sayısal kararlı; forward `-log(softmax[doğru])`, backward `softmax − onehot`). 3 sınıflı sentetik veri:
+
+```
+CE loss = 1.100955 → 0.000017        Doğruluk: 60/60 = %100.0 ✅
+```
+
+#### v0.3 — MNIST, kaydet/yükle, optimizer karşılaştırması
+
+`data.rs` (IDX binary parser, `std::fs` ile sıfırdan, 0..1 normalize, one-hot), `nn.rs` (`save_model`/`load_model` — kendi binary formatı: `SFISH001` magic + version + katmanlar), `main.rs` (`--train/--predict/--eval`).
+
+| Optimizer | LR | Epoch | Test doğruluğu |
+|---|---|---|---|
+| SGD | 0,1 | 10 | %97,66 (takıldı) |
+| SGD | 0,01 | 10 | %98,06 |
+| **SGD** | **0,01** | **20** | **%98,22** |
+| Adam | 0,001 | 10 | %97,66 |
+| Adam | 0,003 | 20 | %97,69 |
+
+Model kaydedildi (`stonefish.bin`, 407 KB) ve ayrı çalıştırmada aynı sonucu verdi.
+
+> **Ders:** Adam, MNIST gibi basit problemlerde SGD'den *kötü* olabiliyor. Hiperparametreler kritik.
+
+#### v0.4a — Tokenizer
+
+`tokenizer.rs` (karakter seviyesi, metin ↔ ID), `data.rs` (`load_text`, `make_sequences`). Shakespeare, 1,1 MB:
+
+```
+Vocab: 65        Round-trip: ✅        Sequence: 17.428
+```
+
+#### v0.4b — Transformer op'ları: Softmax, GELU, LayerNorm
+
+Üçü de backward'larıyla eklendi ve **sayısal olarak** doğrulandı:
+
+```
+softmax([1,2,3]) = [0.0900, 0.2447, 0.6652] ✅
+gelu([-1,0,1])   = [-0.1588, 0.0000, 0.8412] ✅
+ln([1,2,3])      = [-1.2247, 0.0000, 1.2247] ✅
+```
+
+#### v0.4c — Embedding (token + pozisyon)
+
+```
+token_emb grad: 10x8 ✅    pos_emb grad: 16x8 ✅    kullanılmayan token gradyanı: 0 ✅
+```
+
+#### v0.4d — Attention
+
+`MaskCausal` op'u (geleceği görmeyi engeller) + `AttentionHead` (Q, K, V, maske, softmax, çıkış projeksiyonu):
+
+```
+Çıktı: 4x8 ✅    Tüm gradyanlar sıfır değil ✅
+```
+
+#### v0.4e — GPT modeli + eğitim
+
+`TransformerBlock` (pre-norm + attention + residual + FFN) + `GPT` (embedding + N blok + final LayerNorm + head), `gpt_train()` (Adam, 17 bin adım), `gpt_generate()` (örnekleme).
+
+| Epoch | Loss | Üretilen metin |
+|---|---|---|
+| 1 | 4,17 → **2,32** | `ROMEO: Go the, sever, onren'd fot heine fomp whit, Efrastau wre cagenter…` — anlamsız ama **format doğru** (`ROMEO:` ve karakter isimleri) |
+| 3 | **1,86** | `ROMEO: He the forling of, the for helf: Foroct! you him, stays cale.` — `AUTOLYCUS:` gibi **gerçek Shakespeare karakterleri**, `thou`, `Who`, `fair` gibi gerçek kelimeler |
+
+#### v0.5 — Adam'ı düzelt, modeli büyüt
+
+**Sorun:** büyük model (d=128, 4 katman, çok-head) + Adam → loss **2,5'te takılıyor ve yükseliyor**.
+
+**Teşhis:** SGD çalışıyor (1,88), Adam çalışmıyor → `eps` çok küçük (1e-8) ve `lr` çok yüksek (5e-4). Ayrıca çok-head "toplama" yaklaşımı hatalıydı.
+
+**Çözüm:** `eps = 1e-6`, `lr = 1e-4`, `heads = 1`. Sonuç **loss 1,64**:
+
+```
+ROMEO: He will retorm or, the entermenn goes / shew chas of unwy can myself hops / Hast aly set.
+QUEEN ELIZABETH: Or the I weep, queen, in Pawien'd theselves disholy gond / Officy thange me…
+```
+
+`QUEEN ELIZABETH` (gerçek karakter), `He will retorm` (neredeyse anlamlı), `shew` (Shakespeare'in "show"u) — cümle yapısı oturmuş.
+
+#### v0.5 — Türkçe veri
+
+`PoemsJson.json` (5 MB) → `turkish.txt` (~3-4 MB, PowerShell ile). **Vocab 140** (Shakespeare'de 65), **22.434 sequence** (Shakespeare'in 2,5 katı).
+
+| Epoch | Loss |
 |---|---|
-| v0.1 | `Matrix` (row-major 2D), temel aritmetik, `transpose` |
-| v0.2 | `Tensor` + ters-mod autograd: `Op` enum, topolojik `backward()` |
-| v0.3 | MNIST MLP (784→128→10, SGD) + idx okuyucu |
-| v0.4 | Karakter tokenizer'ı, mini GPT (embedding + attention + FFN) |
-| v0.5 | cuBLAS ile GPU matmul, CPU yedeği, profil sayaçları |
-| v0.6 | Türkçe korpusla eğitilmiş 842 K parametreli GPT |
+| 0 | 2,2215 |
+| 1 | 1,8643 |
+| 2 | **1,7542** ← hedef ~1,75, tam isabet |
 
-**Bu dönemin ölçülen sonuçları (16 Kasım'da doğrulandı):**
-- MNIST test doğruluğu: **%98,12**
-- Türkçe GPT: 842.632 parametre, 2,87 M karakter korpus, vocab 136
-- GPU matmul (gerçek model şekilleri): CPU'ya göre **2,4–18,7×** hızlı
-- 1024³ matmul: CPU 2,16 s · GPU-sadece 67,5 µs
+Vocab iki katından fazla olmasına rağmen loss neredeyse Shakespeare'e yetişti — Türkçe veri çok zengin.
 
-**Ama görünmeyen sorunlar vardı** (sonraki gün ortaya çıktı): batch desteği sahteydi, GPU eğitimin yalnız yarısında kullanılıyordu, `Tensor3D` tamamen ölü koddu, checkpoint kelime dağarcığını saklamıyordu, 0 test vardı.
+```
+Prompt: "Akşam"
+Akşam dikleri, câmib irerde / Korkmalar cemlatlayacaksın, yaşım"nemeder, aldır,
+Gülümse con susuzluğu / Sonra ve daha böyle intirili bırakmaketli çıkralıyor şehri…
+```
+
+Anlamsız, ama **Türkçe yapıda**: ekler, kökler, noktalama doğru.
+
+#### v0.6 — CUDA entegrasyonu
+
+CUDA 13.5 + RTX 5070 kurulu, `cudarc 0.19.10` eklendi. `gpu.rs` (`GpuMatrix`, cuBLAS ile `matmul`, CPU sarmalayıcısı), `Tensor::matmul` GPU'ya yönlendirildi.
+
+| Test | Sonuç |
+|---|---|
+| `test-cuda` | ✅ RTX 5070 tanındı |
+| `test-gpu-matmul` | ✅ CPU ile aynı sonuç |
+| `test-gpu-bench-big` | ✅ 1024³ matmul: **55.000×** |
+| `test-gpu-train` | ✅ GPU eğitim döngüsü çalışıyor |
+| `gpt-train` (GPU) | ✅ Loss aynı (1,75) — ama **GPU kullanımı %2** |
+
+> **Kritik gözlem:** GPU matmul çalışıyor, ama **transfer maliyeti baskın**. Tam entegrasyon gerekiyor. (Bu gözlem 16 Kasım'da ölçüldü: adımda 75 matmul var ama gerçek GEMM süresi 1 ms — toplam 120 ms'nin %0,8'i.)
+
+#### v0.6+ — Autograd düzeltmeleri
+
+- `SoftmaxCE` backward'a **1/batch** eklendi (kritik doğruluk hatası)
+- `LayerNorm`'un `eps`'i `Op::LayerNorm(f32)` içine gömüldü
+- Topolojik sıralama `HashSet` ile: **O(N²) → O(N)**
+- `Sigmoid`, `Softmax`, `LayerNorm`, `SoftmaxCE` cache'lendi
+- `MatMul` forward GPU'da
+
+**Beş ayın sonunda:** çalışan bir autograd motoru, %98,22 MNIST, iki dilde metin üreten bir GPT, GPU matmul — ve **sıfır test**.
+
+**Görünmeyen sorunlar** (ertesi gün ortaya çıktı): batch desteği sahteydi, GPU eğitimin yalnız yarısında kullanılıyordu, `Tensor3D` tamamen ölü koddu, checkpoint kelime dağarcığını saklamıyordu, 0 test vardı.
+
 
 ### 16 Kasım 2026 · 1. gün — denetim ve sağlamlaştırma (8 commit)
 

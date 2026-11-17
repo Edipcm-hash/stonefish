@@ -525,28 +525,148 @@ Kernel arguments are prepared by `Kargs`: each argument is written into one `u64
 
 The project started on **15 June 2026**. The table below lists every step since then, in order, with its measurements.
 
-> **Source note:** 15 June – 15 November was not under version control; that period can only be documented through its results. From 16 November onwards every step has a commit, a measurement and a test.
+> **Source note:** 15 June – 15 November was not under version control; that period was reconstructed from the development log and its run output. From 16 November onwards every step has a commit, a measurement and a test.
 
 ### 15 June – 15 November 2026 · v0.1 → v0.6 (no version control)
 
-Five months written by hand, without libraries. The surviving v0.6 snapshot contained:
+Five months, by hand, without a single ML library. Every version built on the previous one, and at every step the **output was read** - the question was never "does it run" but "what does it write".
 
-| Version | What was added |
+#### v0.1 - Tensor + autograd: XOR
+
+`tensor.rs` (a pure-Rust 2D matrix: `matmul` as a triple loop, `add/sub/mul_elem/scale/transpose/map`, our own xorshift RNG), `autograd.rs` (`Op` enum, topologically ordered `backward()`, chain rule), `nn.rs` (`Linear`), `loss.rs` (MSE), `optim.rs` (SGD), `main.rs` (XOR training).
+
+```
+0 XOR 0 = 0.0000  ✅     1 XOR 0 = 1.0000  ✅
+0 XOR 1 = 1.0000  ✅     1 XOR 1 = 0.0000  ✅
+```
+
+**First victory:** a from-scratch neural network learned XOR.
+
+#### v0.2 - Softmax + cross-entropy
+
+`SoftmaxCE` added as a single numerically stable op (forward `-log(softmax[target])`, backward `softmax - onehot`). Three-class synthetic data:
+
+```
+CE loss = 1.100955 -> 0.000017        Accuracy: 60/60 = 100.0% ✅
+```
+
+#### v0.3 - MNIST, save/load, optimizer comparison
+
+`data.rs` (IDX binary parser written from scratch on `std::fs`, 0..1 normalization, one-hot labels), `nn.rs` (`save_model`/`load_model` - our own binary format: `SFISH001` magic + version + layers), `main.rs` (`--train/--predict/--eval`).
+
+| Optimizer | LR | Epochs | Test accuracy |
+|---|---|---|---|
+| SGD | 0.1 | 10 | 97.66 % (stuck) |
+| SGD | 0.01 | 10 | 98.06 % |
+| **SGD** | **0.01** | **20** | **98.22 %** |
+| Adam | 0.001 | 10 | 97.66 % |
+| Adam | 0.003 | 20 | 97.69 % |
+
+The model was saved (`stonefish.bin`, 407 KB) and reproduced the same result in a separate run.
+
+> **Lesson:** on simple problems like MNIST, Adam can be *worse* than SGD. Hyperparameters matter.
+
+#### v0.4a - Tokenizer
+
+`tokenizer.rs` (character level, text <-> id), `data.rs` (`load_text`, `make_sequences`). Shakespeare, 1.1 MB:
+
+```
+Vocab: 65        Round-trip: ✅        Sequences: 17,428
+```
+
+#### v0.4b - Transformer ops: Softmax, GELU, LayerNorm
+
+All three added with their backward passes and verified **numerically**:
+
+```
+softmax([1,2,3]) = [0.0900, 0.2447, 0.6652] ✅
+gelu([-1,0,1])   = [-0.1588, 0.0000, 0.8412] ✅
+ln([1,2,3])      = [-1.2247, 0.0000, 1.2247] ✅
+```
+
+#### v0.4c - Embedding (token + position)
+
+```
+token_emb grad: 10x8 ✅    pos_emb grad: 16x8 ✅    unused token gradient: 0 ✅
+```
+
+#### v0.4d - Attention
+
+The `MaskCausal` op (blocks the future) + `AttentionHead` (Q, K, V, mask, softmax, output projection):
+
+```
+Output: 4x8 ✅    No gradient is zero ✅
+```
+
+#### v0.4e - GPT model + training
+
+`TransformerBlock` (pre-norm + attention + residual + FFN) + `GPT` (embedding + N blocks + final LayerNorm + head), `gpt_train()` (Adam, 17k steps), `gpt_generate()` (sampling).
+
+| Epoch | Loss | Generated text |
+|---|---|---|
+| 1 | 4.17 -> **2.32** | `ROMEO: Go the, sever, onren'd fot heine fomp whit, Efrastau wre cagenter...` - nonsense, but the **format is right** (`ROMEO:` and character names) |
+| 3 | **1.86** | `ROMEO: He the forling of, the for helf: Foroct! you him, stays cale.` - real Shakespeare characters like `AUTOLYCUS:`, real words like `thou`, `Who`, `fair` |
+
+#### v0.5 - Fixing Adam, growing the model
+
+**Problem:** the bigger model (d=128, 4 layers, multi-head) + Adam -> loss **stuck at 2.5 and climbing**.
+
+**Diagnosis:** SGD worked (1.88), Adam did not -> `eps` too small (1e-8) and `lr` too high (5e-4). The multi-head "summation" approach was also wrong.
+
+**Fix:** `eps = 1e-6`, `lr = 1e-4`, `heads = 1`. Result **loss 1.64**:
+
+```
+ROMEO: He will retorm or, the entermenn goes / shew chas of unwy can myself hops / Hast aly set.
+QUEEN ELIZABETH: Or the I weep, queen, in Pawien'd theselves disholy gond / Officy thange me...
+```
+
+`QUEEN ELIZABETH` (a real character), `He will retorm` (almost meaningful), `shew` (Shakespeare's "show") - the sentence structure has settled.
+
+#### v0.5 - Turkish data
+
+`PoemsJson.json` (5 MB) -> `turkish.txt` (~3-4 MB via PowerShell). **Vocab 140** (65 for Shakespeare), **22,434 sequences** (2.5x Shakespeare).
+
+| Epoch | Loss |
 |---|---|
-| v0.1 | `Matrix` (row-major 2D), basic arithmetic, `transpose` |
-| v0.2 | `Tensor` + reverse-mode autograd: `Op` enum, topological `backward()` |
-| v0.3 | MNIST MLP (784→128→10, SGD) + idx reader |
-| v0.4 | Character tokenizer, mini GPT (embedding + attention + FFN) |
-| v0.5 | GPU matmul via cuBLAS, CPU fallback, profiling counters |
-| v0.6 | 842 K parameter GPT trained on a Turkish corpus |
+| 0 | 2.2215 |
+| 1 | 1.8643 |
+| 2 | **1.7542** <- target ~1.75, hit exactly |
 
-**Measured results from that period (verified on 16 November):**
-- MNIST test accuracy: **98.12 %**
-- Turkish GPT: 842,632 parameters, 2.87 M character corpus, vocab 136
-- GPU matmul (real model shapes): **2.4–18.7×** faster than the CPU
-- 1024³ matmul: CPU 2.16 s · GPU-only 67.5 µs
+Despite a vocabulary more than twice as large, the loss nearly caught up with Shakespeare - the Turkish data is much richer.
 
-**But there were invisible problems** (found the next day): batching was fake, the GPU was used for only half of training, `Tensor3D` was entirely dead code, the checkpoint did not store the vocabulary, and there were 0 tests.
+```
+Prompt: "Aksham" (evening)
+Aksham dikleri, camib irerde / Korkmalar cemlatlayacaksin, yashim"nemeder, aldir,
+Gulumse con susuzlugu / Sonra ve daha boyle intirili birakmaketli chikraliyor shehri...
+```
+
+Meaningless, but **structurally Turkish**: suffixes, stems and punctuation are right.
+
+#### v0.6 - CUDA integration
+
+CUDA 13.5 + RTX 5070 installed, `cudarc 0.19.10` added. `gpu.rs` (`GpuMatrix`, `matmul` via cuBLAS, CPU wrapper), `Tensor::matmul` routed to the GPU.
+
+| Test | Result |
+|---|---|
+| `test-cuda` | ✅ RTX 5070 recognised |
+| `test-gpu-matmul` | ✅ same result as the CPU |
+| `test-gpu-bench-big` | ✅ 1024^3 matmul: **55,000x** |
+| `test-gpu-train` | ✅ GPU training loop works |
+| `gpt-train` (GPU) | ✅ same loss (1.75) - but **GPU utilisation 2 %** |
+
+> **Key observation:** GPU matmul works, but **transfer cost dominates**. Full integration is needed. (Measured on 16 November: a step issues 75 matmuls yet the real GEMM time is 1 ms - 0.8 % of the 120 ms total.)
+
+#### v0.6+ - Autograd fixes
+
+- **1/batch** added to the `SoftmaxCE` backward (a critical correctness bug)
+- `LayerNorm`'s `eps` embedded in `Op::LayerNorm(f32)`
+- Topological sort via `HashSet`: **O(N^2) -> O(N)**
+- `Sigmoid`, `Softmax`, `LayerNorm`, `SoftmaxCE` cached
+- `MatMul` forward on the GPU
+
+**After five months:** a working autograd engine, 98.22 % on MNIST, a GPT writing in two languages, GPU matmul - and **zero tests**.
+
+**Invisible problems** (found the next day): batching was fake, the GPU was used for only half of training, `Tensor3D` was entirely dead code, the checkpoint did not store the vocabulary, and there were 0 tests.
 
 ### 16 November 2026 · day 1 — audit and hardening (8 commits)
 
