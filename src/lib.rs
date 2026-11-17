@@ -28,6 +28,8 @@ pub mod gpu_kernels;
 pub mod gpu_train;
 #[cfg(feature = "cuda")]
 pub mod en_train;
+#[cfg(feature = "cuda")]
+pub mod demo;
 pub mod loss;
 pub mod nn;
 pub mod optim;

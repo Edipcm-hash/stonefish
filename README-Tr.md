@@ -68,6 +68,9 @@ cargo build --release
 # Tüm modları listele
 ./target/release/stonefish_ai help
 
+# ⚡ TEK KOMUT DEMO — veri indirmeden, 90 saniyede sıfırdan eğitim + üretim
+./target/release/stonefish_ai demo 90
+
 # --- MNIST MLP ---
 ./target/release/stonefish_ai train          # eğit (20 epoch)
 ./target/release/stonefish_ai eval           # test setinde ölç → %98,12

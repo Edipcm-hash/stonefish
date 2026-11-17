@@ -43,7 +43,8 @@ const MODES: &[(&str, &str)] = &[
     ("test-gpu-native", "GPU-native eğiticiyi ölç (device-resident, çekirdekler)"),
     ("en-prepare", "İngilizce korpus: BPE öğren + u16 token cache üret"),
     ("en-train", "İngilizce GPT eğit [token_sayısı] [d_model]"),
-    ("test-ffi", "Kendi CUDA FFI öz-testi (cudarc olmadan)"),
+    ("demo", "Tek komut demo: 90 saniyede sıfırdan eğit + metin üret [saniye]"),
+    ("test-ffi", "Kendi CUDA FFI öz-testi (kendi sürücü FFI'si)"),
     ("en-eval", "İngilizce modeli valid sette ölç (loss/perplexity/BPC)"),
     ("en-gen", "İngilizce metin üret [prompt] [token] [sıcaklık]"),
 ];
@@ -98,6 +99,7 @@ fn main() {
         "test-gpu-native" => test_gpu_native(rest),
         "en-prepare" => en_prepare(),
         "en-train" => en_train(rest),
+        "demo" => demo(rest),
         "test-ffi" => test_ffi(),
         "en-eval" => en_eval(rest),
         "en-gen" => en_gen(rest),
@@ -1060,6 +1062,17 @@ fn en_train(args: &[String]) {
 #[cfg(not(feature = "cuda"))]
 fn en_train(_args: &[String]) {
     println!("❌ en-train CUDA gerektirir (--no-default-features ile derlendi).");
+}
+
+#[cfg(feature = "cuda")]
+fn demo(args: &[String]) {
+    let secs: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(90);
+    stonefish_ai::demo::run(secs);
+}
+
+#[cfg(not(feature = "cuda"))]
+fn demo(_args: &[String]) {
+    println!("❌ demo CUDA gerektirir (--no-default-features ile derlendi).");
 }
 
 #[cfg(feature = "cuda")]

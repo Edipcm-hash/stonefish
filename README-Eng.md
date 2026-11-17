@@ -68,6 +68,9 @@ cargo build --release
 # List all modes
 ./target/release/stonefish_ai help
 
+# ⚡ ONE-COMMAND DEMO — no downloads, trains from scratch in 90 s and generates text
+./target/release/stonefish_ai demo 90
+
 # --- MNIST MLP ---
 ./target/release/stonefish_ai train          # train (20 epochs)
 ./target/release/stonefish_ai eval           # measure on test set → 98.12 %
