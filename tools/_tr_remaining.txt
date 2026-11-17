@@ -1,6 +1,0 @@
-r"\b(bir|ve|için|ile|bu|olarak|değil|yok|hata|boyut|satır|sütun|değer|sonra|önce|"
-r"gibi|daha|çok|veya|eğer|zaman|katman|çekirdek|bellek|tampon|gradyan|ağırlık|"
-r"eğitim|dizi|örnek|toplam|ortalama|sonuç|giriş|çıkış|adım|hız|süre|yaz|döner|"
-r"kullan|yapılır|edilir|olur|olan|olduğu|tarafından|üzerinde|içinde|arasında|"
-r"kadar|sadece|ayrıca|ancak|çünkü|böylece|şekilde|durum|işlem|değişken|döngü|"
-r"koşul|sınır|kontrol|hesap|kaydet|yükle|sil|ekle|başlat|bitir|açık|kapalı)\b"
