@@ -112,32 +112,178 @@ mod cuda_impl {
                 ctx: a.ctx.clone(),
             }
         }
-    }
+        /// C = A·Bᵀ  (A: m×k, B: n×k → C: m×n)
+        /// Transpose'u malzemeleştirmeden yapar: autograd'ın `dA = dOut·Bᵀ` yolu.
+        pub fn matmul_bt(a: &GpuMatrix, b: &GpuMatrix) -> GpuMatrix {
+            assert_eq!(a.cols, b.cols, "matmul_bt boyut");
+            // a: m×k, b: n×k → C: m×n
+            let (m, n, k) = (a.rows, b.rows, a.cols);
+            let stream = a.ctx.default_stream();
+            let blas_mutex = BLAS.get_or_init(|| {
+                Mutex::new(CudaBlas::new(stream.clone()).expect("CudaBlas handle"))
+            });
+            let blas = blas_mutex.lock().unwrap();
+            let mut c_dev = alloc_pooled(&stream, m * n);
 
-    /// CPU'daki iki matrisi GPU'da çarp, sonucu CPU'ya döndür.
+            // Row-major C(m,n) = A(m,k)·B(n,k)ᵀ; kolon-major dünyada
+            // C_c(n,m) = B(n,k)·A(k,m)ᵀ → op(A_c)=Bᵀ (stored k×n), op(B_c)=A (stored k×m).
+            let cfg = GemmConfig {
+                transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+                transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+                m: n as i32,
+                n: m as i32,
+                k: k as i32,
+                alpha: 1.0,
+                beta: 0.0,
+                lda: k as i32,
+                ldb: k as i32,
+                ldc: n as i32,
+            };
+            unsafe {
+                blas.gemm(cfg, &b.data, &a.data, &mut c_dev).expect("gemm_bt");
+            }
+            GpuMatrix { rows: m, cols: n, data: c_dev, ctx: a.ctx.clone() }
+        }
+
+        /// C = Aᵀ·B  (A: k×m, B: k×n → C: m×n)
+        /// autograd'ın `dB = Aᵀ·dOut` yolu.
+        pub fn matmul_ta(a: &GpuMatrix, b: &GpuMatrix) -> GpuMatrix {
+            assert_eq!(a.rows, b.rows, "matmul_ta boyut");
+            let (m, n, k) = (a.cols, b.cols, a.rows);
+            let stream = a.ctx.default_stream();
+            let blas_mutex = BLAS.get_or_init(|| {
+                Mutex::new(CudaBlas::new(stream.clone()).expect("CudaBlas handle"))
+            });
+            let blas = blas_mutex.lock().unwrap();
+            let mut c_dev = alloc_pooled(&stream, m * n);
+
+            // Row-major C(m,n) = A(k,m)ᵀ·B(k,n); kolon-major dünyada
+            // C_c(n,m) = B(n,k)ᵀ·A(k,m) → op(A_c)=B (stored n×k), op(B_c)=Aᵀ.
+            let cfg = GemmConfig {
+                transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+                transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+                m: n as i32,
+                n: m as i32,
+                k: k as i32,
+                alpha: 1.0,
+                beta: 0.0,
+                lda: n as i32,
+                ldb: m as i32,
+                ldc: n as i32,
+            };
+            unsafe {
+                blas.gemm(cfg, &b.data, &a.data, &mut c_dev).expect("gemm_ta");
+            }
+            GpuMatrix { rows: m, cols: n, data: c_dev, ctx: a.ctx.clone() }
+        }
+    }
     pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
+        let prof = crate::profile::enabled();
+        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
+        let mut transfer = 0u64;
+
         let ctx = get_ctx();
+        let t_up0 = std::time::Instant::now();
         let a_gpu = GpuMatrix::from_cpu(ctx, a);
         let b_gpu = GpuMatrix::from_cpu(ctx, b);
+        if prof {
+            transfer += t_up0.elapsed().as_nanos() as u64;
+        }
+
         let c_gpu = GpuMatrix::matmul(&a_gpu, &b_gpu);
+
         let stream = ctx.default_stream();
+        let t_down0 = std::time::Instant::now();
         let out = stream
             .clone_dtoh(&c_gpu.data)
             .expect("GPU->CPU transfer");
+        if prof {
+            transfer += t_down0.elapsed().as_nanos() as u64;
+        }
+
         let (rows, cols) = (c_gpu.rows, c_gpu.cols);
         let GpuMatrix { data, .. } = c_gpu;
         recycle(data);
+
+        if let Some(t0) = t0 {
+            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer);
+        }
+        Matrix::from_vec(rows, cols, out)
+    }
+    /// C = A·Bᵀ. Transpose malzemeleştirmeden (cuBLAS `transa`).
+    pub fn matmul_bt_gpu(a: &Matrix, b: &Matrix) -> Matrix {
+        let prof = crate::profile::enabled();
+        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
+        let ctx = get_ctx();
+        let t_up = std::time::Instant::now();
+        let a_gpu = GpuMatrix::from_cpu(ctx, a);
+        let b_gpu = GpuMatrix::from_cpu(ctx, b);
+        let up_ns = t_up.elapsed().as_nanos() as u64;
+        let c_gpu = GpuMatrix::matmul_bt(&a_gpu, &b_gpu);
+        let t_down = std::time::Instant::now();
+        let out = ctx
+            .default_stream()
+            .clone_dtoh(&c_gpu.data)
+            .expect("GPU->CPU transfer");
+        let transfer = up_ns + t_down.elapsed().as_nanos() as u64;
+        let (rows, cols) = (c_gpu.rows, c_gpu.cols);
+        let GpuMatrix { data, .. } = c_gpu;
+        recycle(data);
+        if let Some(t0) = t0 {
+            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer);
+        }
+        Matrix::from_vec(rows, cols, out)
+    }
+
+    /// C = Aᵀ·B. Transpose malzemeleştirmeden (cuBLAS `transb`).
+    pub fn matmul_ta_gpu(a: &Matrix, b: &Matrix) -> Matrix {
+        let prof = crate::profile::enabled();
+        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
+        let ctx = get_ctx();
+        let t_up = std::time::Instant::now();
+        let a_gpu = GpuMatrix::from_cpu(ctx, a);
+        let b_gpu = GpuMatrix::from_cpu(ctx, b);
+        let up_ns = t_up.elapsed().as_nanos() as u64;
+        let c_gpu = GpuMatrix::matmul_ta(&a_gpu, &b_gpu);
+        let t_down = std::time::Instant::now();
+        let out = ctx
+            .default_stream()
+            .clone_dtoh(&c_gpu.data)
+            .expect("GPU->CPU transfer");
+        let transfer = up_ns + t_down.elapsed().as_nanos() as u64;
+        let (rows, cols) = (c_gpu.rows, c_gpu.cols);
+        let GpuMatrix { data, .. } = c_gpu;
+        recycle(data);
+        if let Some(t0) = t0 {
+            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer);
+        }
         Matrix::from_vec(rows, cols, out)
     }
 }
 
 #[cfg(feature = "cuda")]
-pub use cuda_impl::{get_ctx, matmul_gpu, GpuMatrix};
+pub use cuda_impl::{get_ctx, matmul_bt_gpu, matmul_gpu, matmul_ta_gpu, GpuMatrix};
 
 /// CUDA kapalıyken: aynı arayüz, CPU yolu.
 #[cfg(not(feature = "cuda"))]
 pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
-    a.matmul(b)
+    let prof = crate::profile::enabled();
+    let t0 = if prof { Some(std::time::Instant::now()) } else { None };
+    let out = a.matmul(b);
+    if let Some(t0) = t0 {
+        crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, 0);
+    }
+    out
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn matmul_bt_gpu(a: &Matrix, b: &Matrix) -> Matrix {
+    a.matmul(&b.transpose())
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn matmul_ta_gpu(a: &Matrix, b: &Matrix) -> Matrix {
+    a.transpose().matmul(b)
 }
 
 /// Bu derlemede GPU yolu var mı?

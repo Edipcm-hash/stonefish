@@ -80,6 +80,7 @@ impl Tensor {
         inputs: Vec<Tensor>,
         cache: Vec<Matrix>,
     ) -> Self {
+        let t = crate::profile::start();
         let requires_grad = inputs.iter().any(|t| t.requires_grad);
         let grad = Rc::new(RefCell::new(Matrix::zeros(data.rows, data.cols)));
         let node = if requires_grad {
@@ -87,17 +88,22 @@ impl Tensor {
         } else {
             None
         };
-        Self {
+        let out = Self {
             data: Rc::new(RefCell::new(data)),
             grad,
             requires_grad,
             node,
-        }
+        };
+        crate::profile::stop(t, &crate::profile::ALLOC_NANOS);
+        out
     }
 
     pub fn zero_grad(&self) {
+        let t = crate::profile::start();
         let d = self.data.borrow();
         *self.grad.borrow_mut() = Matrix::zeros(d.rows, d.cols);
+        drop(d);
+        crate::profile::stop(t, &crate::profile::ZEROGRAD_NANOS);
     }
 
     pub fn apply_grad(&self, lr: f32) {
@@ -211,6 +217,7 @@ impl Tensor {
     /// One-hot matrisi tahsis etmez — GPT eğitiminde (B*S × vocab) matrisinden
     /// kurtarır. Dense `softmax_cross_entropy` ile aynı gradyanı verir.
     pub fn softmax_cross_entropy_ids(&self, targets: &[usize]) -> Tensor {
+        let t = crate::profile::start();
         let zd = self.data.borrow();
         let (rows, classes) = (zd.rows, zd.cols);
         assert_eq!(targets.len(), rows, "CE: hedef sayısı satır sayısına eşit olmalı");
@@ -245,6 +252,7 @@ impl Tensor {
 
         let mean_loss = total_loss / rows as f32;
         drop(zd);
+        crate::profile::stop(t, &crate::profile::CE_NANOS);
         Tensor::from_op_cached(
             Matrix::from_vec(1, 1, vec![mean_loss]),
             Op::SoftmaxCEIds,
@@ -254,6 +262,7 @@ impl Tensor {
     }
 
     pub fn softmax(&self) -> Tensor {
+        let t = crate::profile::start();
         let zd = self.data.borrow();
         let (rows, cols) = (zd.rows, zd.cols);
         let mut data = Matrix::zeros(rows, cols);
@@ -274,6 +283,7 @@ impl Tensor {
             }
         }
         drop(zd);
+        crate::profile::stop(t, &crate::profile::SOFTMAX_NANOS);
         Tensor::from_op_cached(
             data.clone(),
             Op::Softmax,
@@ -283,14 +293,17 @@ impl Tensor {
     }
 
     pub fn gelu(&self) -> Tensor {
+        let t = crate::profile::start();
         let data = self.data.borrow().map(|x| {
             let c = (2.0f32 / std::f32::consts::PI).sqrt();
             0.5 * x * (1.0 + (c * (x + 0.044715 * x * x * x)).tanh())
         });
+        crate::profile::stop(t, &crate::profile::GELU_NANOS);
         Tensor::from_op(data, Op::GELU, vec![self.clone()])
     }
 
     pub fn layer_norm(&self, gamma: &Tensor, beta: &Tensor, eps: f32) -> Tensor {
+        let t = crate::profile::start();
         let xd = self.data.borrow();
         let (rows, cols) = (xd.rows, xd.cols);
         let gd = gamma.data.borrow();
@@ -327,6 +340,7 @@ impl Tensor {
         drop(xd);
         drop(gd);
         drop(bd);
+        crate::profile::stop(t, &crate::profile::LN_NANOS);
 
         Tensor::from_op_cached(
             data,
@@ -366,6 +380,8 @@ impl Tensor {
         seq: usize,
         n_heads: usize,
     ) -> Tensor {
+        let prof = crate::profile::enabled();
+        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
         let (out_data, weights) = {
             let qd = self.data.borrow();
             let kd = k.data.borrow();
@@ -442,6 +458,10 @@ impl Tensor {
             (out, w_cache)
         };
 
+        if let Some(t0) = t0 {
+            crate::profile::add_attn_fwd(t0.elapsed().as_nanos() as u64);
+        }
+
         Tensor::from_op_cached(
             out_data,
             Op::CausalAttention { batch, seq, n_heads },
@@ -472,8 +492,14 @@ impl Tensor {
                 Some(n) => n.clone(),
                 None => continue,
             };
-            let upstream = t.grad.borrow().clone();
+            // ÖNEMLİ: upstream'i klonlamak yerine ödünç alıyoruz. Eskiden her düğüm
+            // için gradyan matrisinin tam kopyası alınıyordu; 4 katmanlı modelde bu
+            // adım başına onlarca MB'lık gereksiz kopya demekti. Düğümün kendi
+            // gradyanı ile girdilerinin gradyanları farklı RefCell'ler olduğu için
+            // (DAG) ödünç çakışması yok.
+            let upstream = t.grad.borrow();
             apply_backward(&node, &upstream);
+            drop(upstream);
         }
     }
 
@@ -496,19 +522,15 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         Op::Add => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
-            let ga = reduce_to(upstream, a.data.borrow().rows, a.data.borrow().cols);
-            let gb = reduce_to(upstream, b.data.borrow().rows, b.data.borrow().cols);
-            accumulate(a, &ga);
-            accumulate(b, &gb);
+            accumulate_reduced(a, upstream, false);
+            accumulate_reduced(b, upstream, false);
         }
 
         Op::Sub => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
-            let ga = reduce_to(upstream, a.data.borrow().rows, a.data.borrow().cols);
-            let gb = reduce_to(upstream, b.data.borrow().rows, b.data.borrow().cols).scale(-1.0);
-            accumulate(a, &ga);
-            accumulate(b, &gb);
+            accumulate_reduced(a, upstream, false);
+            accumulate_reduced(b, upstream, true);
         }
 
         Op::MulElem => {
@@ -529,10 +551,12 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         Op::MatMul => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
-            let b_t = b.data.borrow().transpose();
-            let a_t = a.data.borrow().transpose();
-            let ga = crate::gpu::matmul_gpu(upstream, &b_t);
-            let gb = crate::gpu::matmul_gpu(&a_t, upstream);
+            // Transpose'ları malzemeleştirmek yerine cuBLAS'a yaptırıyoruz:
+            // dA = dOut·Bᵀ, dB = Aᵀ·dOut. Eskiden her backward'da (1024×128)'lik
+            // strided transpose kopyaları alınıyordu — ölçümde "diğer" kaleminin
+            // önemli bir parçasıydı.
+            let ga = crate::gpu::matmul_bt_gpu(upstream, &b.data.borrow());
+            let gb = crate::gpu::matmul_ta_gpu(&a.data.borrow(), upstream);
             accumulate(a, &ga);
             accumulate(b, &gb);
         }
@@ -586,6 +610,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         }
 
         Op::SoftmaxCEIds => {
+            let t = crate::profile::start();
             let z = &node.inputs[0];
             let probs = &node.cache[0];
             let tgt = &node.cache[1];
@@ -605,6 +630,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                 }
             }
             drop(zd);
+            crate::profile::stop(t, &crate::profile::CE_NANOS);
             accumulate(z, &g_logits);
         }
 
@@ -626,6 +652,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         }
 
         Op::GELU => {
+            let t = crate::profile::start();
             let x = &node.inputs[0];
             let xd = x.data.borrow();
             let (rows, cols) = (xd.rows, xd.cols);
@@ -642,10 +669,12 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                 }
             }
             drop(xd);
+            crate::profile::stop(t, &crate::profile::GELU_NANOS);
             accumulate(x, &g);
         }
 
         Op::LayerNorm(_eps) => {
+            let t = crate::profile::start();
             let x = &node.inputs[0];
             let gamma = &node.inputs[1];
             let beta = &node.inputs[2];
@@ -694,6 +723,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
 
             drop(xd);
             drop(gd);
+            crate::profile::stop(t, &crate::profile::LN_NANOS);
             accumulate(x, &g_x);
             accumulate(gamma, &g_gamma);
             accumulate(beta, &g_beta);
@@ -761,6 +791,8 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             let d_head = d_model / n_heads;
             let scale = 1.0 / (d_head as f32).sqrt();
             let up = &upstream.data;
+            let prof = crate::profile::enabled();
+            let t0 = if prof { Some(std::time::Instant::now()) } else { None };
 
             // Forward: out_i = Σ_{j<=i} w_ij v_j,  w = softmax(scale·q_i·k_j)
             // Backward:
@@ -781,43 +813,54 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                     let off = h * d_head;
                     let w_row0 = (b * n_heads + h) * seq;
                     for i in 0..seq {
+                        let i1 = i + 1;
                         let q_row = b * seq + i;
                         let q_off = q_row * d_model + off;
+                        // Dilimleri bir kez al: iç döngülerde sınır kontrolü yok,
+                        // zip'ler vektörleştirmeye açık.
+                        let q_s = &qd.data[q_off..q_off + d_head];
+                        let up_s = &up[q_off..q_off + d_head];
+                        let w_row =
+                            &weights.data[(w_row0 + i) * seq..(w_row0 + i) * seq + i1];
 
-                        // dW ve softmax'ın toplam terimi
+                        // dW_ij = <dOut_i, V_j> ; dsum = Σ_j w_ij·dW_ij
                         let mut dsum = 0.0f32;
-                        for j in 0..=i {
+                        for j in 0..i1 {
                             let v_off = (b * seq + j) * d_model + off;
+                            let v_s = &vd.data[v_off..v_off + d_head];
                             let mut acc = 0.0f32;
-                            for d in 0..d_head {
-                                acc += up[q_off + d] * vd.data[v_off + d];
+                            for (x, y) in up_s.iter().zip(v_s) {
+                                acc += x * y;
                             }
                             dw[j] = acc;
-                            dsum += weights.data[(w_row0 + i) * seq + j] * acc;
+                            dsum += w_row[j] * acc;
                         }
 
-                        // softmax geri yayılımı + ölçek
-                        for j in 0..=i {
-                            let wj = weights.data[(w_row0 + i) * seq + j];
+                        // softmax geri yayılımı (ölçek dahil) + dV
+                        for j in 0..i1 {
+                            let wj = w_row[j];
                             ds[j] = wj * (dw[j] - dsum) * scale;
-                        }
 
-                        // dV
-                        for j in 0..=i {
-                            let wj = weights.data[(w_row0 + i) * seq + j];
+                            // dV_j += w_ij · dOut_i
                             let v_off = (b * seq + j) * d_model + off;
-                            for d in 0..d_head {
-                                g_v[v_off + d] += wj * up[q_off + d];
+                            let v_dst = &mut g_v[v_off..v_off + d_head];
+                            for (o, &u) in v_dst.iter_mut().zip(up_s) {
+                                *o += wj * u;
                             }
                         }
 
-                        // dQ / dK
-                        for j in 0..=i {
+                        // dQ_i += Σ_j ds_ij·k_j ; dK_j += ds_ij·q_i
+                        let q_dst = &mut g_q[q_off..q_off + d_head];
+                        for j in 0..i1 {
                             let dsj = ds[j];
                             let k_off = (b * seq + j) * d_model + off;
-                            for d in 0..d_head {
-                                g_q[q_off + d] += dsj * kd.data[k_off + d];
-                                g_k[k_off + d] += dsj * qd.data[q_off + d];
+                            let k_s = &kd.data[k_off..k_off + d_head];
+                            for (o, &kj) in q_dst.iter_mut().zip(k_s) {
+                                *o += dsj * kj;
+                            }
+                            let k_dst = &mut g_k[k_off..k_off + d_head];
+                            for (o, &qi) in k_dst.iter_mut().zip(q_s) {
+                                *o += dsj * qi;
                             }
                         }
                     }
@@ -827,6 +870,10 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             accumulate(q, &Matrix::from_vec(batch * seq, d_model, g_q));
             accumulate(k, &Matrix::from_vec(batch * seq, d_model, g_k));
             accumulate(v, &Matrix::from_vec(batch * seq, d_model, g_v));
+
+            if let Some(t0) = t0 {
+                crate::profile::add_attn_bwd(t0.elapsed().as_nanos() as u64);
+            }
         }
     }
 }
@@ -839,6 +886,39 @@ fn accumulate(t: &Tensor, g: &Matrix) {
     assert_eq!((tg.rows, tg.cols), (g.rows, g.cols), "grad boyut");
     for i in 0..tg.data.len() {
         tg.data[i] += g.data[i];
+    }
+}
+
+/// `accumulate` + `reduce_to`'nun klonsuz birleşimi: aynı şekilde doğrudan,
+/// (1, cols) broadcast'inde satırları toplayarak biriktirir. `negate` çıkarma
+/// için işareti çevirir. Add/Sub gibi kopya üretmeye değmeyen op'larda kullanılır.
+fn accumulate_reduced(t: &Tensor, upstream: &Matrix, negate: bool) {
+    if !t.requires_grad {
+        return;
+    }
+    let (rows, cols) = {
+        let d = t.data.borrow();
+        (d.rows, d.cols)
+    };
+    let sign = if negate { -1.0f32 } else { 1.0f32 };
+    let mut tg = t.grad.borrow_mut();
+
+    if upstream.rows == rows && upstream.cols == cols {
+        for i in 0..tg.data.len() {
+            tg.data[i] += sign * upstream.data[i];
+        }
+    } else if rows == 1 && upstream.cols == cols {
+        for i in 0..upstream.rows {
+            let row = &upstream.data[i * cols..(i + 1) * cols];
+            for j in 0..cols {
+                tg.data[j] += sign * row[j];
+            }
+        }
+    } else {
+        panic!(
+            "accumulate_reduced: {}x{} -> {}x{} yapılamıyor",
+            upstream.rows, upstream.cols, rows, cols
+        );
     }
 }
 

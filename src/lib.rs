@@ -21,6 +21,7 @@ pub mod gpu;
 pub mod loss;
 pub mod nn;
 pub mod optim;
+pub mod profile;
 pub mod tensor;
 pub mod tokenizer;
 pub mod transformer;

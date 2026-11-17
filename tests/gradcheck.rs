@@ -502,6 +502,54 @@ fn sparse_ce_gradient() {
     });
 }
 
+#[test]
+fn gpu_transposed_matmul_variants_match_cpu() {
+    // matmul_bt (A·Bᵀ) ve matmul_ta (Aᵀ·B) — cuBLAS'ın transa/transb yolları.
+    // Bu iki varyant autograd'ın matmul geri yayılımında transpose
+    // malzemeleştirmesini ortadan kaldırır; yanlış kurulursa sessizce bozar.
+    #[cfg(feature = "cuda")]
+    {
+        use stonefish_ai::gpu::GpuMatrix;
+
+        let mut s = 55u64;
+        let (m, k, n) = (7usize, 5usize, 3usize);
+        let a = Matrix::random(m, k, 1.0, &mut s);
+        let b = Matrix::random(n, k, 1.0, &mut s);
+
+        let ctx = stonefish_ai::gpu::get_ctx();
+        let a_gpu = GpuMatrix::from_cpu(ctx, &a);
+        let b_gpu = GpuMatrix::from_cpu(ctx, &b);
+
+        // (a) A·Bᵀ
+        let bt = GpuMatrix::matmul_bt(&a_gpu, &b_gpu).to_cpu();
+        let bt_ref = a.matmul(&b.transpose());
+        assert_eq!((bt.rows, bt.cols), (m, n));
+        let mut d = 0.0f32;
+        for i in 0..bt.data.len() {
+            d = d.max((bt.data[i] - bt_ref.data[i]).abs());
+        }
+        assert!(d < 1e-4, "matmul_bt yanlış: max fark {d}");
+
+        // (b) Aᵀ·B  (A'yı (k,m) gibi kullanmak için transpose edip veriyoruz)
+        let at = a.transpose(); // (k, m)
+        let b2 = Matrix::random(k, n, 1.0, &mut s);
+        let at_gpu = GpuMatrix::from_cpu(ctx, &at);
+        let b2_gpu = GpuMatrix::from_cpu(ctx, &b2);
+        let ta = GpuMatrix::matmul_ta(&at_gpu, &b2_gpu).to_cpu();
+        let ta_ref = at.transpose().matmul(&b2); // (m,k)·(k,n)
+        assert_eq!((ta.rows, ta.cols), (m, n));
+        let mut d2 = 0.0f32;
+        for i in 0..ta.data.len() {
+            d2 = d2.max((ta.data[i] - ta_ref.data[i]).abs());
+        }
+        assert!(d2 < 1e-4, "matmul_ta yanlış: max fark {d2}");
+
+        println!("  ✅ matmul_bt / matmul_ta CPU referansıyla uyuşuyor ({d:.1e}, {d2:.1e})");
+    }
+    #[cfg(not(feature = "cuda"))]
+    println!("  (CUDA kapalı — transposed matmul testi atlandı)");
+}
+
 // ------------------------------------------------------------
 // Uçtan uca: küçük GPT — kompozisyonu doğrular
 // ------------------------------------------------------------

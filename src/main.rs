@@ -13,7 +13,7 @@ use stonefish_ai::optim::{self, Adam, SGD};
 use stonefish_ai::tensor::Matrix;
 use stonefish_ai::tokenizer::Tokenizer;
 use stonefish_ai::transformer::{GptConfig, GPT};
-use stonefish_ai::{data, gpu, transformer};
+use stonefish_ai::{data, gpu, profile, transformer};
 
 const MODEL_PATH: &str = "stonefish.bin";
 const GPT_PATH: &str = "stonefish_gpt.bin";
@@ -39,6 +39,7 @@ const MODES: &[(&str, &str)] = &[
     ("test-matmul-bench", "gerçek model şeklinde CPU vs GPU matmul"),
     ("test-gpu-train", "küçük MLP'te 10 adım süresi"),
     ("test-gpt-gpu", "küçük GPT'te adım süresi"),
+    ("test-gpt-profile", "gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)"),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
@@ -87,6 +88,7 @@ fn main() {
         "test-matmul-bench" => test_matmul_bench(),
         "test-gpu-train" => test_gpu_train(),
         "test-gpt-gpu" => test_gpt_gpu(rest),
+        "test-gpt-profile" => test_gpt_profile(rest),
         other => {
             eprintln!("Bilinmeyen mod: {}", other);
             eprintln!(
@@ -1014,6 +1016,117 @@ fn test_gpt_gpu(args: &[String]) {
 // ============================================================
 // Yardımcılar
 // ============================================================
+
+/// Gerçek model konfigürasyonunda bir eğitim adımının zaman bütçesi.
+/// "Tam GPU" yatırımının ne kazandıracağını tahminle değil ölçümle göstermek için.
+fn test_gpt_profile(args: &[String]) {
+    let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let batch: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
+
+    println!("🐟 Gerçek modelde adım profili (d=128, 4 katman, 4 head, S=128, batch={batch})\n");
+
+    let text = data::load_text(TEXT_PATH);
+    let tok = Tokenizer::from_text(&text);
+    let all_ids = tok.encode(&text);
+    let seq_len = 128;
+    let seqs = data::make_sequences(&all_ids, seq_len, seq_len);
+
+    let mut seed: u64 = 0xDEADBEEF;
+    let config = GptConfig {
+        vocab_size: tok.vocab_size,
+        max_seq_len: seq_len,
+        d_model: 128,
+        n_layers: 4,
+        n_heads: 4,
+    };
+    let model = GPT::new(config, &mut seed);
+    let mut opt = Adam::new(model.parameters(), 1e-3);
+
+    let make_batch = |i: usize| -> (Vec<usize>, Vec<usize>) {
+        let mut ids = Vec::with_capacity(batch * seq_len);
+        let mut tgt = Vec::with_capacity(batch * seq_len);
+        for k in 0..batch {
+            let (a, b) = &seqs[(i * batch + k) % seqs.len()];
+            ids.extend_from_slice(a);
+            tgt.extend_from_slice(b);
+        }
+        (ids, tgt)
+    };
+
+    // Isınma (CUDA context, cuBLAS handle, bellek havuzu)
+    for i in 0..3 {
+        let (ids, tgt) = make_batch(i);
+        let loss = model
+            .forward_batch(&ids, batch, seq_len)
+            .softmax_cross_entropy_ids(&tgt);
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+
+    profile::reset();
+    profile::enable();
+
+    let t0 = std::time::Instant::now();
+    for i in 0..steps {
+        let (ids, tgt) = make_batch(i + 3);
+        let loss = model
+            .forward_batch(&ids, batch, seq_len)
+            .softmax_cross_entropy_ids(&tgt);
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+    let total = t0.elapsed();
+    profile::disable();
+
+    let (calls, mm_ns, tr_ns, af_ns, ab_ns) = profile::snapshot();
+    let s = profile::snapshot_full();
+    let total_ns = total.as_nanos() as u64;
+    let step_ns = total_ns / steps as u64;
+    let pct = |v: u64| 100.0 * v as f64 / total_ns as f64;
+    let ms = |v: u64| v as f64 / 1e6 / steps as f64;
+
+    let matmul_compute = mm_ns.saturating_sub(tr_ns);
+    let attn = af_ns + ab_ns;
+    let hesap = matmul_compute + attn;
+    let diger = total_ns.saturating_sub(mm_ns + attn);
+
+    println!(
+        "{steps} adım → {:.2} ms/adım ({:.0} tok/s, GPU={})",
+        step_ns as f64 / 1e6,
+        (batch * seq_len) as f64 / (step_ns as f64 / 1e9),
+        gpu::HAS_CUDA
+    );
+    println!("  matmul çağrısı: {} / adım\n", calls / steps as u64);
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "matmul (transfer dahil)", ms(mm_ns), pct(mm_ns));
+    println!("    {:<36} {:8.2} ms/adım  %{:5.1}", "├─ transfer (CPU↔GPU)", ms(tr_ns), pct(tr_ns));
+    println!("    {:<36} {:8.2} ms/adım  %{:5.1}", "└─ gerçek GEMM", ms(matmul_compute), pct(matmul_compute));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "attention (fwd+bwd, CPU)", ms(attn), pct(attn));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "  ├─ forward", ms(af_ns), pct(af_ns));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "  └─ backward", ms(ab_ns), pct(ab_ns));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "gelu (fwd+bwd)", ms(s.gelu), pct(s.gelu));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "layer_norm (fwd+bwd)", ms(s.ln), pct(s.ln));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "cross-entropy (fwd+bwd)", ms(s.ce), pct(s.ce));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "adam.step", ms(s.adam), pct(s.adam));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "float_zero_grad (param sıfırlama)", ms(s.zero_grad), pct(s.zero_grad));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "ara tensör tahsisi (from_op)", ms(s.alloc), pct(s.alloc));
+    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "diğer (softmax, paketleme, …)", ms(diger), pct(diger));
+    println!(
+        "\n  Hesap (GEMM+attention) %{:.1} · Transfer %{:.1} · Diğer %{:.1}",
+        pct(hesap),
+        pct(tr_ns),
+        pct(diger)
+    );
+    let cpu_share = pct(attn) + pct(diger);
+    println!(
+        "\n  Yorum: adımın %{:.0}'ı CPU'da koşuyor (attention + elementwise + Adam).\n\
+         \x20 Yalnız GEMM'leri GPU'da tutmak (transferi sıfırlamak) üst sınır %{:.0} kazandırır.\n\
+         \x20 Gerçek hızlanma CPU işlerinin ya vektörleştirilmesinden ya CUDA çekirdeğine taşınmasından gelir.",
+        cpu_share,
+        pct(tr_ns)
+    );
+}
 
 fn xorshift(s: &mut u64) -> u64 {
     *s ^= *s << 13;

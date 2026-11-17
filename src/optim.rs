@@ -104,6 +104,7 @@ impl Adam {
     }
 
     pub fn step(&mut self) {
+        let prof_t = crate::profile::start();
         self.t += 1;
         let t = self.t as f32;
 
@@ -130,6 +131,7 @@ impl Adam {
                 d.data[k] -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
             }
         }
+        crate::profile::stop(prof_t, &crate::profile::ADAM_NANOS);
     }
 }
 

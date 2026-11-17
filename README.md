@@ -28,6 +28,9 @@ cargo build --release
 # GPT: eğit → üret       (epoch, batch, max_steps, max_lr)
 ./target/release/stonefish_ai gpt-train 6 8
 ./target/release/stonefish_ai gpt-gen "Akşam erken iner" 300 0.8
+
+# Zaman nereye gidiyor?
+./target/release/stonefish_ai test-gpt-profile
 ```
 
 ### Veri
@@ -140,9 +143,49 @@ böylece her çağrıda yeni device buffer ayrılmaz.
 | | eski (efektif batch=1) | yeni (gerçek batch=8) |
 |---|---|---|
 | küçük model (d=64, 2 katman, S=64) | 5.714 tok/s | **24.138 tok/s** |
-| gerçek model (d=128, 4 katman, S=128) | — | **~5.600 tok/s** |
+| gerçek model (d=128, 4 katman, S=128) | — | **~8.500 tok/s** |
 
-`test-gpt-gpu` forward/backward dağılımını da basar (gerçek modelde ~%44 / ~%56).
+`test-gpt-gpu` forward/backward dağılımını da basar.
+
+### Zaman nereye gidiyor? (`test-gpt-profile`)
+
+Gerçek konfigürasyonda bir eğitim adımının bütçesi (d=128, 4 katman, S=128, batch=8,
+RTX 5070, 10 adım ortalaması, ısınma hariç):
+
+| Kalem | ms/adım | pay |
+|---|---|---|
+| attention fwd + bwd (CPU) | 35.3 | 29.5 % |
+| matmul — **transfer** (CPU↔GPU) | 21.1 | 17.6 % |
+| matmul — **gerçek GEMM** | 1.0 | **0.8 %** |
+| GELU fwd + bwd | 17.7 | 14.8 % |
+| LayerNorm fwd + bwd | 7.4 | 6.1 % |
+| ara tensör tahsisi (`from_op`) | 6.0 | 5.0 % |
+| adam.step | 2.0 | 1.7 % |
+| cross-entropy fwd + bwd | 1.0 | 0.9 % |
+| `zero_grad` | 0.4 | 0.3 % |
+| diğer (tahsis/serbest bırakma, paketleme, residual'lar) | ~27 | ~23 % |
+| **toplam** | **~121** | 100 % |
+
+Adımda **75 matmul çağrısı** var ama gerçek GEMM toplamı 1 ms. Bu ölçüm, "her şeyi
+GPU'ya taşı" içgüdüsünü çürütüyor:
+
+* Yalnız **device-resident** yapmak (transferi sıfırlamak) üst sınır **%17** kazandırır.
+* Adımın **%82'si CPU'da** geçiyor (attention + elementwise + tahsis).
+* Gerçek hızlanma için attention/softmax/LN/GELU/Adam'ın CUDA çekirdeklerine
+  taşınması gerekir — bu, bu motora bir *device tensor katmanı* eklemek demek.
+
+### Bu turda ölçülerek yapılan optimizasyonlar
+
+| Değişiklik | Etki |
+|---|---|
+| `backward()`'ta düğüm başına `upstream` klonunu kaldır (ödünç al) | 177 → 161 ms |
+| Matmul geri yayılımında transpose'u cuBLAS'a yaptır (`matmul_bt`/`matmul_ta`) | 161 → 148 ms |
+| Attention backward'ını dilim+zip tabanlı vektörleştir | 148 → 120 ms |
+| **Toplam** | **177 → 120 ms/adım (+%47 tok/s)** |
+
+Attention backward'ı 47.9 ms'den 19.8 ms'ye indi. Her adım
+`cargo test --release` (28 gradyan testi) ile doğrulandı; vektörleştirme sırasında
+`dW`'de `dOut` yerine `q` kullanma hatası **gradyan testleri tarafından yakalandı**.
 
 ---
 
@@ -224,7 +267,8 @@ src/
   loss.rs         softmax + cross-entropy
   data.rs         MNIST idx okuyucu, metin → sequence
   tokenizer.rs    karakter seviyesi tokenizer (deterministik ID)
-  gpu.rs          cuBLAS matmul + CPU yedeği (feature flag)
+  gpu.rs          cuBLAS matmul (+ ᵀ varyantları) + CPU yedeği (feature flag)
+  profile.rs      hafif profil sayaçları (test-gpt-profile)
 tests/
   gradcheck.rs    27 sayısal gradyan testi + nedensellik/batch tutarlılığı
 examples/

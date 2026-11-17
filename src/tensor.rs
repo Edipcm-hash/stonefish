@@ -55,10 +55,13 @@ impl Matrix {
     /// `other` ya aynı şekildedir ya da (1, cols) — satır bazlı broadcast.
     pub fn add(&self, other: &Matrix) -> Matrix {
         if other.rows == 1 && other.cols == self.cols {
+            // Bias ekleme her katmanda çalışır; dilim tabanlı zip sınır kontrolü
+            // yapmaz ve vektörleşir (eski get/set döngüsü ölçümde pahalıydı).
+            let bias = &other.data[..self.cols];
             let mut out = self.clone();
-            for i in 0..self.rows {
-                for j in 0..self.cols {
-                    out.set(i, j, self.get(i, j) + other.get(0, j));
+            for row in out.data.chunks_exact_mut(self.cols) {
+                for (o, &b) in row.iter_mut().zip(bias) {
+                    *o += b;
                 }
             }
             return out;
@@ -71,10 +74,11 @@ impl Matrix {
     /// `other` ya aynı şekildedir ya da (1, cols) — satır bazlı broadcast.
     pub fn sub(&self, other: &Matrix) -> Matrix {
         if other.rows == 1 && other.cols == self.cols {
+            let bias = &other.data[..self.cols];
             let mut out = self.clone();
-            for i in 0..self.rows {
-                for j in 0..self.cols {
-                    out.set(i, j, self.get(i, j) - other.get(0, j));
+            for row in out.data.chunks_exact_mut(self.cols) {
+                for (o, &b) in row.iter_mut().zip(bias) {
+                    *o -= b;
                 }
             }
             return out;
