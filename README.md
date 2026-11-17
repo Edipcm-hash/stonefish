@@ -25,8 +25,8 @@ cargo build --release
 ./target/release/stonefish_ai train
 ./target/release/stonefish_ai eval
 
-# GPT: eğit → üret            (epoch, batch, max_steps)
-./target/release/stonefish_ai gpt-train 3 8
+# GPT: eğit → üret       (epoch, batch, max_steps, max_lr)
+./target/release/stonefish_ai gpt-train 6 8
 ./target/release/stonefish_ai gpt-gen "Akşam erken iner" 300 0.8
 ```
 
@@ -151,30 +151,58 @@ böylece her çağrıda yeni device buffer ayrılmaz.
 | Model | Metrik | Değer |
 |---|---|---|
 | MNIST MLP (784→128→10, SGD lr=0.01, 20 epoch) | test doğruluğu | **%98.12** |
-| GPT (842.632 param, 3 epoch) | final train CE | **1.7409** |
-| GPT | final val CE | **1.7247** |
+| GPT (842.632 param, 6 epoch) | en iyi **val CE** | **1.6337** |
+| GPT | son train CE | 1.5264 |
+
+### Eğitim prosedürü
+
+Koşu tekrar üretilebilir: hiperparametreler, seed'ler ve epoch metrikleri
+`runs/<timestamp>.json` manifestine yazılır.
+
+| Bileşen | Değer |
+|---|---|
+| Mimari | `d_model=128`, 4 katman, 4 head (`d_head=32`), `seq_len=128`, vocab 136 |
+| Veri | 2.870.158 karakter → 22.423 sequence (22.167 train / 256 val) |
+| Batch | 8 sequence (1.024 token/adım) |
+| Optimizer | Adam β=(0.9, 0.999), `max_lr=1e-3` |
+| LR programı | 150 adım doğrusal warmup → cosine ile 0.1× |
+| Gradyan kırpma | global L2 norm, `clip_norm=1.0` |
+| Checkpoint | her epoch sonunda **en iyi val** → `stonefish_gpt.bin`; nihai durum → `stonefish_gpt_final.bin` |
+| Seed | model `0xDEADBEEF`, shuffle `0xA5A51234` |
+| Toplam | 6 epoch × 2.771 adım = **16.626 adım**, 54.4 dk, ~5.218 tok/s (RTX 5070) |
 
 ### GPT eğitim eğrisi
 
-`d_model=128`, 4 katman, 4 head (`d_head=32`), `seq_len=128`, batch 8,
-char-level vocab 136, 22.359 train / 256 val sequence.
-Toplam 8.385 adım (~27 dk, ~5.400 tok/s, RTX 5070).
+| Epoch | train CE | val CE | süre | son LR | kırpılan adım |
+|---|---|---|---|---|---|
+| 0 | 2.1924 | 1.9060 | 521 s | 9.5e-4 | %80 |
+| 1 | 1.8026 | 1.7729 | 525 s | 7.8e-4 | %16 |
+| 2 | 1.6917 | 1.7069 | 548 s | 5.6e-4 | %3 |
+| 3 | 1.6198 | 1.6632 | 552 s | 3.3e-4 | %5 |
+| 4 | 1.5640 | 1.6388 | 556 s | 1.6e-4 | %21 |
+| 5 | 1.5264 | **1.6337** | 550 s | 1.0e-4 | %63 |
 
-| Epoch | train CE | val CE | süre |
-|---|---|---|---|
-| 0 | 2.3283 | 1.9907 | 518 s |
-| 1 | 1.8669 | 1.8158 | 530 s |
-| 2 | 1.7409 | 1.7247 | 566 s |
+Rastgele tahmin `ln(136) = 4.91`.
 
-Rastgele tahmin `ln(136) = 4.91`; eğri doyuma yaklaşıyor ama model hâlâ
-yetersiz eğitilmiş (8.385 adım, 8.6M token — bu ölçekteki char-LM'ler için az).
-Üretim çıktısı Türkçe'ye benzeyen ama anlamsız metin — beklenen davranış.
+**Okunması gerekenler:**
+
+* İlk epoch'ta adımların %80'i kırpılıyordu (warmup sırasında gradyan normu
+  ~3.2). Kırpma oranı epoch 2'de %3'e indi — yani eşik doğru yerde: normal
+  adımlara dokunmuyor, yalnızca sıçramaları kesiyor. Son epoch'ta oranın
+  %63'e çıkması LR'in küçülmesinden, gradyanların değil.
+* `train` ile `val` arasındaki fark epoch 3'ten sonra açılıyor
+  (epoch 5'te 1.5264 vs 1.6337). Bu, **doyum bölgesine girildiğinin** işareti:
+  7. epoch'tan itibaren val CE düşmeyebilir. Bir sonraki deney dropout veya
+  daha fazla veri olmalı, daha fazla epoch değil.
+* Üretim çıktısı Türkçe morfolojisine benziyor ama anlamsız — 842k parametre ve
+  17M token bu ölçek için az; beklenen davranış.
 
 ```console
 $ stonefish_ai gpt-gen "Akşam erken iner" 300 0.8
-Akşam erken iner cü:
-olur diye hepsim avuç ama, aklım, ama bilirtmedi bilmedim artık.
-Bizden mila seviyor güneş kapılara bilmekten.
+Akşam erken iner
+Böcekler doğurmuş gibi yalan mi
+Benden de bir kız bu gece bir anı ezilmiş ve ola
+Sevgici güneş insan bir kaya sarı sakınmış yüreği gece
 ...
 ```
 
@@ -192,7 +220,7 @@ src/
   nn.rs           Linear + MNIST model (de)serializasyonu
   transformer.rs  Embedding, MultiHeadSelfAttention, TransformerBlock, GPT, GptConfig
   checkpoint.rs   GPT checkpoint v2 (config + vocab + tensörler)
-  optim.rs        SGD, Adam (bias correction'lı)
+  optim.rs        SGD, Adam (bias correction'lı), gradyan kırpma
   loss.rs         softmax + cross-entropy
   data.rs         MNIST idx okuyucu, metin → sequence
   tokenizer.rs    karakter seviyesi tokenizer (deterministik ID)

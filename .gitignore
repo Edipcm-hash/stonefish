@@ -18,3 +18,4 @@ desktop.ini
 # Geçici çıktılar
 *.log
 bench_results/
+runs/

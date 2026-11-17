@@ -9,7 +9,7 @@ use stonefish_ai::checkpoint;
 use stonefish_ai::data::{load_images, load_labels_onehot, load_labels_raw, slice_rows};
 use stonefish_ai::loss::softmax_cross_entropy;
 use stonefish_ai::nn::{load_model, save_model, Linear};
-use stonefish_ai::optim::{Adam, SGD};
+use stonefish_ai::optim::{self, Adam, SGD};
 use stonefish_ai::tensor::Matrix;
 use stonefish_ai::tokenizer::Tokenizer;
 use stonefish_ai::transformer::{GptConfig, GPT};
@@ -27,7 +27,7 @@ const MODES: &[(&str, &str)] = &[
     ("eval", "kayıtlı MNIST modelini test setinde ölç"),
     ("predict", "kayıtlı MNIST modeliyle tahmin (eval ile aynı)"),
     ("tokenize", "tokenizer'ı doğrula + sequence sayısını bas"),
-    ("gpt-train", "mini GPT eğit [epoch] [batch]"),
+    ("gpt-train", "mini GPT eğit [epoch] [batch] [max_steps] [max_lr]"),
     ("gpt-gen", "kayıtlı GPT ile metin üret  [prompt] [token] [sıcaklık]"),
     ("test-ops", "op duman testi"),
     ("test-embed", "embedding duman testi"),
@@ -42,6 +42,10 @@ const MODES: &[(&str, &str)] = &[
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
+    args.get(i).and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn arg_f32(args: &[String], i: usize, default: f32) -> f32 {
     args.get(i).and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
@@ -100,55 +104,80 @@ fn main() {
 // ============================================================
 
 fn gpt_train(args: &[String]) {
-    let epochs = arg_usize(args, 0, 3);
+    let epochs = arg_usize(args, 0, 6);
     let batch_size = arg_usize(args, 1, 8);
     let max_steps = arg_usize(args, 2, 0); // 0 = sınırsız (duman testi için)
+    let max_lr = arg_f32(args, 3, 1e-3);
 
+    // --- Hiperparametreler (tek yerde, loglanır ve manifest'e yazılır) ---
+    const SEQ_LEN: usize = 128;
+    const D_MODEL: usize = 128;
+    const N_LAYERS: usize = 4;
+    const N_HEADS: usize = 4;
+    const WARMUP_STEPS: usize = 150;
+    const MIN_LR_RATIO: f32 = 0.1;
+    const CLIP_NORM: f32 = 1.0;
+    let model_seed = 0xDEADBEEFu64;
+    let shuffle_seed = 0xA5A5_1234u64;
+
+    let run_t0 = std::time::Instant::now();
     println!(
-        "🐟 StonefishAI v{} — GPT eğitimi (batch={}, GPU={})\n",
-        stonefish_ai::VERSION,
-        batch_size,
-        gpu::HAS_CUDA
+        "🐟 StonefishAI v{} — GPT eğitimi\n",
+        stonefish_ai::VERSION
+    );
+    println!(
+        "Donanım : GPU={} ({})\n",
+        gpu::HAS_CUDA,
+        if gpu::HAS_CUDA { "CUDA" } else { "CPU" }
     );
 
     let text = data::load_text(TEXT_PATH);
     let tok = Tokenizer::from_text(&text);
     let all_ids = tok.encode(&text);
-    let seq_len = 128;
-    let seqs = data::make_sequences(&all_ids, seq_len, seq_len);
+    let seqs = data::make_sequences(&all_ids, SEQ_LEN, SEQ_LEN);
 
     // Sondaki bir kısmı validasyon için ayır (ezber mi öğrenme mi?).
     let n_val = (seqs.len() / 50).clamp(4, 256).min(seqs.len() / 4);
     let n_train = seqs.len() - n_val;
-    println!(
-        "Vocab: {}, sequence: {} (train {}, val {}), seq_len: {}",
-        tok.vocab_size, seqs.len(), n_train, n_val, seq_len
-    );
 
-    let mut seed: u64 = 0xDEADBEEF;
+    let mut seed = model_seed;
     let config = GptConfig {
         vocab_size: tok.vocab_size,
-        max_seq_len: seq_len,
-        d_model: 128,
-        n_layers: 4,
-        n_heads: 4,
+        max_seq_len: SEQ_LEN,
+        d_model: D_MODEL,
+        n_layers: N_LAYERS,
+        n_heads: N_HEADS,
     };
     let model = GPT::new(config, &mut seed);
     let params = model.parameters();
     let n_params = model.n_params();
-    println!(
-        "Model: d_model={}, layers={}, heads={} (d_head={}), params={}\n",
-        config.d_model, config.n_layers, config.n_heads, config.d_head(), n_params
-    );
 
-    let mut opt = Adam::new(params, 0.0005);
-    let tokens_per_step = batch_size * seq_len;
+    let tokens_per_step = batch_size * SEQ_LEN;
     let steps_per_epoch = n_train.div_ceil(batch_size);
+    let total_steps = steps_per_epoch * epochs;
+
+    println!("Veri    : {} karakter → {} sequence (train {}, val {}), seq_len {}",
+             all_ids.len(), seqs.len(), n_train, n_val, SEQ_LEN);
+    println!("Model   : d_model={}, layers={}, heads={} (d_head={}), params={}",
+             config.d_model, config.n_layers, config.n_heads, config.d_head(), n_params);
+    println!("Optim   : Adam β=(0.9,0.999), max_lr={}, warmup={} adım, cosine → {}x, clip_norm={}",
+             max_lr, WARMUP_STEPS, MIN_LR_RATIO, CLIP_NORM);
+    println!("Plan    : {} epoch × {} adım = {} adım, batch={} ({} token/adım)",
+             epochs, steps_per_epoch, total_steps, batch_size, tokens_per_step);
+    println!("Seed    : model=0x{:X}, shuffle=0x{:X}", model_seed, shuffle_seed);
+    println!();
+
+    let mut opt = Adam::new(params, max_lr);
     let mut global_step = 0usize;
-    let mut addrng = 0xA5A5_1234u64;
+    let mut addrng = shuffle_seed;
+
+    // En iyi validasyonu izle: iyileşme olduğunda checkpoint'i tazele.
+    let mut best_val = f64::INFINITY;
+    let mut best_epoch = 0usize;
+    let mut history: Vec<(usize, f64, f64, f64, f32)> = Vec::new(); // epoch, train, val, süre, lr
 
     for epoch in 0..epochs {
-        // Epoch'a özgü karıştırma (eskiden her epoch aynı sırayı kullanıyordu).
+        // Epoch'a özgü karıştırma (her epoch farklı sıra).
         let mut order: Vec<usize> = (0..n_train).collect();
         for i in (1..order.len()).rev() {
             let j = (xorshift(&mut addrng) as usize) % (i + 1);
@@ -158,33 +187,46 @@ fn gpt_train(args: &[String]) {
         let epoch_t0 = std::time::Instant::now();
         let mut sum_loss = 0.0f64;
         let mut n_steps = 0usize;
+        let mut grad_norm_sum = 0.0f64;
+        let mut clipped = 0usize;
 
         let mut start = 0;
         while start < n_train {
             let end = (start + batch_size).min(n_train);
             let bs = end - start;
 
+            // --- LR programı: doğrusal warmup + cosine decay ---
+            let lr = lr_at(global_step, total_steps, max_lr, WARMUP_STEPS, MIN_LR_RATIO);
+            opt.lr = lr;
+
             // Batch'i satır paketle: (bs*seq_len, …)
-            let mut input_ids = Vec::with_capacity(bs * seq_len);
-            let mut targets = Vec::with_capacity(bs * seq_len);
+            let mut input_ids = Vec::with_capacity(bs * SEQ_LEN);
+            let mut targets = Vec::with_capacity(bs * SEQ_LEN);
             for k in start..end {
                 let (inp, tgt) = &seqs[order[k]];
                 input_ids.extend_from_slice(inp);
                 targets.extend_from_slice(tgt);
             }
 
-            let logits = model.forward_batch(&input_ids, bs, seq_len);
+            let logits = model.forward_batch(&input_ids, bs, SEQ_LEN);
             let loss = logits.softmax_cross_entropy_ids(&targets);
 
             opt.zero_grad();
             loss.backward();
+
+            // Gradayan kırpma: Adam'ın önünde, global norm üzerinden.
+            let gnorm = optim::clip_grad_norm(&opt.params, CLIP_NORM);
+            if gnorm > CLIP_NORM {
+                clipped += 1;
+            }
+            grad_norm_sum += gnorm as f64;
+
             opt.step();
 
             let l = loss.item();
             sum_loss += l as f64;
             n_steps += 1;
             global_step += 1;
-
             start = end;
 
             if n_steps % 50 == 0 {
@@ -192,8 +234,14 @@ fn gpt_train(args: &[String]) {
                 let elapsed = epoch_t0.elapsed().as_secs_f64();
                 let tps = (n_steps * tokens_per_step) as f64 / elapsed;
                 println!(
-                    "epoch {} step {:5}/{}  loss = {:.4}  ({:.0} tok/s)",
-                    epoch, n_steps, steps_per_epoch, avg, tps
+                    "epoch {} step {:5}/{}  loss {:.4}  lr {:.2e}  gnorm {:.2}  ({:.0} tok/s)",
+                    epoch,
+                    n_steps,
+                    steps_per_epoch,
+                    avg,
+                    lr,
+                    gnorm,
+                    tps
                 );
             }
 
@@ -206,23 +254,159 @@ fn gpt_train(args: &[String]) {
             }
         }
 
+        let epoch_secs = epoch_t0.elapsed().as_secs_f64();
         let train_loss = sum_loss / n_steps as f64;
-        let val_loss = eval_loss(&model, &seqs[n_train..], batch_size, seq_len);
+        let val_loss = eval_loss(&model, &seqs[n_train..], batch_size, SEQ_LEN);
+        history.push((epoch, train_loss, val_loss, epoch_secs, opt.lr));
+
+        let improved = val_loss < best_val;
         println!(
-            "\nEpoch {} → train CE = {:.4}, val CE = {:.4}, {:.1}s\n",
+            "\nEpoch {} → train CE = {:.4}, val CE = {:.4} ({:.1}s, gnorm ort {:.2}, kırpılan adım %{:.1}){}\n",
             epoch,
             train_loss,
             val_loss,
-            epoch_t0.elapsed().as_secs_f64()
+            epoch_secs,
+            grad_norm_sum / n_steps as f64,
+            100.0 * clipped as f64 / n_steps as f64,
+            if improved { "  ✅ yeni en iyi" } else { "" }
         );
+
+        if improved {
+            best_val = val_loss;
+            best_epoch = epoch;
+            checkpoint::save_gpt(GPT_PATH, &model, &tok)
+                .expect("en iyi checkpoint kaydedilemedi");
+            let _ = tok.save(GPT_VOCAB_PATH);
+        }
     }
 
-    println!("Model kaydediliyor → {}", GPT_PATH);
-    checkpoint::save_gpt(GPT_PATH, &model, &tok).expect("checkpoint kaydedilemedi");
-    if let Err(e) = tok.save(GPT_VOCAB_PATH) {
-        eprintln!("⚠️  vocab yan dosyası yazılamadı: {e}");
+    // Nihai durumu da sakla (en iyi ile karşılaştırmak için).
+    let final_path = GPT_PATH.replace(".bin", "_final.bin");
+    if let Err(e) = checkpoint::save_gpt(&final_path, &model, &tok) {
+        eprintln!("⚠️  nihai checkpoint yazılamadı ({final_path}): {e}");
     }
-    println!("✅ Kaydedildi ({} adım).\n🐟 GPT eğitimi tamam.", global_step);
+
+    let total_secs = run_t0.elapsed().as_secs_f64();
+    let manifest = write_manifest(
+        config,
+        n_params,
+        max_lr,
+        batch_size,
+        epochs,
+        global_step,
+        tokens_per_step,
+        model_seed,
+        shuffle_seed,
+        WARMUP_STEPS,
+        MIN_LR_RATIO,
+        CLIP_NORM,
+        best_epoch,
+        best_val,
+        &history,
+        total_secs,
+    );
+
+    println!("En iyi model : epoch {} (val CE = {:.4}) → {}", best_epoch, best_val, GPT_PATH);
+    println!("Nihai model  : {}", final_path);
+    match manifest {
+        Ok(path) => println!("Manifest     : {}", path),
+        Err(e) => eprintln!("⚠️  manifest yazılamadı: {e}"),
+    }
+    println!(
+        "\nToplam {:.1} dk, {} adım, ortalama {:.0} tok/s\n🐟 GPT eğitimi tamam.",
+        total_secs / 60.0,
+        global_step,
+        (global_step * tokens_per_step) as f64 / total_secs
+    );
+}
+
+/// Doğrusal warmup + cosine decay. `step` 0-tabanlı.
+fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f32) -> f32 {
+    if step < warmup {
+        // 0'dan başlamak yerine ilk adımda küçük ama pozitif bir LR
+        return max_lr * (step + 1) as f32 / warmup as f32;
+    }
+    let span = total.saturating_sub(warmup).max(1) as f32;
+    let t = ((step - warmup) as f32 / span).min(1.0);
+    let cos = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
+    max_lr * (min_ratio + (1.0 - min_ratio) * cos)
+}
+
+/// Koşuyu tekrar üretilebilir kılan manifest (JSON). `runs/` altına yazılır.
+#[allow(clippy::too_many_arguments)]
+fn write_manifest(
+    config: GptConfig,
+    n_params: usize,
+    max_lr: f32,
+    batch_size: usize,
+    epochs: usize,
+    total_steps: usize,
+    tokens_per_step: usize,
+    model_seed: u64,
+    shuffle_seed: u64,
+    warmup: usize,
+    min_lr_ratio: f32,
+    clip_norm: f32,
+    best_epoch: usize,
+    best_val: f64,
+    history: &[(usize, f64, f64, f64, f32)],
+    total_secs: f64,
+) -> std::io::Result<String> {
+    use std::io::Write;
+
+    std::fs::create_dir_all("runs")?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = format!("runs/gpt-{stamp}.json");
+
+    let mut s = String::new();
+    s.push_str("{\n");
+    s.push_str(&format!("  \"stonefish_version\": \"{}\",\n", stonefish_ai::VERSION));
+    s.push_str(&format!("  \"gpu\": {},\n", gpu::HAS_CUDA));
+    s.push_str("  \"config\": {\n");
+    s.push_str(&format!("    \"vocab_size\": {},\n", config.vocab_size));
+    s.push_str(&format!("    \"max_seq_len\": {},\n", config.max_seq_len));
+    s.push_str(&format!("    \"d_model\": {},\n", config.d_model));
+    s.push_str(&format!("    \"n_layers\": {},\n", config.n_layers));
+    s.push_str(&format!("    \"n_heads\": {},\n", config.n_heads));
+    s.push_str(&format!("    \"d_head\": {},\n", config.d_head()));
+    s.push_str(&format!("    \"n_params\": {}\n", n_params));
+    s.push_str("  },\n");
+    s.push_str("  \"optim\": {\n");
+    s.push_str("    \"name\": \"adam\",\n");
+    s.push_str("    \"beta1\": 0.9,\n");
+    s.push_str("    \"beta2\": 0.999,\n");
+    s.push_str(&format!("    \"max_lr\": {max_lr},\n"));
+    s.push_str(&format!("    \"warmup_steps\": {warmup},\n"));
+    s.push_str(&format!("    \"min_lr_ratio\": {min_lr_ratio},\n"));
+    s.push_str("    \"schedule\": \"linear_warmup+cosine\",\n");
+    s.push_str(&format!("    \"clip_norm\": {clip_norm}\n"));
+    s.push_str("  },\n");
+    s.push_str("  \"run\": {\n");
+    s.push_str(&format!("    \"epochs\": {epochs},\n"));
+    s.push_str(&format!("    \"batch_size\": {batch_size},\n"));
+    s.push_str(&format!("    \"tokens_per_step\": {tokens_per_step},\n"));
+    s.push_str(&format!("    \"total_steps\": {total_steps},\n"));
+    s.push_str(&format!("    \"model_seed\": \"0x{model_seed:X}\",\n"));
+    s.push_str(&format!("    \"shuffle_seed\": \"0x{shuffle_seed:X}\",\n"));
+    s.push_str(&format!("    \"wall_seconds\": {:.1}\n", total_secs));
+    s.push_str("  },\n");
+    s.push_str(&format!("  \"best_epoch\": {best_epoch},\n"));
+    s.push_str(&format!("  \"best_val_ce\": {:.6},\n", best_val));
+    s.push_str("  \"epochs\": [\n");
+    for (i, (ep, train, val, secs, lr)) in history.iter().enumerate() {
+        s.push_str(&format!(
+            "    {{\"epoch\": {ep}, \"train_ce\": {train:.6}, \"val_ce\": {val:.6}, \"seconds\": {secs:.1}, \"last_lr\": {lr:.6}}}{}\n",
+            if i + 1 < history.len() { "," } else { "" }
+        ));
+    }
+    s.push_str("  ]\n}\n");
+
+    let mut f = std::fs::File::create(&path)?;
+    f.write_all(s.as_bytes())?;
+    Ok(path)
 }
 
 /// Gradyansız değerlendirme: ortalama cross-entropy.

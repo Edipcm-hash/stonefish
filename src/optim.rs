@@ -30,6 +30,38 @@ impl SGD {
 }
 
 // ============================================================
+// Gradyan kırpma
+// ============================================================
+
+/// Global L2 norm kırpma: tüm parametrelerin gradyanlarını tek bir vektör gibi
+/// düşünüp normu `max_norm` ile sınırlar. Norm `max_norm`'u aşmıyorsa hiçbir
+/// şeye dokunmaz. Kırpma **öncesi** normu döndürür (eğitim loglarında izlenir;
+/// patlayan gradyanı kırpmadan önce görmek istiyoruz).
+///
+/// Toplam f64'te biriktirilir: 842k parametrede f32 toplamı taşma/incelik
+/// kaybına açıktır.
+pub fn clip_grad_norm(params: &[Tensor], max_norm: f32) -> f32 {
+    let mut sq = 0.0f64;
+    for p in params {
+        let g = p.grad.borrow();
+        for &v in &g.data {
+            sq += (v as f64) * (v as f64);
+        }
+    }
+    let norm = sq.sqrt() as f32;
+    if norm > max_norm && norm > 0.0 {
+        let scale = max_norm / norm;
+        for p in params {
+            let mut g = p.grad.borrow_mut();
+            for v in g.data.iter_mut() {
+                *v *= scale;
+            }
+        }
+    }
+    norm
+}
+
+// ============================================================
 // Adam (düzeltilmiş)
 // ============================================================
 
@@ -98,5 +130,59 @@ impl Adam {
                 d.data[k] -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autograd::Tensor;
+
+    fn leaf_with_grad(rows: usize, cols: usize, grads: Vec<f32>) -> Tensor {
+        let t = Tensor::leaf(Matrix::zeros(rows, cols), true);
+        *t.grad.borrow_mut() = Matrix::from_vec(rows, cols, grads);
+        t
+    }
+
+    #[test]
+    fn clip_leaves_small_grads_untouched() {
+        // norm = sqrt(3² + 4²) = 5 < max_norm=10 → dokunulmamalı
+        let t = leaf_with_grad(1, 2, vec![3.0, 4.0]);
+        let before = t.grad.borrow().data.clone();
+        let norm = clip_grad_norm(std::slice::from_ref(&t), 10.0);
+        assert!((norm - 5.0).abs() < 1e-6, "norm {norm}");
+        assert_eq!(t.grad.borrow().data, before);
+    }
+
+    #[test]
+    fn clip_scales_to_max_norm() {
+        // norm = 5 → max_norm=1 ile ölçek 0.2; yön korunur.
+        let t = leaf_with_grad(1, 2, vec![3.0, 4.0]);
+        let norm = clip_grad_norm(std::slice::from_ref(&t), 1.0);
+        assert!((norm - 5.0).abs() < 1e-6, "kırpma öncesi norm dönmeli: {norm}");
+        let g = t.grad.borrow();
+        assert!((g.get(0, 0) - 0.6).abs() < 1e-6, "g0={}", g.get(0, 0));
+        assert!((g.get(0, 1) - 0.8).abs() < 1e-6, "g1={}", g.get(0, 1));
+        let new_norm = (0.6f32 * 0.6 + 0.8 * 0.8).sqrt();
+        assert!((new_norm - 1.0).abs() < 1e-5, "yeni norm {new_norm}");
+    }
+
+    #[test]
+    fn clip_uses_global_norm_across_params() {
+        // İki parametre birlikte norm 5 eder; tek başına hiçbiri sınırı aşmaz.
+        let a = leaf_with_grad(1, 1, vec![3.0]);
+        let b = leaf_with_grad(1, 1, vec![4.0]);
+        let norm = clip_grad_norm(&[a.clone(), b.clone()], 2.5);
+        assert!((norm - 5.0).abs() < 1e-6);
+        assert!((a.grad.borrow().get(0, 0) - 1.5).abs() < 1e-6);
+        assert!((b.grad.borrow().get(0, 0) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clip_handles_zero_grads() {
+        let t = leaf_with_grad(1, 3, vec![0.0, 0.0, 0.0]);
+        let norm = clip_grad_norm(std::slice::from_ref(&t), 1.0);
+        assert_eq!(norm, 0.0);
+        assert_eq!(t.grad.borrow().data, vec![0.0, 0.0, 0.0]);
     }
 }
