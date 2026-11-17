@@ -127,6 +127,7 @@ fn main() {
         "en-prepare" => en_prepare(),
         "en-train" => en_train(rest),
         "demo" => demo(rest),
+        "bench" => bench(rest),
         "test-ffi" => test_ffi(),
         "en-eval" => en_eval(rest),
         "en-gen" => en_gen(rest),
@@ -1146,6 +1147,89 @@ fn en_train(args: &[String]) {
 #[cfg(not(feature = "cuda"))]
 fn en_train(_args: &[String]) {
     println!("❌ en-train CUDA gerektirir (--no-default-features ile derlendi).");
+}
+
+#[cfg(feature = "cuda")]
+fn bench(args: &[String]) {
+    // Basit --anahtar değer ayrıştırma
+    let get = |key: &str, def: usize| -> usize {
+        args.iter()
+            .position(|a| a == key)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(def)
+    };
+    let d = get("--d", 1024);
+    let layers = get("--layers", 16);
+    let heads = get("--heads", 8);
+    let ctx = get("--ctx", 512);
+    let batch = get("--batch", 4);
+    let accum = get("--accum", 16);
+    let steps = get("--steps", 6);
+    let vocab = get("--vocab", 16384);
+
+    let cfg = transformer::GptConfig {
+        vocab_size: vocab,
+        max_seq_len: ctx,
+        d_model: d,
+        n_layers: layers,
+        n_heads: heads,
+    };
+    let (free0, total) = stonefish_ai::sys::dev::mem_info();
+    let mut model = stonefish_ai::gpu_train::GpuGpt::new_random(cfg, batch, ctx, 0x1234_5678);
+    model.dropout_p = 0.0;
+    let n_params: usize = model.params_mut().iter().map(|p| p.n()).sum();
+    let tps = batch * accum * ctx;
+
+    println!(
+        "StonefishAI {} | {} | sıfır bağımlılık",
+        stonefish_ai::VERSION,
+        stonefish_ai::sys::dev::device_info().0
+    );
+    println!(
+        "model: d={d} layers={layers} heads={heads} ctx={ctx} vocab={vocab} -> {:.1}M parametre",
+        n_params as f64 / 1e6
+    );
+    println!("batch: {batch} × accum {accum} = {tps} token/adım");
+
+    let mut x = vec![0i32; batch * ctx];
+    let mut y = vec![0i32; batch * ctx];
+    for i in 0..x.len() {
+        x[i] = (i % (vocab - 1)) as i32;
+        y[i] = ((i + 1) % (vocab - 1)) as i32;
+    }
+
+    // ısınma
+    for _ in 0..2 {
+        for _ in 0..accum {
+            let _ = model.forward_backward(&x, &y);
+        }
+        model.step(4e-4, 1.0);
+    }
+    stonefish_ai::sys::dev::sync();
+
+    let t0 = std::time::Instant::now();
+    let mut last_loss = 0.0f32;
+    for _ in 0..steps {
+        for _ in 0..accum {
+            last_loss = model.forward_backward(&x, &y);
+        }
+        model.step(4e-4, 1.0);
+    }
+    stonefish_ai::sys::dev::sync();
+    let dt = t0.elapsed().as_secs_f64();
+
+    let (free1, _) = stonefish_ai::sys::dev::mem_info();
+    let used = (free0.saturating_sub(free1)) as f64 / 1e9;
+    println!("\nadım süresi: {:.0} ms", dt / steps as f64 * 1000.0);
+    println!("hız        : {:.0} token/s", steps as f64 * tps as f64 / dt);
+    println!("zirve VRAM : ~{used:.1} GB (toplam {:.1} GB)", total as f64 / 1e9);
+    println!("son loss   : {last_loss:.4}");
+}
+
+#[cfg(not(feature = "cuda"))]
+fn bench(_args: &[String]) {
+    println!("❌ bench CUDA gerektirir.");
 }
 
 #[cfg(feature = "cuda")]
