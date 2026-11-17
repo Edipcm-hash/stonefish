@@ -1,11 +1,11 @@
 // src/profile.rs
-// Hafif profil sayacları — "tam GPU" tartışmasını tahminle değil ölçümle
-// yürütmek için. Kapalıyken maliyeti tek bir atomic load'dur; `enable()` ile
-// açılır (CLI'daki `test-gpt-profile` modu kullanır).
+// Lightweight profiling counters - to settle the "full GPU" debate with
+// measurement instead of guesses. When disabled the cost is a single atomic
+// load; `enable()` turns it on (used by the CLI's `test-gpt-profile` mode).
 //
-// Ölçülen kovalar:
-//   matmul  : gpu::matmul_gpu içindeki toplam süre (transfer dahil)
-//   transfer: bunun içinden CPU→GPU + GPU→CPU kopyaları
+// Measured buckets:
+//   matmul  : total time inside gpu::matmul_gpu (including transfer)
+//   transfer: the CPU->GPU + GPU->CPU copies inside it
 //   attn_fwd / attn_bwd : Op::CausalAttention ileri/geri
 // Geri kalan = elementwise (LN, GELU, softmax, CE) + optimizer + paketleme.
 
@@ -70,7 +70,7 @@ pub fn add_attn_bwd(nanos: u64) {
     ATTN_BWD_NANOS.fetch_add(nanos, Ordering::Relaxed);
 }
 
-/// Anlık değerler: (matmul çağrısı, matmul ns, transfer ns, attn_fwd ns, attn_bwd ns)
+/// Instant values: (matmul calls, matmul ns, transfer ns, attn_fwd ns, attn_bwd ns)
 pub fn snapshot() -> (u64, u64, u64, u64, u64) {
     (
         MATMUL_CALLS.load(Ordering::Relaxed),
@@ -81,7 +81,7 @@ pub fn snapshot() -> (u64, u64, u64, u64, u64) {
     )
 }
 
-/// Detaylı anlık görüntü (profil modunun kullandığı).
+/// Detailed snapshot (used by the profile mode).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Snapshot {
     pub matmul_calls: u64,
@@ -115,7 +115,7 @@ pub fn snapshot_full() -> Snapshot {
     }
 }
 
-/// Profil kapalıyken `None` döner (tek atomic load maliyeti).
+/// Returns `None` when profiling is off (the cost of a single atomic load).
 #[inline]
 pub fn start() -> Option<std::time::Instant> {
     if enabled() {

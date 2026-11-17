@@ -1,8 +1,8 @@
 // tests/gpu_kernels.rs
 //
-// CUDA çekirdeklerini CPU referansına karşı doğrular. Referans olarak
-// *doğrulanmış* autograd yolları kullanılır (aynı formülü iki kez yazıp
-// iki kez yanlış yapma riskini ortadan kaldırır).
+// Validates the CUDA kernels against CPU references. The reference is the
+// *verified* autograd path (this removes the risk of writing the same
+// formula twice and getting it wrong twice).
 
 #![cfg(feature = "cuda")]
 
@@ -36,7 +36,7 @@ fn _touch_device_info() {
 }
 
 fn max_diff(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "uzunluk farkı");
+    assert_eq!(a.len(), b.len(), "length mismatch");
     a.iter()
         .zip(b)
         .map(|(x, y)| (x - y).abs())
@@ -83,8 +83,8 @@ fn gelu_kernels_match_cpu() {
     k::gelu_backward(&dx_dev, &dy_dev, &x_dev, n);
     let d_bwd = max_diff(&down(&dx_dev), &dx_cpu);
 
-    assert!(d_fwd < TOL, "gelu ileri farkı {d_fwd}");
-    assert!(d_bwd < TOL, "gelu geri farkı {d_bwd}");
+    assert!(d_fwd < TOL, "gelu forward diff {d_fwd}");
+    assert!(d_bwd < TOL, "gelu backward diff {d_bwd}");
     println!("  ✅ gelu: ileri {d_fwd:.2e}, geri {d_bwd:.2e}");
 }
 
@@ -108,7 +108,7 @@ fn layernorm_kernels_match_cpu() {
     let ln = x.layer_norm(&gamma, &beta, 1e-5);
     let y_cpu = ln.data.borrow().data.clone();
 
-    // Referans geri: dL/dy = dy_host olduğu için loss = sum(ln * dy)
+    // Reference backward: since dL/dy = dy_host, loss = sum(ln * dy)
     let dy_t = Tensor::leaf(Matrix::from_vec(rows, cols, dy_host.clone()), false);
     ln.mul_elem(&dy_t).sum().backward();
     let dx_cpu = x.grad.borrow().data.clone();
@@ -138,15 +138,15 @@ fn layernorm_kernels_match_cpu() {
     let d_dg = max_diff(&down(&dg_dev), &dg_cpu);
     let d_db = max_diff(&down(&db_dev), &db_cpu);
 
-    assert!(d_fwd < TOL, "LN ileri farkı {d_fwd}");
-    assert!(d_bwd < TOL, "LN dx farkı {d_bwd}");
-    assert!(d_dg < TOL, "LN dgamma farkı {d_dg}");
-    assert!(d_db < TOL, "LN dbeta farkı {d_db}");
+    assert!(d_fwd < TOL, "LN forward diff {d_fwd}");
+    assert!(d_bwd < TOL, "LN dx diff {d_bwd}");
+    assert!(d_dg < TOL, "LN dgamma diff {d_dg}");
+    assert!(d_db < TOL, "LN dbeta diff {d_db}");
     println!("  ✅ layernorm: fwd {d_fwd:.2e}, dx {d_bwd:.2e}, dγ {d_dg:.2e}, dβ {d_db:.2e}");
 }
 
 // ------------------------------------------------------------
-// Maskeli softmax (attention çekirdeği)
+// Masked softmax (the attention kernel)
 // ------------------------------------------------------------
 
 #[test]
@@ -157,7 +157,7 @@ fn masked_softmax_kernels_match_cpu() {
     let scale = 1.0 / (4.0f32).sqrt();
     let scores_host = rand_vec(bh * seq * seq, 4.0, &mut s);
 
-    // CPU referansı: nedensel softmax
+    // CPU reference: causal softmax
     let mut w_cpu = vec![0.0f32; bh * seq * seq];
     for b in 0..bh {
         for i in 0..seq {
@@ -184,7 +184,7 @@ fn masked_softmax_kernels_match_cpu() {
     let w_dev = zeros(bh * seq * seq);
     k::masked_softmax_forward(&w_dev, &scores_dev, batch, heads, seq, scale);
     let d_fwd = max_diff(&down(&w_dev), &w_cpu);
-    assert!(d_fwd < TOL, "masked softmax ileri farkı {d_fwd}");
+    assert!(d_fwd < TOL, "masked softmax forward diff {d_fwd}");
 
     // Geri: ds = w*(dw - Σ w·dw)*scale
     let dw_host = rand_vec(bh * seq * seq, 2.0, &mut s);
@@ -210,7 +210,7 @@ fn masked_softmax_kernels_match_cpu() {
     let ds_dev = zeros(bh * seq * seq);
     k::masked_softmax_backward(&ds_dev, &w_dev, &dw_dev, batch, heads, seq, scale);
     let d_bwd = max_diff(&down(&ds_dev), &ds_cpu);
-    assert!(d_bwd < TOL, "masked softmax geri farkı {d_bwd}");
+    assert!(d_bwd < TOL, "masked softmax backward diff {d_bwd}");
     println!("  ✅ masked softmax: fwd {d_fwd:.2e}, bwd {d_bwd:.2e}");
 }
 
@@ -255,9 +255,9 @@ fn ce_kernels_match_cpu() {
     k::ce_backward(&dlogits_dev, &probs_dev, &targets_dev, rows, classes, 1.0);
     let d_grad = max_diff(&down(&dlogits_dev), &dlogits_cpu);
 
-    assert!(d_loss < 1e-4, "CE loss farkı {d_loss}");
-    assert!(d_probs < TOL, "CE probs farkı {d_probs}");
-    assert!(d_grad < TOL, "CE gradyan farkı {d_grad}");
+    assert!(d_loss < 1e-4, "CE loss diff {d_loss}");
+    assert!(d_probs < TOL, "CE probs diff {d_probs}");
+    assert!(d_grad < TOL, "CE gradient diff {d_grad}");
     println!("  ✅ cross-entropy: loss {d_loss:.2e}, probs {d_probs:.2e}, grad {d_grad:.2e}");
 }
 
@@ -275,7 +275,7 @@ fn embedding_kernels_match_cpu() {
     let ids: Vec<usize> = vec![1, 3, 0, 5, 2, 3];
     let ids_i32: Vec<i32> = ids.iter().map(|&i| i as i32).collect();
 
-    // v2: yalnız token gömmesi (konum bilgisi RoPE'den gelir)
+    // v2: token embedding only (position comes from RoPE)
     let emb = Embedding::new(vocab, d, &mut s);
     let tok_host = emb.token_emb.data.borrow().data.clone();
     let dy_host = rand_vec(rows * d, 2.0, &mut s);
@@ -299,8 +299,8 @@ fn embedding_kernels_match_cpu() {
     k::embedding_backward_tok(&dtok_dev, &dy_dev, &ids_dev, rows, d);
     let d_tok = max_diff(&down(&dtok_dev), &dtok_cpu);
 
-    assert!(d_fwd < TOL, "embedding ileri farkı {d_fwd}");
-    assert!(d_tok < TOL, "embedding dtok farkı {d_tok}");
+    assert!(d_fwd < TOL, "embedding forward diff {d_fwd}");
+    assert!(d_tok < TOL, "embedding dtok diff {d_tok}");
     println!("  ✅ embedding: fwd {d_fwd:.2e}, dtok {d_tok:.2e}");
 }
 
@@ -313,12 +313,12 @@ fn adam_kernel_matches_cpu() {
     use stonefish_ai::optim::Adam;
 
     let mut s = 6u64;
-    let n = 257; // tek blok sınırında değil
+    let n = 257; // not on a block boundary
     let p_host = rand_vec(n, 2.0, &mut s);
     let g_host = rand_vec(n, 0.5, &mut s);
     let lr = 1e-3f32;
 
-    // Referans: optim::Adam ile 3 adım (aynı gradyan)
+    // Reference: 3 steps with optim::Adam (same gradient)
     let p = Tensor::leaf(Matrix::from_vec(1, n, p_host.clone()), true);
     let mut opt = Adam::new(vec![p.clone()], lr);
     for _ in 0..3 {
@@ -339,12 +339,12 @@ fn adam_kernel_matches_cpu() {
         k::adam_step(&p_dev, &g_dev, &m_dev, &v_dev, lr, b1, b2, eps, bc1, bc2, n);
     }
     let d = max_diff(&down(&p_dev), &p_cpu);
-    assert!(d < 1e-6, "adam farkı {d}");
+    assert!(d < 1e-6, "adam diff {d}");
     println!("  ✅ adam: max fark {d:.2e}");
 }
 
 // ------------------------------------------------------------
-// Cihaz-üstü (batched) GEMM'ler
+// On-device (batched) GEMMs
 // ------------------------------------------------------------
 
 #[test]
@@ -352,10 +352,10 @@ fn dev_gemm_modes_match_cpu() {
     use stonefish_ai::gpu::GemmMode;
 
     let mut s = 8u64;
-    // Farklı şekiller + "geniş satır adımı" (view benzetimi: row > cols)
+    // Different shapes + a "wide row stride" (view simulation: row > cols)
     let (m, n, k) = (6usize, 5usize, 4usize);
 
-    // A: m×k, satır adımı 8 (k'dan büyük); B: k×n satır adımı 7
+    // A: m x k with row stride 8 (larger than k); B: k x n with row stride 7
     let (ar, br) = (8usize, 7usize);
     let a_buf = rand_vec(m * ar, 2.0, &mut s);
     let b_buf = rand_vec(k * br, 2.0, &mut s);
@@ -378,7 +378,7 @@ fn dev_gemm_modes_match_cpu() {
     }
     let d1 = max_diff(&down(&c_dev), &c);
 
-    // NT: C = A·Bᵀ  (B'yi n×k gibi kullan)
+    // NT: C = A*B^T  (treat B as n x k)
     let b_nt = rand_vec(n * br, 2.0, &mut s);
     let b_nt_dev = up(&b_nt);
     stonefish_ai::gpu::dev_gemm(
@@ -404,7 +404,7 @@ fn dev_gemm_modes_match_cpu() {
     }
     let d2 = max_diff(&down(&c_dev), &c);
 
-    // TN: C = Aᵀ·B  (A'yı k×m gibi kullan)
+    // TN: C = A^T*B  (treat A as k x m)
     let a_tn = rand_vec(k * ar, 2.0, &mut s);
     let a_tn_dev = up(&a_tn);
     stonefish_ai::gpu::dev_gemm(
@@ -430,9 +430,9 @@ fn dev_gemm_modes_match_cpu() {
     }
     let d3 = max_diff(&down(&c_dev), &c);
 
-    assert!(d1 < TOL, "GEMM NN farkı {d1}");
-    assert!(d2 < TOL, "GEMM NT farkı {d2}");
-    assert!(d3 < TOL, "GEMM TN farkı {d3}");
+    assert!(d1 < TOL, "GEMM NN diff {d1}");
+    assert!(d2 < TOL, "GEMM NT diff {d2}");
+    assert!(d3 < TOL, "GEMM TN diff {d3}");
     println!("  ✅ dev_gemm: NN {d1:.2e}, NT {d2:.2e}, TN {d3:.2e}");
 }
 
@@ -483,14 +483,14 @@ fn dev_batched_gemm_matches_cpu() {
             }
         }
     }
-    assert!(d < TOL, "batched NT farkı {d}");
+    assert!(d < TOL, "batched NT diff {d}");
     println!("  ✅ dev_batched_gemm: NT {d:.2e}");
 }
 
 #[test]
 fn batched_attention_scores_with_head_views() {
-    // Gerçek kullanım: q/k (B*S, D) matrisleri, head dilimleri view offset'iyle
-    // (h*d_head) alınır, batch üzerinde strided. Skorlar [head][batch][S][S].
+    // Real use: q/k (B*S, D) matrices, head slices taken with a view offset
+    // (h*d_head), strided over batch. Scores are [head][batch][S][S].
     use stonefish_ai::gpu::GemmMode;
 
     let mut s = 11u64;
@@ -550,15 +550,15 @@ fn batched_attention_scores_with_head_views() {
             }
         }
     }
-    assert!(worst < TOL, "attention skor farkı {worst} ({detail})");
-    println!("  ✅ attention skorları (head view + strided batch): {worst:.2e}");
+    assert!(worst < TOL, "attention score diff {worst} ({detail})");
+    println!("  ✅ attention scores (head view + strided batch): {worst:.2e}");
 }
 
 #[test]
 fn attention_backward_composition_matches_cpu() {
-    // GPU eğiticisinin attention geri yayılımını (dV, dW, softmax, dQ, dK)
-    // birebir kurar ve CPU autograd'ın causal_attention geri yayılımıyla
-    // karşılaştırır. View/strided çağrıların bileşimi burada sınanıyor.
+    // Rebuilds the GPU trainer's attention backward pass (dV, dW, softmax, dQ,
+    // dK) exactly and compares it with the CPU autograd causal_attention
+    // backward. The composition of view/strided calls is checked here.
     use stonefish_ai::gpu::GemmMode;
 
     let mut s = 12u64;
@@ -572,7 +572,7 @@ fn attention_backward_composition_matches_cpu() {
     let v_host = rand_vec(bs * d, 1.0, &mut s);
     let da_host = rand_vec(bs * d, 1.0, &mut s); // dAttn
 
-    // --- CPU referansı ---
+    // --- CPU reference ---
     let q = Tensor::leaf(Matrix::from_vec(bs, d, q_host.clone()), true);
     let k = Tensor::leaf(Matrix::from_vec(bs, d, k_host.clone()), true);
     let v = Tensor::leaf(Matrix::from_vec(bs, d, v_host.clone()), true);
@@ -582,9 +582,9 @@ fn attention_backward_composition_matches_cpu() {
     let dq_cpu = q.grad.borrow().data.clone();
     let dk_cpu = k.grad.borrow().data.clone();
     let dv_cpu = v.grad.borrow().data.clone();
-    let attn_cpu = attn.data.borrow().data.clone(); // attention ÇIKTISI (W·V)
+    let attn_cpu = attn.data.borrow().data.clone(); // the attention OUTPUT (W*V)
 
-    // --- GPU: aynı bileşim ---
+    // --- GPU: the same composition ---
     let q_dev = up(&q_host);
     let k_dev = up(&k_host);
     let v_dev = up(&v_host);
@@ -622,7 +622,7 @@ fn attention_backward_composition_matches_cpu() {
     }
     k::masked_softmax_forward(&w, &scores, b, nh, seq, scale);
 
-    // attention çıktısı: attn = W·V
+    // attention output: attn = W*V
     let mut attn = zeros(bs * d);
     for h in 0..nh {
         let off = h * dh;
@@ -696,7 +696,7 @@ fn attention_backward_composition_matches_cpu() {
             GemmMode::Nt,
         );
     }
-    // softmax geri (dscores yerinde değil: ayrı tampon)
+    // softmax backward (dscores is not in place: separate buffer)
     let ds = zeros(nh * b * seq * seq);
     k::masked_softmax_backward(&ds, &w, &dscores, b, nh, seq, scale);
 
@@ -758,17 +758,17 @@ fn attention_backward_composition_matches_cpu() {
     let d_k = max_diff(&dk_got, &dk_cpu);
     let d_v = max_diff(&dv_got, &dv_cpu);
     println!("  attn {d_w:.2e}  dQ {d_q:.2e}  dK {d_k:.2e}  dV {d_v:.2e}");
-    assert!(d_w < TOL, "attention çıktı farkı {d_w}");
-    assert!(d_q < TOL, "dQ farkı {d_q}");
-    assert!(d_k < TOL, "dK farkı {d_k}");
-    assert!(d_v < TOL, "dV farkı {d_v}");
+    assert!(d_w < TOL, "attention output diff {d_w}");
+    assert!(d_q < TOL, "dQ diff {d_q}");
+    assert!(d_k < TOL, "dK diff {d_k}");
+    assert!(d_v < TOL, "dV diff {d_v}");
 }
 
 #[test]
 fn gemm_tn_and_beta_accumulation_real_shapes() {
-    // block_backward'ın iki kritik yolu:
+    // Two critical paths of block_backward:
     //   dwo = attnᵀ·dOut   (Tn, (BS,D)ᵀ·(BS,D) → (D,D))
-    //   dln1 = dQ·wqᵀ + dK·wkᵀ + dV·wvᵀ  (beta=1 ile biriktirme)
+    //   dln1 = dQ*wq^T + dK*wk^T + dV*wv^T  (accumulation with beta=1)
     use stonefish_ai::gpu::GemmMode;
 
     let mut s = 13u64;
@@ -791,7 +791,7 @@ fn gemm_tn_and_beta_accumulation_real_shapes() {
             worst = worst.max((got[i * d + j] - acc).abs());
         }
     }
-    assert!(worst < TOL, "Tn (dwo) farkı {worst}");
+    assert!(worst < TOL, "Tn (dwo) diff {worst}");
 
     // beta biriktirme: C = A1·B1ᵀ + A2·B2ᵀ + A3·B3ᵀ
     let cols = 8usize;
@@ -837,12 +837,12 @@ fn gemm_tn_and_beta_accumulation_real_shapes() {
             worst2 = worst2.max((got[r * cols + j] - want).abs());
         }
     }
-    assert!(worst2 < TOL, "beta biriktirme farkı {worst2}");
+    assert!(worst2 < TOL, "beta accumulation diff {worst2}");
     println!("  ✅ Tn dwo {worst:.2e}, beta-accumulate {worst2:.2e}");
 }
 
 // ------------------------------------------------------------
-// Yardımcı çekirdekler
+// Helper kernels
 // ------------------------------------------------------------
 
 #[test]
@@ -865,42 +865,42 @@ fn elementwise_and_reduction_kernels() {
         }
     }
     let d1 = max_diff(&down(&out_dev), &ref_out);
-    assert!(d1 < 1e-6, "add_bias farkı {d1}");
+    assert!(d1 < 1e-6, "add_bias diff {d1}");
 
     // add_inplace
     let acc_dev = up(&a);
     k::add_inplace(&acc_dev, &a_dev, n);
     let ref2: Vec<f32> = a.iter().map(|v| v * 2.0).collect();
     let d2 = max_diff(&down(&acc_dev), &ref2);
-    assert!(d2 < 1e-6, "add_inplace farkı {d2}");
+    assert!(d2 < 1e-6, "add_inplace diff {d2}");
 
     // zero_fill
     let z_dev = up(&a);
     k::zero_fill(&z_dev, n);
     let d3 = down(&z_dev).iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-    assert!(d3 == 0.0, "zero_fill farkı {d3}");
+    assert!(d3 == 0.0, "zero_fill diff {d3}");
 
     // sum_squares + scale_inplace
     let acc = zeros(1);
     k::sum_squares(&acc, &a_dev, n);
     let ref_sq: f32 = a.iter().map(|v| v * v).sum();
     let d4 = (down(&acc)[0] - ref_sq).abs();
-    assert!(d4 < 1e-2, "sum_squares farkı {d4} (ref {ref_sq})");
+    assert!(d4 < 1e-2, "sum_squares diff {d4} (ref {ref_sq})");
 
     let sc_dev = up(&a);
     k::scale_inplace(&sc_dev, n, 0.5);
     let ref3: Vec<f32> = a.iter().map(|v| v * 0.5).collect();
     let d5 = max_diff(&down(&sc_dev), &ref3);
-    assert!(d5 < 1e-6, "scale_inplace farkı {d5}");
+    assert!(d5 < 1e-6, "scale_inplace diff {d5}");
 
     println!("  ✅ elementwise/reduction: {d1:.1e} {d2:.1e} {d3:.1e} {d4:.1e} {d5:.1e}");
 }
 
 // ============================================================
-// Yeni mimari çekirdekleri (RMSNorm, SwiGLU, RoPE, dropout)
+// New architecture kernels (RMSNorm, SwiGLU, RoPE, dropout)
 // ============================================================
 
-/// Basit xorshift — test verisi üretimi için.
+/// Simple xorshift - for generating test data.
 fn rnd(n: usize, seed: &mut u64, scale: f32) -> Vec<f32> {
     (0..n)
         .map(|_| {
@@ -944,7 +944,7 @@ fn rmsnorm_forward_matches_cpu() {
     k::rmsnorm_forward(&out, &xhat, &dxi, &dx, &dg, rows, cols, eps);
     assert!(max_diff(&down(&out), &rmsnorm_cpu(&x, &g, rows, cols, eps)) < TOL);
 
-    // xhat'in karesel ortalaması ~1 olmalı (ölçek doğru mu)
+    // the mean square of xhat must be ~1 (is the scale right)
     let xh = down(&xhat);
     for r in 0..rows {
         let ms: f32 = (0..cols)
@@ -954,7 +954,7 @@ fn rmsnorm_forward_matches_cpu() {
         assert!((ms - 1.0).abs() < 1e-3, "xhat rms {ms}");
     }
 
-    // dx: sayısal türevle karşılaştır (loss = sum(out * w))
+    // dx: compare against a numerical derivative (loss = sum(out * w))
     let w = rnd(rows * cols, &mut s, 1.0);
     let f = |xv: &[f32]| -> f32 {
         rmsnorm_cpu(xv, &g, rows, cols, eps)
@@ -972,7 +972,7 @@ fn rmsnorm_forward_matches_cpu() {
         xm[i] -= eps_num;
         dx_num[i] = (f(&xp) - f(&xm)) / (2.0 * eps_num);
     }
-    // dgamma = sum_r dy*xhat ; dx çekirdeği dy = w ile
+    // dgamma = sum_r dy*xhat ; the dx kernel with dy = w
     let dy = up(&w);
     let dx_out = zeros(rows * cols);
     let dgam = zeros(cols);
@@ -980,7 +980,7 @@ fn rmsnorm_forward_matches_cpu() {
     k::rmsnorm_param_grad(&dgam, &dy, &xhat, rows, cols);
     let got = down(&dx_out);
     let diff = max_diff(&got, &dx_num);
-    assert!(diff < 2e-3, "rmsnorm dx farkı {diff}");
+    assert!(diff < 2e-3, "rmsnorm dx diff {diff}");
 
     let mut dg_num = vec![0f32; cols];
     let fg = |gv: &[f32]| -> f32 {
@@ -998,7 +998,7 @@ fn rmsnorm_forward_matches_cpu() {
         dg_num[i] = (fg(&gp) - fg(&gm)) / (2.0 * eps_num);
     }
     let dgd = max_diff(&down(&dgam), &dg_num);
-    assert!(dgd < 2e-3, "rmsnorm dgamma farkı {dgd}");
+    assert!(dgd < 2e-3, "rmsnorm dgamma diff {dgd}");
 }
 
 #[test]
@@ -1019,7 +1019,7 @@ fn silu_mul_matches_cpu() {
         .collect();
     assert!(max_diff(&down(&out), &cpu) < TOL);
 
-    // geri yayılım: dy = 1 → dgate = up*silu'(gate), dup = silu(gate)
+    // backward: dy = 1 -> dgate = up*silu'(gate), dup = silu(gate)
     let dy = up(&vec![1.0f32; n]);
     let dgate = zeros(n);
     let dup = zeros(n);
@@ -1052,7 +1052,7 @@ fn rope_forward_and_inverse() {
     k::rope_forward(&rot, &xd, &cos_d, &sin_d, batch, seq, n_heads, d_head);
     let fwd = down(&rot);
 
-    // pozitif norm korunmalı (dönme izometridir) ve 0. konumda değişim olmamalı
+    // the norm must be preserved (rotation is an isometry) and position 0 must not change
     for r in 0..(batch * seq) {
         if r % seq == 0 {
             for i in 0..(n_heads * d_head) {
@@ -1063,15 +1063,15 @@ fn rope_forward_and_inverse() {
     let norm = |v: &[f32]| v.iter().map(|a| a * a).sum::<f32>();
     assert!(
         (norm(&fwd) - norm(&x)).abs() / norm(&x) < 1e-4,
-        "norm korunmadı"
+        "the norm was not preserved"
     );
 
-    // geri yayılım dönmeyi tersine çevirir → orijinali geri vermeli
+    // the backward pass inverts the rotation -> it must return the original
     let back = zeros(n);
     k::rope_backward(&back, &rot, &cos_d, &sin_d, batch, seq, n_heads, d_head);
     let b = down(&back);
     let d = max_diff(&b, &x);
-    assert!(d < 1e-4, "rope ters dönüş farkı {d}");
+    assert!(d < 1e-4, "rope inverse rotation diff {d}");
 }
 
 #[test]
@@ -1087,21 +1087,21 @@ fn dropout_scales_and_masks() {
     let frac = zeros_n as f32 / n as f32;
     assert!(
         (frac - p).abs() < 0.03,
-        "dropout oranı {frac} (beklenen {p})"
+        "dropout rate {frac} (expected {p})"
     );
     let expected = 1.0 / (1.0 - p);
     for v in out.iter().filter(|v| **v > 0.0).take(100) {
-        assert!((v - expected).abs() < 1e-5, "ölçek {v} != {expected}");
+        assert!((v - expected).abs() < 1e-5, "scale {v} != {expected}");
     }
     assert!(kept > 0);
 
-    // geri yayılım aynı maskeyi uygulamalı
+    // the backward pass must apply the same mask
     let dx = up(&vec![1.0f32; n]);
     k::dropout_backward(&dx, n, p, 12345);
     let d = down(&dx);
     for i in 0..n {
         if out[i] == 0.0 {
-            assert_eq!(d[i], 0.0, "maske tutarsız at {i}");
+            assert_eq!(d[i], 0.0, "inconsistent mask at {i}");
         } else {
             assert!((d[i] - expected).abs() < 1e-5);
         }

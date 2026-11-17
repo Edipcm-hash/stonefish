@@ -1,11 +1,11 @@
 // src/tensor.rs
-// StonefishAI — sıfırdan yazılmış row-major 2D matris.
+// StonefishAI - a from-scratch row-major 2D matrix.
 //
-// Batch'li işler (GPT eğitimi) ayrı bir 3D tipiyle değil, **satır paketleme**
-// ile yapılır: (B, S, D) yerine (B*S, D) matrisi kullanılır. LayerNorm, Linear,
-// GELU, bias-add ve softmax zaten satır-bazlı olduğu için bu dönüşüm bedava;
-// yalnızca attention gerçek 3D yapı ister ve o tek yer `Op::CausalAttention`
-// içinde batch/seq bilgisiyle çözülür. Böylece tek bir autograd motoru yeter.
+// Batched work (GPT training) is not done with a separate 3D type but by
+// **row packing**: a (B*S, D) matrix instead of (B, S, D). LayerNorm, Linear,
+// GELU, bias-add and softmax are already row-wise so the conversion is free;
+// only attention needs real 3D structure and that single place is resolved
+// inside `Op::CausalAttention` with batch/seq metadata. One engine suffices.
 
 use std::fmt;
 
@@ -26,7 +26,7 @@ impl Matrix {
     }
 
     pub fn from_vec(rows: usize, cols: usize, data: Vec<f32>) -> Self {
-        assert_eq!(rows * cols, data.len(), "boyut uyuşmuyor");
+        assert_eq!(rows * cols, data.len(), "size mismatch");
         Self { rows, cols, data }
     }
 
@@ -60,11 +60,11 @@ impl Matrix {
         m
     }
 
-    /// `other` ya aynı şekildedir ya da (1, cols) — satır bazlı broadcast.
+    /// `other` either has the same shape or is (1, cols) - row-wise broadcast.
     pub fn add(&self, other: &Matrix) -> Matrix {
         if other.rows == 1 && other.cols == self.cols {
-            // Bias ekleme her katmanda çalışır; dilim tabanlı zip sınır kontrolü
-            // yapmaz ve vektörleşir (eski get/set döngüsü ölçümde pahalıydı).
+            // Bias addition runs in every layer; the slice-based zip performs no bounds
+            // checks and vectorizes (the old get/set loop was expensive in the profile).
             let bias = &other.data[..self.cols];
             let mut out = self.clone();
             for row in out.data.chunks_exact_mut(self.cols) {
@@ -77,7 +77,7 @@ impl Matrix {
         assert_eq!(
             (self.rows, self.cols),
             (other.rows, other.cols),
-            "add boyut"
+            "add size"
         );
         let data = self
             .data
@@ -88,7 +88,7 @@ impl Matrix {
         Matrix::from_vec(self.rows, self.cols, data)
     }
 
-    /// `other` ya aynı şekildedir ya da (1, cols) — satır bazlı broadcast.
+    /// `other` either has the same shape or is (1, cols) - row-wise broadcast.
     pub fn sub(&self, other: &Matrix) -> Matrix {
         if other.rows == 1 && other.cols == self.cols {
             let bias = &other.data[..self.cols];
@@ -103,7 +103,7 @@ impl Matrix {
         assert_eq!(
             (self.rows, self.cols),
             (other.rows, other.cols),
-            "sub boyut"
+            "sub size"
         );
         let data = self
             .data
@@ -118,7 +118,7 @@ impl Matrix {
         assert_eq!(
             (self.rows, self.cols),
             (other.rows, other.cols),
-            "mul_elem boyut"
+            "mul_elem size"
         );
         let data = self
             .data
@@ -135,9 +135,9 @@ impl Matrix {
     }
 
     /// Naif CPU matmul (referans / yedek yol).
-    /// Performans kritik yerlerde `gpu::matmul_gpu` kullanılır.
+    /// Performance-critical places use `gpu::matmul_gpu`.
     pub fn matmul(&self, other: &Matrix) -> Matrix {
-        assert_eq!(self.cols, other.rows, "matmul boyut");
+        assert_eq!(self.cols, other.rows, "matmul size");
         let (m, k, n) = (self.rows, self.cols, other.cols);
         let mut out = Matrix::zeros(m, n);
         for i in 0..m {
@@ -169,7 +169,7 @@ impl Matrix {
         Matrix::from_vec(self.rows, self.cols, data)
     }
 
-    /// Bir skaler değeri okurken kullanılan kısayol (yalnızca 1x1 matrislerde anlamlı).
+    /// Shortcut for reading a scalar value (only meaningful for 1x1 matrices).
     #[inline]
     pub fn scalar(&self) -> f32 {
         self.data[0]

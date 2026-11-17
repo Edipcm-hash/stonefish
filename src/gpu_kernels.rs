@@ -1,22 +1,22 @@
 // src/gpu_kernels.rs
-// CUDA çekirdeklerinin Rust tarafı — HARİCİ CRATE YOK.
+// The Rust side of the CUDA kernels - NO EXTERNAL CRATE.
 //
-// NVRTC ile çalışma zamanında derleme + PTX disk önbelleği `gpu` modülünde
-// (`kernel`/`launch`). Burada yalnızca tipli sarmalayıcılar var.
+// Runtime compilation via NVRTC and the PTX disk cache live in the `gpu`
+// module (`kernel`/`launch`). Only typed wrappers live here.
 
 #![cfg(feature = "cuda")]
 
 use crate::gpu::{self, cfg_1d, cfg_rows};
 use crate::sys::dev::{DevPtr, Kargs};
 
-/// Çekirdek kaynağı — derleme zamanında gömülür.
+/// Kernel source - embedded at build time.
 pub const SRC: &str = include_str!("../kernels/stonefish.cu");
 
 // ============================================================
 // Elementwise
 // ============================================================
 
-/// out = a + bias (satır bazlı broadcast)
+/// out = a + bias (row-wise broadcast)
 pub fn add_bias(out: &impl DevPtr, a: &impl DevPtr, bias: &impl DevPtr, rows: usize, cols: usize) {
     let mut k = Kargs::new();
     k.buf(out)
@@ -143,7 +143,7 @@ pub fn layernorm_param_grad(
 }
 
 // ============================================================
-// Attention softmax'ı
+// Attention softmax
 // ============================================================
 
 pub fn masked_softmax_forward(
@@ -271,7 +271,7 @@ pub fn ce_backward(
 }
 
 // ============================================================
-// Adam / gradyan kırpma
+// Adam / gradient clipping
 // ============================================================
 
 #[allow(clippy::too_many_arguments)]
@@ -323,7 +323,7 @@ pub fn scale_inplace(x: &impl DevPtr, n: usize, s: f32) {
 }
 
 // ============================================================
-// Yeni mimari için Rust sarmalayıcıları
+// Rust wrappers for the new architecture
 // ============================================================
 
 #[allow(clippy::too_many_arguments)]
@@ -394,7 +394,7 @@ pub fn rmsnorm_param_grad(
         .buf(xhat)
         .i32(rows as i32)
         .i32(cols as i32);
-    // Satır parçalama: yeterli paralellik için ~8192 blok hedefle.
+    // Row splitting: aim for ~8192 blocks to get enough parallelism.
     let chunks = (8192 / cols.max(1)).clamp(1, 32) as u32;
     gpu::launch(
         "rmsnorm_param_grad",
@@ -428,7 +428,7 @@ pub fn silu_mul_backward(
     gpu::launch("silu_mul_backward", cfg_1d(n), 0, &mut k);
 }
 
-/// RoPE cos/sin tablosunu host'ta üret: (seq × d_head/2).
+/// Build the RoPE cos/sin table on the host: (seq x d_head/2).
 pub fn rope_tables(seq: usize, d_head: usize) -> (Vec<f32>, Vec<f32>) {
     let half = d_head / 2;
     let mut cos_t = Vec::with_capacity(seq * half);
@@ -506,7 +506,7 @@ pub fn dropout_backward(dx: &impl DevPtr, n: usize, p: f32, seed: u32) {
     gpu::launch("dropout_backward", cfg_1d(n), 0, &mut k);
 }
 
-/// RoPE'lu mimari: yalnız token gömmesi (pozisyon gömme yok).
+/// RoPE architecture: token embedding only (no positional embedding).
 pub fn embedding_forward_tok(
     out: &impl DevPtr,
     ids: &impl DevPtr,
@@ -540,10 +540,10 @@ pub fn embedding_backward_tok(
 }
 
 // ============================================================
-// KV-cache üretimi
+// KV-cache generation
 // ============================================================
 
-/// Tek satır softmax (maske yok).
+/// Single-row softmax (no mask).
 pub fn softmax_vec(out: &impl DevPtr, x: &impl DevPtr, n: usize) {
     let threads = 128u32;
     let mut k = Kargs::new();
@@ -556,7 +556,7 @@ pub fn softmax_vec(out: &impl DevPtr, x: &impl DevPtr, n: usize) {
     );
 }
 
-/// Belirli bir konum için RoPE (tek token).
+/// RoPE for a given position (a single token).
 pub fn rope_forward_pos(
     out: &impl DevPtr,
     x: &impl DevPtr,
@@ -578,7 +578,7 @@ pub fn rope_forward_pos(
     gpu::launch("rope_forward_pos", cfg_1d(total), 0, &mut k);
 }
 
-/// k/v vektörünü cache'e yaz (yerleşim: [head][capacity][d_head]).
+/// Write the k/v vector into the cache (layout: [head][capacity][d_head]).
 #[allow(clippy::too_many_arguments)]
 pub fn kv_store(
     cache_k: &impl DevPtr,

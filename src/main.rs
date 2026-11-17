@@ -1,7 +1,7 @@
 // src/main.rs
-// CLI kabuğu. Motorun tamamı `stonefish_ai` kütüphanesinde (src/lib.rs).
+// CLI shell. The whole engine lives in the `stonefish_ai` library (src/lib.rs).
 //
-// İç döngüler aynı anda birden çok diziyi indeksliyor (bkz. src/lib.rs).
+// Inner loops index several arrays at once (see src/lib.rs).
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::manual_is_multiple_of)]
 use stonefish_ai::autograd::Tensor;
@@ -17,60 +17,60 @@ use stonefish_ai::{data, gpu, profile, transformer};
 
 const MODEL_PATH: &str = "stonefish.bin";
 const GPT_PATH: &str = "stonefish_gpt.bin";
-/// Checkpoint'in yanına yazılan vocab dosyası (korpus drift tespiti için).
+/// The vocab file written next to the checkpoint (to detect corpus drift).
 const GPT_VOCAB_PATH: &str = "stonefish_gpt.vocab";
-const TEXT_PATH: &str = "data/turkce.txt";
+const TEXT_PATH: &str = "data/turkish.txt";
 
-/// Tüm CLI modları: (isim, kısa açıklama). `help` bunu basar, `main` bunu eşler.
+/// All CLI modes: (name, short description). `help` prints it, `main` dispatches it.
 const MODES: &[(&str, &str)] = &[
-    ("train", "MNIST MLP eğit (784→128→10, SGD)"),
-    ("eval", "kayıtlı MNIST modelini test setinde ölç"),
-    ("predict", "kayıtlı MNIST modeliyle tahmin (eval ile aynı)"),
-    ("tokenize", "tokenizer'ı doğrula + sequence sayısını bas"),
+    ("train", "train the MNIST MLP (784->128->10, SGD)"),
+    ("eval", "measure the saved MNIST model on the test set"),
+    ("predict", "predict with the saved MNIST model (same as eval)"),
+    ("tokenize", "validate the tokenizer and print the sequence count"),
     (
         "gpt-train",
-        "mini GPT eğit [epoch] [batch] [max_steps] [max_lr]",
+        "train the mini GPT [epochs] [batch] [max_steps] [max_lr]",
     ),
     (
         "gpt-gen",
-        "kayıtlı GPT ile metin üret  [prompt] [token] [sıcaklık]",
+        "generate text with the saved GPT  [prompt] [tokens] [temperature]",
     ),
     ("test-ops", "op duman testi"),
     ("test-embed", "embedding duman testi"),
     ("test-attn", "attention duman testi"),
-    ("test-cuda", "CUDA context açılabiliyor mu"),
+    ("test-cuda", "can a CUDA context be created"),
     ("test-gpu-matmul", "GPU matmul == CPU matmul"),
     ("test-gpu-bench", "256² matmul: CPU vs GPU"),
     ("test-gpu-bench-big", "256/512/1024² matmul: CPU vs GPU"),
     (
         "test-matmul-bench",
-        "gerçek model şeklinde CPU vs GPU matmul",
+        "CPU vs GPU matmul at real model shapes",
     ),
-    ("test-gpu-train", "küçük MLP'te 10 adım süresi"),
-    ("test-gpt-gpu", "küçük GPT'te adım süresi"),
+    ("test-gpu-train", "time 10 steps on a small MLP"),
+    ("test-gpt-gpu", "step time on a small GPT"),
     (
         "test-gpt-profile",
-        "gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)",
+        "where the time goes in the real model (matmul/transfer/attn)",
     ),
     (
         "test-gpu-native",
-        "GPU-native eğiticiyi ölç (device-resident, çekirdekler)",
+        "measure the GPU-native trainer (device-resident, kernels)",
     ),
     (
         "en-prepare",
-        "İngilizce korpus: BPE öğren + u16 token cache üret",
+        "English corpus: learn BPE + build the u16 token cache",
     ),
-    ("en-train", "İngilizce GPT eğit [token_sayısı] [d_model]"),
+    ("en-train", "train the English GPT [token_budget] [d_model]"),
     (
         "demo",
-        "Tek komut demo: 90 saniyede sıfırdan eğit + metin üret [saniye]",
+        "one-command demo: train from scratch in 90 s + generate [seconds]",
     ),
-    ("test-ffi", "Kendi CUDA FFI öz-testi (kendi sürücü FFI'si)"),
+    ("test-ffi", "self-test of our own CUDA FFI (driver, cuBLAS, NVRTC)"),
     (
         "en-eval",
-        "İngilizce modeli valid sette ölç (loss/perplexity/BPC)",
+        "evaluate the English model on the validation set (loss/perplexity/BPC)",
     ),
-    ("en-gen", "İngilizce metin üret [prompt] [token] [sıcaklık]"),
+    ("en-gen", "generate English text [prompt] [tokens] [temperature]"),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
@@ -96,12 +96,12 @@ fn main() {
             println!(
                 "GPU yolu: {}",
                 if gpu::HAS_CUDA {
-                    "açık (CUDA)"
+                    "available (CUDA)"
                 } else {
-                    "kapalı (CPU)"
+                    "not available (CPU)"
                 }
             );
-            println!("\nKullanım: stonefish_ai <mod> [arg…]\n\nModlar:");
+            println!("\nUsage: stonefish_ai <mode> [arg...]\n\nModes:");
             for (name, desc) in MODES {
                 println!("  {:<20} {}", name, desc);
             }
@@ -134,30 +134,30 @@ fn main() {
         other => {
             eprintln!("Bilinmeyen mod: {}", other);
             eprintln!(
-                "Geçerli modlar: {}",
+                "Valid modes: {}",
                 MODES
                     .iter()
                     .map(|(n, _)| *n)
                     .collect::<Vec<_>>()
                     .join(" | ")
             );
-            eprintln!("Ayrıntı için: stonefish_ai help");
+            eprintln!("For details: stonefish_ai help");
             std::process::exit(1);
         }
     }
 }
 
 // ============================================================
-// GPT EĞİTİMİ — gerçek batch (tek forward/backward/step)
+// GPT TRAINING - real batch (a single forward/backward/step)
 // ============================================================
 
 fn gpt_train(args: &[String]) {
     let epochs = arg_usize(args, 0, 6);
     let batch_size = arg_usize(args, 1, 8);
-    let max_steps = arg_usize(args, 2, 0); // 0 = sınırsız (duman testi için)
+    let max_steps = arg_usize(args, 2, 0); // 0 = unlimited (for smoke tests)
     let max_lr = arg_f32(args, 3, 1e-3);
 
-    // --- Hiperparametreler (tek yerde, loglanır ve manifest'e yazılır) ---
+    // --- Hyperparameters (one place, logged and written to the manifest) ---
     const SEQ_LEN: usize = 128;
     const D_MODEL: usize = 128;
     const N_LAYERS: usize = 4;
@@ -169,9 +169,9 @@ fn gpt_train(args: &[String]) {
     let shuffle_seed = 0xA5A5_1234u64;
 
     let run_t0 = std::time::Instant::now();
-    println!("🐟 StonefishAI v{} — GPT eğitimi\n", stonefish_ai::VERSION);
+    println!("🐟 StonefishAI v{} - GPT training\n", stonefish_ai::VERSION);
     println!(
-        "Donanım : GPU={} ({})\n",
+        "Hardware : GPU={} ({})\n",
         gpu::HAS_CUDA,
         if gpu::HAS_CUDA { "CUDA" } else { "CPU" }
     );
@@ -181,12 +181,12 @@ fn gpt_train(args: &[String]) {
     let all_ids = tok.encode(&text);
     let seqs = data::make_sequences(&all_ids, SEQ_LEN, SEQ_LEN);
 
-    // Sondaki bir kısmı validasyon için ayır (ezber mi öğrenme mi?).
+    // Hold out the tail for validation (memorization or learning?).
     let n_val = (seqs.len() / 50).clamp(4, 256).min(seqs.len() / 4);
     let mut n_train = seqs.len() - n_val;
-    // GPU eğiticisi sabit (batch, seq) boyutuyla kurulduğu için train ve val
+    // The GPU trainer is built for a fixed (batch, seq), so train and val are
     // dilimleri tam batch'lere indirilir; artan en fazla batch_size-1 sequence
-    // atlanır (ölçüm etkisi ihmal edilebilir).
+    // skipped (the measurement impact is negligible).
     if n_train % batch_size != 0 {
         n_train -= n_train % batch_size;
     }
@@ -227,11 +227,11 @@ fn gpt_train(args: &[String]) {
         n_params
     );
     println!(
-        "Optim   : Adam β=(0.9,0.999), max_lr={}, warmup={} adım, cosine → {}x, clip_norm={}",
+        "Optim   : Adam beta=(0.9,0.999), max_lr={}, warmup={} steps, cosine -> {}x, clip_norm={}",
         max_lr, WARMUP_STEPS, MIN_LR_RATIO, CLIP_NORM
     );
     println!(
-        "Plan    : {} epoch × {} adım = {} adım, batch={} ({} token/adım)",
+        "Plan    : {} epochs x {} steps = {} steps, batch={} ({} tokens/step)",
         epochs, steps_per_epoch, total_steps, batch_size, tokens_per_step
     );
     println!(
@@ -244,13 +244,13 @@ fn gpt_train(args: &[String]) {
     let mut global_step = 0usize;
     let mut addrng = shuffle_seed;
 
-    // En iyi validasyonu izle: iyileşme olduğunda checkpoint'i tazele.
+    // Track the best validation: refresh the checkpoint whenever it improves.
     let mut best_val = f64::INFINITY;
     let mut best_epoch = 0usize;
-    let mut history: Vec<(usize, f64, f64, f64, f32)> = Vec::new(); // epoch, train, val, süre, lr
+    let mut history: Vec<(usize, f64, f64, f64, f32)> = Vec::new(); // epoch, train, val, seconds, lr
 
     for epoch in 0..epochs {
-        // Epoch'a özgü karıştırma (her epoch farklı sıra).
+        // Epoch-specific shuffling (a different order every epoch).
         let mut order: Vec<usize> = (0..n_train).collect();
         for i in (1..order.len()).rev() {
             let j = (xorshift(&mut addrng) as usize) % (i + 1);
@@ -268,10 +268,10 @@ fn gpt_train(args: &[String]) {
             let end = (start + batch_size).min(n_train);
             let bs = end - start;
 
-            // --- LR programı: doğrusal warmup + cosine decay ---
+            // --- LR schedule: linear warmup + cosine decay ---
             let lr = lr_at(global_step, total_steps, max_lr, WARMUP_STEPS, MIN_LR_RATIO);
 
-            // Batch'i satır paketle: (bs*seq_len, …)
+            // Pack the batch by rows: (bs*seq_len, ...)
             let mut input_ids = Vec::with_capacity(bs * SEQ_LEN);
             let mut targets = Vec::with_capacity(bs * SEQ_LEN);
             for k in start..end {
@@ -280,7 +280,7 @@ fn gpt_train(args: &[String]) {
                 targets.extend_from_slice(tgt);
             }
 
-            // Tek adım: ileri + geri + Adam + gradyan kırpma
+            // One step: forward + backward + Adam + gradient clipping
             let (l, gnorm) = trainer.train_step(&input_ids, &targets, bs, SEQ_LEN, lr, CLIP_NORM);
             if gnorm > CLIP_NORM {
                 clipped += 1;
@@ -303,7 +303,7 @@ fn gpt_train(args: &[String]) {
 
             if max_steps > 0 && global_step >= max_steps {
                 println!(
-                    "\n⏹  max_steps={} sınırına ulaşıldı (duman testi) — checkpoint yazılmadı.",
+                    "\n⏹  reached max_steps={} (smoke test) - no checkpoint written.",
                     max_steps
                 );
                 return;
@@ -324,7 +324,7 @@ fn gpt_train(args: &[String]) {
 
         let improved = val_loss < best_val;
         println!(
-            "\nEpoch {} → train CE = {:.4}, val CE = {:.4} ({:.1}s, gnorm ort {:.2}, kırpılan adım %{:.1}){}\n",
+            "\nEpoch {} -> train CE = {:.4}, val CE = {:.4} ({:.1}s, mean gnorm {:.2}, clipped steps {:.1}%){}\n",
             epoch,
             train_loss,
             val_loss,
@@ -343,11 +343,11 @@ fn gpt_train(args: &[String]) {
         }
     }
 
-    // Nihai durumu da sakla (en iyi ile karşılaştırmak için).
+    // Also save the final state (to compare against the best one).
     trainer.sync_to_cpu(&mut model);
     let final_path = GPT_PATH.replace(".bin", "_final.bin");
     if let Err(e) = checkpoint::save_gpt(&final_path, &model, &tok) {
-        eprintln!("⚠️  nihai checkpoint yazılamadı ({final_path}): {e}");
+        eprintln!("⚠️  could not write the final checkpoint ({final_path}): {e}");
     }
 
     let total_secs = run_t0.elapsed().as_secs_f64();
@@ -377,20 +377,20 @@ fn gpt_train(args: &[String]) {
     println!("Nihai model  : {}", final_path);
     match manifest {
         Ok(path) => println!("Manifest     : {}", path),
-        Err(e) => eprintln!("⚠️  manifest yazılamadı: {e}"),
+        Err(e) => eprintln!("⚠️  could not write the manifest: {e}"),
     }
     println!(
-        "\nToplam {:.1} dk, {} adım, ortalama {:.0} tok/s\n🐟 GPT eğitimi tamam.",
+        "\nTotal {:.1} min, {} steps, average {:.0} tok/s\n🐟 GPT training complete.",
         total_secs / 60.0,
         global_step,
         (global_step * tokens_per_step) as f64 / total_secs
     );
 }
 
-/// Doğrusal warmup + cosine decay. `step` 0-tabanlı.
+/// Linear warmup + cosine decay. `step` is 0-based.
 fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f32) -> f32 {
     if step < warmup {
-        // 0'dan başlamak yerine ilk adımda küçük ama pozitif bir LR
+        // A small but positive LR on the first step instead of starting from 0
         return max_lr * (step + 1) as f32 / warmup as f32;
     }
     let span = total.saturating_sub(warmup).max(1) as f32;
@@ -399,7 +399,7 @@ fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f32) 
     max_lr * (min_ratio + (1.0 - min_ratio) * cos)
 }
 
-/// Koşuyu tekrar üretilebilir kılan manifest (JSON). `runs/` altına yazılır.
+/// The manifest (JSON) that makes the run reproducible. Written under `runs/`.
 #[allow(clippy::too_many_arguments)]
 fn write_manifest(
     config: GptConfig,
@@ -480,34 +480,34 @@ fn write_manifest(
 }
 
 // ============================================================
-// GPT ÜRETİMİ
+// GPT GENERATION
 // ============================================================
 
 fn gpt_generate(args: &[String]) {
     println!(
-        "🐟 StonefishAI v{} — GPT metin üretimi\n",
+        "🐟 StonefishAI v{} - GPT text generation\n",
         stonefish_ai::VERSION
     );
 
     let (model, tok) = match checkpoint::load_gpt(GPT_PATH) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Checkpoint yüklenemedi ({GPT_PATH}): {e}");
-            eprintln!("Önce `stonefish_ai gpt-train` çalıştır.");
+            eprintln!("Could not load the checkpoint ({GPT_PATH}): {e}");
+            eprintln!("Run `stonefish_ai gpt-train` first.");
             std::process::exit(1);
         }
     };
     let cfg = model.config;
     println!(
-        "✅ Yüklendi: d_model={}, layers={}, heads={}, vocab={}",
+        "✅ Loaded: d_model={}, layers={}, heads={}, vocab={}",
         cfg.d_model, cfg.n_layers, cfg.n_heads, cfg.vocab_size
     );
 
-    // Korpus drift kontrolü: yan dosyadaki vocab checkpoint'le aynı mı?
+    // Corpus drift check: does the sidecar vocab match the checkpoint?
     match Tokenizer::load(GPT_VOCAB_PATH) {
         Ok(disc) if !disc.same_vocab(&tok) => {
             eprintln!(
-                "⚠️  {GPT_VOCAB_PATH} checkpoint vocab'ı ile uyuşmuyor — dosya eski olabilir."
+                "⚠️  {GPT_VOCAB_PATH} does not match the checkpoint vocab - the file may be stale."
             );
         }
         Ok(_) => {}
@@ -517,7 +517,7 @@ fn gpt_generate(args: &[String]) {
     let prompt = args
         .first()
         .cloned()
-        .unwrap_or_else(|| "Akşam erken iner".to_string());
+        .unwrap_or_else(|| "evening falls early".to_string());
     let n_generate = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(300usize);
     let temperature = args
         .get(2)
@@ -525,7 +525,7 @@ fn gpt_generate(args: &[String]) {
         .unwrap_or(0.8f32);
 
     println!(
-        "Prompt: {:?}  ({} token, sıcaklık {})\n",
+        "Prompt: {:?}  ({} tokens, temperature {})\n",
         prompt, n_generate, temperature
     );
 
@@ -533,21 +533,21 @@ fn gpt_generate(args: &[String]) {
         Ok(v) => v,
         Err(c) => {
             eprintln!(
-                "❌ Prompt'taki {:?} karakteri bu modelin vocab'ında yok.",
+                "❌ The character {:?} in the prompt is not in this model's vocabulary.",
                 c
             );
             std::process::exit(1);
         }
     };
     if generated.is_empty() {
-        eprintln!("❌ Prompt boş.");
+        eprintln!("❌ The prompt is empty.");
         std::process::exit(1);
     }
 
     let mut rng = 0x1234_5678_9ABCu64;
 
     for _ in 0..n_generate {
-        // Bağlamı son seq_len token'a kırp (modelin gördüğü maksimum pencere).
+        // Clip the context to the last seq_len tokens (the maximum window the model sees).
         let start = generated.len().saturating_sub(cfg.max_seq_len);
         let context = &generated[start..];
 
@@ -557,7 +557,7 @@ fn gpt_generate(args: &[String]) {
         let last_row = ld.rows - 1;
 
         let next = if temperature <= 0.0 {
-            // açgözlü (deterministik)
+            // greedy (deterministic)
             let mut best = 0usize;
             let mut best_v = f32::NEG_INFINITY;
             for j in 0..vocab {
@@ -569,7 +569,7 @@ fn gpt_generate(args: &[String]) {
             }
             best
         } else {
-            // sıcaklıklı örnekleme
+            // temperature sampling
             let mut max = f32::NEG_INFINITY;
             for j in 0..vocab {
                 max = max.max(ld.get(last_row, j));
@@ -598,7 +598,7 @@ fn gpt_generate(args: &[String]) {
         generated.push(next);
     }
 
-    println!("--- Üretilen metin ---\n");
+    println!("--- Generated text ---\n");
     println!("{}", tok.decode(&generated));
 }
 
@@ -608,7 +608,7 @@ fn gpt_generate(args: &[String]) {
 
 fn train() {
     println!(
-        "🐟 StonefishAI v{} — MNIST eğitimi\n",
+        "🐟 StonefishAI v{} - MNIST training\n",
         stonefish_ai::VERSION
     );
     let x_train = load_images("data/train-images-idx3-ubyte");
@@ -671,7 +671,7 @@ fn train() {
         }
     }
     println!("\nModel kaydediliyor → {}", MODEL_PATH);
-    save_model(MODEL_PATH, &[&l1, &l2]).expect("kaydetme başarısız");
+    save_model(MODEL_PATH, &[&l1, &l2]).expect("save failed");
     println!("✅ Kaydedildi.");
     let acc = evaluate(&x_test, &y_test_raw, &l1, &l2);
     println!("\n🐟 Final test acc = %{:.2}", acc);
@@ -679,7 +679,7 @@ fn train() {
 
 fn predict() {
     println!("🐟 StonefishAI v{} — tahmin\n", stonefish_ai::VERSION);
-    let layers = load_model(MODEL_PATH, 2).expect("model yüklenemedi");
+    let layers = load_model(MODEL_PATH, 2).expect("could not load the model");
     let x_test = load_images("data/t10k-images-idx3-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
     let acc = evaluate(&x_test, &y_test_raw, &layers[0], &layers[1]);
@@ -688,7 +688,7 @@ fn predict() {
 
 fn eval_only() {
     println!("🐟 StonefishAI v{} — eval\n", stonefish_ai::VERSION);
-    let layers = load_model(MODEL_PATH, 2).expect("model yüklenemedi");
+    let layers = load_model(MODEL_PATH, 2).expect("could not load the model");
     let x_test = load_images("data/t10k-images-idx3-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
     let acc = evaluate(&x_test, &y_test_raw, &layers[0], &layers[1]);
@@ -735,8 +735,8 @@ fn tokenize() {
     let tok = Tokenizer::from_text(&text);
     println!("Vocab: {}", tok.vocab_size);
 
-    // Round-trip: korpustan bir parça ve Türkçe karakterler
-    let sample = "Akşam erken iner mahpushaneye";
+    // Round-trip: a slice of the corpus plus non-ASCII characters
+    let sample = "the quick brown fox jumps";
     match tok.try_encode(sample) {
         Ok(ids) => {
             let decoded = tok.decode(&ids);
@@ -745,16 +745,16 @@ fn tokenize() {
                 if sample == decoded { "✅" } else { "❌" }
             );
         }
-        Err(c) => println!("❌ Örnek metinde bilinmeyen karakter: {:?}", c),
+        Err(c) => println!("❌ Unknown character in the sample text: {:?}", c),
     }
 
     let all_ids = tok.encode(&text);
     let seqs = data::make_sequences(&all_ids, 64, 64);
-    println!("Sequence: {}\n✅ Hazır.", seqs.len());
+    println!("Sequences: {}\n✅ Ready.", seqs.len());
 }
 
 // ============================================================
-// DUMAN TESTLERİ
+// SMOKE TESTS
 // ============================================================
 
 fn test_ops() {
@@ -769,7 +769,7 @@ fn test_ops() {
     let gamma = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 1.0, 1.0]), true);
     let beta = Tensor::leaf(Matrix::from_vec(1, 3, vec![0.0, 0.0, 0.0]), true);
     x3.layer_norm(&gamma, &beta, 1e-5).sum().backward();
-    println!("✅ LayerNorm OK\n🎉 Tüm op testleri geçti!");
+    println!("✅ LayerNorm OK\n🎉 All op tests passed!");
 }
 
 fn test_embed() {
@@ -781,23 +781,23 @@ fn test_embed() {
     let out = emb.forward(&ids);
     {
         let od = out.data.borrow();
-        println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
+        println!("Output size: {}x{}", od.rows, od.cols);
         assert_eq!((od.rows, od.cols), (seq_len, d_model));
     }
     out.sum().backward();
     let tg = emb.token_emb.grad.borrow();
     println!("token_emb grad: {}x{}", tg.rows, tg.cols);
-    // loss = sum(çıktı) olduğu için her token satırının gradyanı 1'dir;
-    // token 1 ve 3 birer kez geçtiği için o satırların toplamı d_model olmalı.
+    // since loss = sum(output) every token row's gradient is 1;
+    // tokens 1 and 3 appear once, so those rows must sum to d_model.
     let mut s1 = 0.0f32;
     for d in 0..d_model {
         s1 += tg.get(1, d);
     }
     assert!(
         (s1 - d_model as f32).abs() < 1e-4,
-        "token_emb grad toplamı yanlış"
+        "token_emb gradient sum is wrong"
     );
-    println!("✅ Embedding OK (RoPE: pozisyon gömme yok)");
+    println!("✅ Embedding OK (RoPE: no positional embedding)");
 }
 
 fn test_attn() {
@@ -809,39 +809,39 @@ fn test_attn() {
     let out = attn.forward(&x, 1, seq_len);
     {
         let od = out.data.borrow();
-        println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
+        println!("Output size: {}x{}", od.rows, od.cols);
         assert_eq!((od.rows, od.cols), (seq_len, d_model));
     }
     out.sum().backward();
     let sum_abs = |g: &Matrix| -> f32 { g.data.iter().map(|x| x.abs()).sum() };
-    assert!(sum_abs(&x.grad.borrow()) > 1e-6, "x gradyanı sıfır");
+    assert!(sum_abs(&x.grad.borrow()) > 1e-6, "x gradient is zero");
     assert!(
         sum_abs(&attn.w_q.grad.borrow()) > 1e-6,
-        "w_q gradyanı sıfır"
+        "w_q gradient is zero"
     );
     assert!(
         sum_abs(&attn.w_k.grad.borrow()) > 1e-6,
-        "w_k gradyanı sıfır"
+        "w_k gradient is zero"
     );
     assert!(
         sum_abs(&attn.w_v.grad.borrow()) > 1e-6,
-        "w_v gradyanı sıfır"
+        "w_v gradient is zero"
     );
     assert!(
         sum_abs(&attn.w_o.grad.borrow()) > 1e-6,
-        "w_o gradyanı sıfır"
+        "w_o gradient is zero"
     );
-    println!("✅ Tüm gradyanlar sıfır değil\n🎉 Attention testi geçti!");
+    println!("✅ No gradient is zero\n🎉 Attention test passed!");
 }
 
 // ============================================================
-// GPU TESTLERİ
+// GPU TESTS
 // ============================================================
 
 fn test_cuda() {
     println!("🐟 CUDA testi\n");
     if !gpu::HAS_CUDA {
-        println!("❌ Bu derlemede CUDA kapalı (--no-default-features).");
+        println!("❌ CUDA is off in this build (--no-default-features).");
         return;
     }
     #[cfg(feature = "cuda")]
@@ -850,11 +850,11 @@ fn test_cuda() {
         let (maj, min) = stonefish_ai::sys::dev::compute_capability();
         println!("GPU: {} (sm_{}{})", name, maj, min);
         println!("Bellek: {:.1} GB", total as f64 / (1u64 << 30) as f64);
-        println!("✅ CUDA çalışıyor! (kendi FFI, harici crate yok)");
+        println!("✅ CUDA works! (our own FFI, no external crates)");
     }
 }
 
-/// CPU naif matmul ile GPU'yu karşılaştırır.
+/// Compares the GPU against a naive CPU matmul.
 fn compare_matmul(n: usize) -> (std::time::Duration, std::time::Duration, f32) {
     let mut seed = 42u64;
     let a = Matrix::random(n, n, 1.0, &mut seed);
@@ -880,26 +880,26 @@ fn test_gpu_matmul() {
     let (cpu, gpu_t, diff) = compare_matmul(64);
     println!("CPU: {:?}, GPU: {:?}, max fark: {:.3e}", cpu, gpu_t, diff);
     if diff < 1e-4 {
-        println!("✅ GPU matmul doğru!");
+        println!("✅ GPU matmul is correct!");
     } else {
-        println!("❌ GPU matmul yanlış! (max fark: {})", diff);
+        println!("❌ GPU matmul is wrong! (max diff: {})", diff);
         std::process::exit(1);
     }
 }
 
 fn test_gpu_bench() {
-    println!("🐟 GPU matmul hız testi (256²)\n");
+    println!("🐟 GPU matmul speed test (256^2)\n");
     let (cpu, gpu_t, diff) = compare_matmul(256);
     println!(
         "CPU: {:?}\nGPU (transfer+matmul+transfer): {:?}",
         cpu, gpu_t
     );
     println!("Max fark: {:.3e}", diff);
-    println!("Hızlanma: {:.2}x", cpu.as_secs_f64() / gpu_t.as_secs_f64());
+    println!("Speed-up: {:.2}x", cpu.as_secs_f64() / gpu_t.as_secs_f64());
 }
 
 fn test_gpu_bench_big() {
-    println!("🐟 GPU matmul hız testi (büyük matrisler)\n");
+    println!("🐟 GPU matmul speed test (large matrices)\n");
     for &n in &[256usize, 512, 1024] {
         println!("--- {}x{} ---", n, n);
         let (cpu, gpu_t, diff) = compare_matmul(n);
@@ -907,18 +907,18 @@ fn test_gpu_bench_big() {
         println!("GPU (transfer+matmul+transfer): {:?}", gpu_t);
         println!("Max fark: {:.3e}", diff);
         println!(
-            "Hızlanma: {:.2}x\n",
+            "Speed-up: {:.2}x\n",
             cpu.as_secs_f64() / gpu_t.as_secs_f64()
         );
     }
 }
 
-/// Modelin gerçekte kullandığı matmul şekilleri — asıl karar bunlara dayanır.
+/// The matmul shapes the model really uses - the real decision rests on these.
 fn test_matmul_bench() {
-    println!("🐟 Gerçek model şekillerinde matmul (10 tekrar, ortalama)\n");
+    println!("🐟 Matmul at real model shapes (10 repeats, averaged)\n");
 
-    // Isınma: ilk GPU çağrısı CUDA context + cuBLAS handle kurar (~200 ms).
-    // Bu maliyet ölçüme karışmasın.
+    // Warm-up: the first GPU call builds the CUDA context + cuBLAS handle (~200 ms).
+    // Keep that cost out of the measurement.
     {
         let mut seed = 1u64;
         let a = Matrix::random(64, 64, 1.0, &mut seed);
@@ -926,13 +926,13 @@ fn test_matmul_bench() {
         std::hint::black_box(gpu::matmul_gpu(&a, &b));
     }
 
-    // (B*S, k) @ (k, n) — GPT'nin içindeki GEMM'ler
+    // (B*S, k) @ (k, n) - the GEMMs inside the GPT
     let shapes = [
         (1024usize, 128usize, 128usize, "attn proj (B*S=1024)"),
         (1024, 128, 512, "ff1"),
         (1024, 512, 128, "ff2"),
         (1024, 128, 136, "lm head"),
-        (128, 128, 128, "batch=1 (üretim)"),
+        (128, 128, 128, "batch=1 (generation)"),
     ];
     let reps = 10;
     for (m, k, n, label) in shapes {
@@ -940,7 +940,7 @@ fn test_matmul_bench() {
         let a = Matrix::random(m, k, 1.0, &mut seed);
         let b = Matrix::random(k, n, 1.0, &mut seed);
 
-        // her iki yol için de birer ısınma
+        // one warm-up for each path
         std::hint::black_box(a.matmul(&b));
         std::hint::black_box(gpu::matmul_gpu(&a, &b));
 
@@ -967,7 +967,7 @@ fn test_matmul_bench() {
 }
 
 fn test_gpu_train() {
-    println!("🐟 GPU eğitim testi (küçük MLP)\n");
+    println!("🐟 GPU training test (small MLP)\n");
     let mut seed = 42u64;
     let l1 = Linear::new(128, 64, &mut seed);
     let l2 = Linear::new(64, 10, &mut seed);
@@ -998,13 +998,13 @@ fn test_gpu_train() {
         loss.backward();
         opt.step();
     }
-    println!("10 adım: {:?}  (GPU={})", t0.elapsed(), gpu::HAS_CUDA);
-    println!("✅ GPU eğitim testi tamam!");
+    println!("10 steps: {:?}  (GPU={})", t0.elapsed(), gpu::HAS_CUDA);
+    println!("✅ GPU training test complete!");
 }
 
 fn test_gpt_gpu(args: &[String]) {
     let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(20);
-    println!("🐟 GPT adım hızı (d_model=64, 2 katman, batch=8)\n");
+    println!("🐟 GPT step speed (d_model=64, 2 layers, batch=8)\n");
 
     let text = data::load_text(TEXT_PATH);
     let tok = Tokenizer::from_text(&text);
@@ -1035,7 +1035,7 @@ fn test_gpt_gpu(args: &[String]) {
         (input_ids, targets)
     };
 
-    // Isınma (CUDA context + cuBLAS handle)
+    // Warm-up (CUDA context + cuBLAS handle)
     {
         let (ids, tgt) = make_batch(0);
         let l = model
@@ -1045,7 +1045,7 @@ fn test_gpt_gpu(args: &[String]) {
         l.backward();
     }
 
-    // --- sadece forward ---
+    // --- forward only ---
     let t0 = std::time::Instant::now();
     for i in 0..steps {
         let (ids, tgt) = make_batch(i);
@@ -1074,7 +1074,7 @@ fn test_gpt_gpu(args: &[String]) {
 
     let tokens = batch * seq_len;
     println!(
-        "{} adım → {:.2} ms/adım ({:.0} tok/s)  GPU={}",
+        "{} steps -> {:.2} ms/step ({:.0} tok/s)  GPU={}",
         steps,
         step_t * 1e3,
         tokens as f64 / step_t,
@@ -1091,11 +1091,11 @@ fn test_gpt_gpu(args: &[String]) {
         (step_t - fwd) / step_t * 100.0
     );
     println!("Ortalama loss: {:.4}", total / steps as f32);
-    println!("✅ GPT hız testi tamam!");
+    println!("✅ GPT speed test complete!");
 }
 
 // ============================================================
-// İngilizce hat (BPE + disk cache + 250M sınıfı model)
+// English pipeline (BPE + disk cache + 250M-class model)
 // ============================================================
 
 #[cfg(feature = "cuda")]
@@ -1111,9 +1111,9 @@ fn en_prepare() {
 
 #[cfg(not(feature = "cuda"))]
 fn en_prepare() {
-    // BPE öğrenimi ve tokenize GPU gerektirmez; CUDA'sız derlemede de çalışır.
+    // BPE learning and tokenization need no GPU; they work in a CUDA-less build.
     use std::io::Read;
-    let mut f = std::fs::File::open("data/en/train.txt").expect("korpus açılamadı");
+    let mut f = std::fs::File::open("data/en/train.txt").expect("could not open the corpus");
     let mut buf = vec![0u8; 100 << 20];
     let got = f.read(&mut buf).expect("okuma");
     buf.truncate(got);
@@ -1146,12 +1146,12 @@ fn en_train(args: &[String]) {
 
 #[cfg(not(feature = "cuda"))]
 fn en_train(_args: &[String]) {
-    println!("❌ en-train CUDA gerektirir (--no-default-features ile derlendi).");
+    println!("❌ en-train requires CUDA (built with --no-default-features).");
 }
 
 #[cfg(feature = "cuda")]
 fn bench(args: &[String]) {
-    // Basit --anahtar değer ayrıştırma
+    // Simple --key value parsing
     let get = |key: &str, def: usize| -> usize {
         args.iter()
             .position(|a| a == key)
@@ -1182,7 +1182,7 @@ fn bench(args: &[String]) {
     let tps = batch * accum * ctx;
 
     println!(
-        "StonefishAI {} | {} | sıfır bağımlılık",
+        "StonefishAI {} | {} | zero dependencies",
         stonefish_ai::VERSION,
         stonefish_ai::sys::dev::device_info().0
     );
@@ -1190,7 +1190,7 @@ fn bench(args: &[String]) {
         "model: d={d} layers={layers} heads={heads} ctx={ctx} vocab={vocab} -> {:.1}M parametre",
         n_params as f64 / 1e6
     );
-    println!("batch: {batch} × accum {accum} = {tps} token/adım");
+    println!("batch: {batch} x accum {accum} = {tps} tokens/step");
 
     let mut x = vec![0i32; batch * ctx];
     let mut y = vec![0i32; batch * ctx];
@@ -1199,7 +1199,7 @@ fn bench(args: &[String]) {
         y[i] = ((i + 1) % (vocab - 1)) as i32;
     }
 
-    // ısınma
+    // warm-up
     for _ in 0..2 {
         for _ in 0..accum {
             let _ = model.forward_backward(&x, &y);
@@ -1221,9 +1221,9 @@ fn bench(args: &[String]) {
 
     let (free1, _) = stonefish_ai::sys::dev::mem_info();
     let used = (free0.saturating_sub(free1)) as f64 / 1e9;
-    println!("\nadım süresi: {:.0} ms", dt / steps as f64 * 1000.0);
-    println!("hız        : {:.0} token/s", steps as f64 * tps as f64 / dt);
-    println!("zirve VRAM : ~{used:.1} GB (toplam {:.1} GB)", total as f64 / 1e9);
+    println!("\nstep time: {:.0} ms", dt / steps as f64 * 1000.0);
+    println!("speed      : {:.0} tokens/s", steps as f64 * tps as f64 / dt);
+    println!("peak VRAM  : ~{used:.1} GB (total {:.1} GB)", total as f64 / 1e9);
     println!("son loss   : {last_loss:.4}");
 }
 
@@ -1240,7 +1240,7 @@ fn demo(args: &[String]) {
 
 #[cfg(not(feature = "cuda"))]
 fn demo(_args: &[String]) {
-    println!("❌ demo CUDA gerektirir (--no-default-features ile derlendi).");
+    println!("❌ demo requires CUDA (built with --no-default-features).");
 }
 
 #[cfg(feature = "cuda")]
@@ -1250,17 +1250,17 @@ fn test_ffi() {
 
 #[cfg(not(feature = "cuda"))]
 fn test_ffi() {
-    println!("❌ CUDA kapalı.");
+    println!("❌ CUDA is off.");
 }
 
 #[cfg(feature = "cuda")]
 fn en_eval(args: &[String]) {
     let max_batches: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(500);
-    println!("🐟 İngilizce model değerlendirmesi\n");
+    println!("🐟 English model evaluation\n");
     let (loss, ppl, bpc, tokens) =
         stonefish_ai::en_train::eval("data/en/tiny", "stonefish_en.state", max_batches);
-    println!("\n--- SONUÇ ---");
-    println!("Örneklenen     : {tokens} token");
+    println!("\n--- RESULT ---");
+    println!("Sampled        : {tokens} tokens");
     println!("val loss       : {loss:.4} nat/token");
     println!("perplexity     : {ppl:.2}");
     println!("BPC            : {bpc:.4} bit/karakter");
@@ -1293,20 +1293,20 @@ fn en_gen(_args: &[String]) {
 }
 
 // ============================================================
-// Yardımcılar
+// Helpers
 // ============================================================
 
-/// GPU-native (device-resident) eğiticinin gerçek konfigdeki hızı.
+/// Speed of the GPU-native (device-resident) trainer in the real config.
 #[cfg(feature = "cuda")]
 fn test_gpu_native(args: &[String]) {
     let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
     let batch: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
     println!(
-        "🐟 GPU-native eğitici (device-resident) — d=128, 4 katman, 4 head, S=128, batch={batch}\n"
+        "🐟 GPU-native trainer (device-resident) - d=128, 4 layers, 4 heads, S=128, batch={batch}\n"
     );
     if !gpu::HAS_CUDA {
-        println!("❌ CUDA kapalı.");
+        println!("❌ CUDA is off.");
         return;
     }
 
@@ -1328,7 +1328,7 @@ fn test_gpu_native(args: &[String]) {
 
     let mut g = stonefish_ai::gpu_train::GpuGpt::from_cpu(&cpu_model, batch, seq_len);
     println!(
-        "Model: {} param, {} tensör cihazda",
+        "Model: {} parameters, {} tensors on the device",
         cpu_model.n_params(),
         g.params_mut().len()
     );
@@ -1344,7 +1344,7 @@ fn test_gpu_native(args: &[String]) {
         (ids, tgt)
     };
 
-    // ısınma
+    // warm-up
     for i in 0..3 {
         let (ids, tgt) = batch_ids(i);
         g.forward_backward(&ids, &tgt);
@@ -1364,23 +1364,23 @@ fn test_gpu_native(args: &[String]) {
     let tokens = batch * seq_len;
 
     println!(
-        "\n{steps} adım → {:.2} ms/adım  ({:.0} tok/s)",
+        "\n{steps} steps -> {:.2} ms/step  ({:.0} tok/s)",
         per_step * 1e3,
         tokens as f64 / per_step
     );
     println!("Ortalama loss: {:.4}", total_loss / steps as f32);
-    println!("\nKarşılaştırma (CPU+cuBLAS yolu): ~120 ms/adım, ~8.500 tok/s");
-    println!("Hızlanma: {:.1}x", 0.120 / per_step);
+    println!("\nComparison (CPU+cuBLAS path): ~120 ms/step, ~8,500 tok/s");
+    println!("Speed-up: {:.1}x", 0.120 / per_step);
 }
 
 // ============================================================
-// Eğitici soyutlaması: GPU-native (hızlı) / CPU+autograd (yedek)
+// Trainer abstraction: GPU-native (fast) / CPU+autograd (fallback)
 // ============================================================
 
-/// İki eğitici de aynı arayüzü sunar; eğitim döngüsü tek yazılır.
-/// GPU yolu device-resident'tır (`gpu_train::GpuGpt`), CPU yolu doğrulanmış
-/// autograd motorunu kullanır. Ağırlıklar ayrıca bir "dış" modelde tutulur
-/// çünkü checkpoint formatı CPU modeli üzerinden tanımlı.
+/// Both trainers expose the same interface, so the loop is written once.
+/// The GPU path is device-resident (`gpu_train::GpuGpt`); the CPU path uses
+/// the verified autograd engine. The weights are also kept in an "outer" model
+/// because the checkpoint format is defined in terms of the CPU model.
 enum Trainer {
     Cpu {
         model: Box<GPT>,
@@ -1416,7 +1416,7 @@ impl Trainer {
         }
     }
 
-    /// Tek eğitim adımı. Döner: (loss, kırpma öncesi global gradyan normu).
+    /// A single training step. Returns (loss, global gradient norm before clipping).
     fn train_step(
         &mut self,
         ids: &[usize],
@@ -1486,7 +1486,7 @@ impl Trainer {
         sum / n.max(1) as f64
     }
 
-    /// Eğitilen ağırlıkları dış (checkpoint) modeline kopyalar.
+    /// Copies the trained weights into the outer (checkpoint) model.
     fn sync_to_cpu(&mut self, out: &mut GPT) {
         match self {
             #[cfg(feature = "cuda")]
@@ -1503,16 +1503,16 @@ impl Trainer {
 
 #[cfg(not(feature = "cuda"))]
 fn test_gpu_native(_args: &[String]) {
-    println!("❌ Bu derlemede CUDA kapalı (--no-default-features).");
+    println!("❌ CUDA is off in this build (--no-default-features).");
 }
 
-/// Gerçek model konfigürasyonunda bir eğitim adımının zaman bütçesi.
-/// "Tam GPU" yatırımının ne kazandıracağını tahminle değil ölçümle göstermek için.
+/// The time budget of one training step in the real model configuration.
+/// To show what a "full GPU" investment buys with measurement, not guesses.
 fn test_gpt_profile(args: &[String]) {
     let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(8);
     let batch: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
-    println!("🐟 Gerçek modelde adım profili (d=128, 4 katman, 4 head, S=128, batch={batch})\n");
+    println!("🐟 Step profile on the real model (d=128, 4 layers, 4 heads, S=128, batch={batch})\n");
 
     let text = data::load_text(TEXT_PATH);
     let tok = Tokenizer::from_text(&text);
@@ -1542,7 +1542,7 @@ fn test_gpt_profile(args: &[String]) {
         (ids, tgt)
     };
 
-    // Isınma (CUDA context, cuBLAS handle, bellek havuzu)
+    // Warm-up (CUDA context, cuBLAS handle, buffer pool)
     for i in 0..3 {
         let (ids, tgt) = make_batch(i);
         let loss = model
@@ -1578,105 +1578,105 @@ fn test_gpt_profile(args: &[String]) {
 
     let matmul_compute = mm_ns.saturating_sub(tr_ns);
     let attn = af_ns + ab_ns;
-    let hesap = matmul_compute + attn;
+    let compute = matmul_compute + attn;
     let diger = total_ns.saturating_sub(mm_ns + attn);
 
     println!(
-        "{steps} adım → {:.2} ms/adım ({:.0} tok/s, GPU={})",
+        "{steps} steps -> {:.2} ms/step ({:.0} tok/s, GPU={})",
         step_ns as f64 / 1e6,
         (batch * seq_len) as f64 / (step_ns as f64 / 1e9),
         gpu::HAS_CUDA
     );
-    println!("  matmul çağrısı: {} / adım\n", calls / steps as u64);
+    println!("  matmul calls: {} / step\n", calls / steps as u64);
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "matmul (transfer dahil)",
         ms(mm_ns),
         pct(mm_ns)
     );
     println!(
-        "    {:<36} {:8.2} ms/adım  %{:5.1}",
+        "    {:<36} {:8.2} ms/step  %{:5.1}",
         "├─ transfer (CPU↔GPU)",
         ms(tr_ns),
         pct(tr_ns)
     );
     println!(
-        "    {:<36} {:8.2} ms/adım  %{:5.1}",
-        "└─ gerçek GEMM",
+        "    {:<36} {:8.2} ms/step  %{:5.1}",
+        "+- real GEMM",
         ms(matmul_compute),
         pct(matmul_compute)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "attention (fwd+bwd, CPU)",
         ms(attn),
         pct(attn)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "  ├─ forward",
         ms(af_ns),
         pct(af_ns)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "  └─ backward",
         ms(ab_ns),
         pct(ab_ns)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "gelu (fwd+bwd)",
         ms(s.gelu),
         pct(s.gelu)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "layer_norm (fwd+bwd)",
         ms(s.ln),
         pct(s.ln)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "cross-entropy (fwd+bwd)",
         ms(s.ce),
         pct(s.ce)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
         "adam.step",
         ms(s.adam),
         pct(s.adam)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
-        "float_zero_grad (param sıfırlama)",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
+        "float_zero_grad (parameter reset)",
         ms(s.zero_grad),
         pct(s.zero_grad)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
-        "ara tensör tahsisi (from_op)",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
+        "intermediate tensor allocation (from_op)",
         ms(s.alloc),
         pct(s.alloc)
     );
     println!(
-        "  {:<38} {:8.2} ms/adım  %{:5.1}",
-        "diğer (softmax, paketleme, …)",
+        "  {:<38} {:8.2} ms/step  %{:5.1}",
+        "other (softmax, packing, ...)",
         ms(diger),
         pct(diger)
     );
     println!(
-        "\n  Hesap (GEMM+attention) %{:.1} · Transfer %{:.1} · Diğer %{:.1}",
-        pct(hesap),
+        "\n  Compute (GEMM+attention) {:.1}% - transfer {:.1}% - other {:.1}%",
+        pct(compute),
         pct(tr_ns),
         pct(diger)
     );
     let cpu_share = pct(attn) + pct(diger);
     println!(
-        "\n  Yorum: adımın %{:.0}'ı CPU'da koşuyor (attention + elementwise + Adam).\n\
-         \x20 Yalnız GEMM'leri GPU'da tutmak (transferi sıfırlamak) üst sınır %{:.0} kazandırır.\n\
-         \x20 Gerçek hızlanma CPU işlerinin ya vektörleştirilmesinden ya CUDA çekirdeğine taşınmasından gelir.",
+        "\n  Interpretation: {:.0}% of the step runs on the CPU (attention + elementwise + Adam).\n\
+         \x20 Keeping only the GEMMs on the GPU (eliminating transfers) buys at most {:.0}%.\n\
+         \x20 The real speed-up comes from either vectorizing the CPU work or moving it to CUDA kernels.",
         cpu_share,
         pct(tr_ns)
     );

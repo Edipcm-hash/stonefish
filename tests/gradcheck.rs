@@ -1,12 +1,12 @@
 // tests/gradcheck.rs
 //
-// Merkezi fark (central difference) ile sayısal gradyan doğrulaması.
+// Numerical gradient verification by central difference.
 //
-// Her op için: analitik gradyan (backward) ile numerik gradyan
-// ((L(θ+ε) − L(θ−ε)) / 2ε) karşılaştırılır.
-// Amaç: elle türetilmiş backward formüllerinin tek tek ve *birlikte* doğruluğunu kilitlemek.
+// For every op: the analytic gradient (backward) is compared against the
+// numerical gradient ((L(t+e) - L(t-e)) / 2e).
+// Goal: lock down the correctness of the hand-derived backward formulas.
 
-// Bu dosyada iç döngüler aynı anda birden çok diziyi indeksliyor (bkz. src/lib.rs).
+// In this file inner loops index several arrays at once (see src/lib.rs).
 #![allow(clippy::needless_range_loop)]
 
 use stonefish_ai::autograd::Tensor;
@@ -15,7 +15,7 @@ use stonefish_ai::tensor::Matrix;
 const EPS: f32 = 1e-3;
 const TOL: f32 = 2e-2;
 
-/// Tek parametreli op'lar için: `&[t.clone()]` yerine klonsuz dilim.
+/// For single-parameter ops: a clone-free slice instead of `&[t.clone()]`.
 fn one(t: &Tensor) -> &[Tensor] {
     std::slice::from_ref(t)
 }
@@ -25,15 +25,15 @@ fn scalar(t: &Tensor) -> f32 {
     assert_eq!(
         (d.rows, d.cols),
         (1, 1),
-        "gradcheck: loss 1x1 skaler olmalı, {}x{} geldi",
+        "gradcheck: the loss must be a 1x1 scalar, got {}x{}",
         d.rows,
         d.cols
     );
     d.data[0]
 }
 
-/// `build` verilen leaf'lerden skaler bir loss üretmeli.
-/// Tüm parametrelerin her elemanı için analitik/numerik gradyan karşılaştırılır.
+/// `build` must produce a scalar loss from the given leaves.
+/// Every element of every parameter is compared analytically/numerically.
 fn gradient_check<F>(name: &str, params: &[Tensor], build: F)
 where
     F: Fn() -> Tensor,
@@ -73,7 +73,7 @@ where
             if rel > worst_rel {
                 worst_rel = rel;
                 worst_msg = format!(
-                    "param[{pi}] eleman {k}: analitik={a:.6} numerik={numeric:.6} (şekil {}x{})",
+                    "param[{pi}] element {k}: analytic={a:.6} numeric={numeric:.6} (shape {}x{})",
                     p.data.borrow().rows,
                     p.data.borrow().cols
                 );
@@ -83,13 +83,13 @@ where
 
     assert!(
         worst_rel <= TOL,
-        "{name}: gradyan uyuşmuyor — en kötü rel fark {worst_rel:.3e} > {TOL:e}\n  {worst_msg}"
+        "{name}: gradient mismatch - worst rel diff {worst_rel:.3e} > {TOL:e}\n  {worst_msg}"
     );
-    println!("  ✅ {name:<28} en kötü rel fark {worst_rel:.2e}");
+    println!("  ✅ {name:<28} worst rel diff {worst_rel:.2e}");
 }
 
 // ------------------------------------------------------------
-// Yardımcılar
+// Helpers
 // ------------------------------------------------------------
 
 fn leaf(rows: usize, cols: usize, seed: &mut u64) -> Tensor {
@@ -100,7 +100,7 @@ fn frozen(rows: usize, cols: usize, seed: &mut u64) -> Tensor {
     Tensor::leaf(Matrix::random(rows, cols, 1.0, seed), false)
 }
 
-/// ReLU testleri için: |x| ≥ 0.6 (ε = 1e-3 sıfırı geçemez).
+/// For ReLU tests: |x| >= 0.6 (eps = 1e-3 cannot cross zero).
 fn leaf_away_from_zero(rows: usize, cols: usize, seed: &mut u64) -> Tensor {
     Tensor::leaf(
         Matrix::random(rows, cols, 1.0, seed).map(|x| if x >= 0.0 { x + 0.6 } else { x - 0.6 }),
@@ -124,7 +124,7 @@ fn add_same_shape() {
     let mut s = 11u64;
     let a = leaf(3, 4, &mut s);
     let b = leaf(3, 4, &mut s);
-    gradient_check("add (aynı şekil)", &[a.clone(), b.clone()], || {
+    gradient_check("add (same shape)", &[a.clone(), b.clone()], || {
         a.add(&b).sum()
     });
 }
@@ -133,7 +133,7 @@ fn add_same_shape() {
 fn add_broadcast_bias() {
     let mut s = 12u64;
     let a = leaf(5, 4, &mut s);
-    let bias = leaf(1, 4, &mut s); // Linear::forward'ın kullandığı yol
+    let bias = leaf(1, 4, &mut s); // the path Linear::forward uses
     gradient_check("add (bias broadcast)", &[a.clone(), bias.clone()], || {
         a.add(&bias).sum()
     });
@@ -144,7 +144,7 @@ fn sub_same_shape() {
     let mut s = 13u64;
     let a = leaf(3, 4, &mut s);
     let b = leaf(3, 4, &mut s);
-    gradient_check("sub (aynı şekil)", &[a.clone(), b.clone()], || {
+    gradient_check("sub (same shape)", &[a.clone(), b.clone()], || {
         a.sub(&b).sum()
     });
 }
@@ -202,8 +202,8 @@ fn matmul() {
 
 #[test]
 fn matmul_square() {
-    // Kare matmul: transpose'lu geri yayılım yolları (matmul_ta/bt) burada
-    // lda/ldb karışması en zor yakalanır — ayrıca sınanıyor.
+    // Square matmul: the transposed backward paths (matmul_ta/bt) are the
+    // hardest place to catch an lda/ldb mix-up - checked separately too.
     let mut s = 19_000u64;
     let n = 8;
     let a = leaf(n, n, &mut s);
@@ -218,7 +218,7 @@ fn matmul_square() {
 fn matmul_then_transpose() {
     let mut s = 20u64;
     let a = leaf(4, 3, &mut s); // (4,3)
-    let b = leaf(6, 3, &mut s); // (6,3) → a @ b^T = (4,6)  [attention skorları]
+    let b = leaf(6, 3, &mut s); // (6,3) -> a @ b^T = (4,6)  [attention scores]
     let w = frozen(4, 6, &mut s);
     gradient_check("matmul + transpose", &[a.clone(), b.clone()], || {
         a.matmul(&b.transpose()).mul_elem(&w).sum()
@@ -241,7 +241,7 @@ fn sum_op() {
 }
 
 // ------------------------------------------------------------
-// Kayıp / olasılık
+// Loss / probability
 // ------------------------------------------------------------
 
 #[test]
@@ -262,7 +262,7 @@ fn softmax_cross_entropy() {
 fn softmax_op() {
     let mut s = 24u64;
     let a = leaf(3, 5, &mut s);
-    // Düz toplam sabit (1) olduğu için gradyan sıfır çıkar; ağırlıklı toplam kullan.
+    // A plain sum is constant (1) so the gradient is zero; use a weighted sum.
     let w = frozen(3, 5, &mut s);
     gradient_check("softmax", one(&a), || a.softmax().mul_elem(&w).sum());
 }
@@ -272,10 +272,10 @@ fn mask_causal() {
     let mut s = 25u64;
     let a = leaf(4, 4, &mut s);
 
-    // DİKKAT: mask_causal üst üçgeni -1e9 yapar. Ağırlık matrisi orada sıfır
-    // olmazsa loss ~1e9 mertebesine çıkar ve merkezi farkın ΔL'si (~1e-3) f32
-    // çözünürlüğünün (ulp(1e9) ≈ 64) altında kalır — test anlamsızlaşır.
-    // Gerçek kullanımda da maskeden sonra daima softmax gelir.
+    // WARNING: mask_causal sets the upper triangle to -1e9. If the weight matrix
+    // is not zero there the loss jumps to ~1e9 and the central-difference dL
+    // (~1e-3) falls below f32 resolution (ulp(1e9) ~ 64) - the test becomes meaningless.
+    // In real use a softmax always follows the mask.
     let mut w_mat = Matrix::random(4, 4, 1.0, &mut s);
     for i in 0..4 {
         for j in 0..4 {
@@ -293,7 +293,7 @@ fn mask_causal() {
 
 #[test]
 fn softmax_after_mask() {
-    // Attention'ın gerçek yolu: skor → causal mask → softmax.
+    // The real attention path: scores -> causal mask -> softmax.
     let mut s = 26u64;
     let a = leaf(4, 4, &mut s);
     let w = frozen(4, 4, &mut s);
@@ -319,7 +319,7 @@ fn layer_norm() {
     let x = leaf(3, 4, &mut s);
     let gamma = leaf(1, 4, &mut s);
     let beta = leaf(1, 4, &mut s);
-    // LN çıktısının düz toplamı sabittir; ağırlıklı toplam kullan.
+    // A plain sum of the LN output is constant; use a weighted sum.
     let w = frozen(3, 4, &mut s);
     gradient_check(
         "layer_norm (x, gamma, beta)",
@@ -334,7 +334,7 @@ fn layer_norm() {
 
 #[test]
 fn embedding() {
-    // Gerçek `transformer::Embedding` üzerinden — batch'li (B=2, S=4) satır paketleme.
+    // Through the real `transformer::Embedding` - batched (B=2, S=4) row packing.
     use stonefish_ai::transformer::Embedding;
 
     let mut s = 29u64;
@@ -348,7 +348,7 @@ fn embedding() {
         let mut s2 = 999u64;
         frozen_positive(ids.len(), d, &mut s2)
     };
-    // v2: yalnız token gömmesi vardır (konum RoPE ile gelir)
+    // v2: token embedding only (position comes from RoPE)
     assert_eq!(ids.len(), batch * seq_len);
     gradient_check(
         "embedding (tok, B=2 S=4)",
@@ -358,7 +358,7 @@ fn embedding() {
 }
 
 // ------------------------------------------------------------
-// GPU / CPU matmul eşdeğerliği
+// GPU / CPU matmul equivalence
 // ------------------------------------------------------------
 
 #[test]
@@ -382,7 +382,7 @@ fn gpu_matmul_matches_cpu() {
     }
     assert!(
         max_diff < 1e-4,
-        "GPU matmul CPU ile uyuşmuyor: max fark {max_diff}"
+        "GPU matmul does not match the CPU: max diff {max_diff}"
     );
     println!("  ✅ gpu matmul == cpu matmul (max fark {max_diff:.2e})");
 }
@@ -430,8 +430,8 @@ fn causal_attention_multi_head_batched() {
 
 #[test]
 fn causal_attention_is_causal() {
-    // Gelecekteki bir token'ı değiştirmek, geçmiş pozisyonların çıktısını
-    // ETKİLEMEMELİ. (nedensellik sözleşmesi)
+    // Changing a future token must NOT affect the output of past positions
+    // (the causality contract).
     let mut s = 42u64;
     let (batch, seq, d) = (1usize, 4usize, 3usize);
     let q = leaf(batch * seq, d, &mut s);
@@ -462,11 +462,11 @@ fn causal_attention_is_causal() {
         for j in 0..d {
             assert!(
                 (before.get(i, j) - after.get(i, j)).abs() < 1e-6,
-                "nedensellik ihlali: pozisyon {i} son token değişince değişti"
+                "causality violation: position {i} changed when the last token changed"
             );
         }
     }
-    println!("  ✅ causal_attention nedensellik sözleşmesini koruyor");
+    println!("  ✅ causal_attention preserves the causality contract");
 }
 
 // ------------------------------------------------------------
@@ -503,14 +503,14 @@ fn sparse_ce_matches_dense() {
 
     assert!(
         (loss_dense - loss_sparse).abs() < 1e-5,
-        "loss farkı: dense={loss_dense} sparse={loss_sparse}"
+        "loss diff: dense={loss_dense} sparse={loss_sparse}"
     );
     let mut max_diff = 0.0f32;
     for i in 0..g_dense.len() {
         max_diff = max_diff.max((g_dense[i] - g_sparse[i]).abs());
     }
-    assert!(max_diff < 1e-6, "gradyan farkı: {max_diff}");
-    println!("  ✅ sparse CE == dense CE (loss ve gradyan)");
+    assert!(max_diff < 1e-6, "gradient diff: {max_diff}");
+    println!("  ✅ sparse CE == dense CE (loss and gradient)");
 }
 
 #[test]
@@ -526,12 +526,12 @@ fn sparse_ce_gradient() {
 
 #[test]
 fn gpu_transposed_matmul_variants_match_cpu() {
-    // matmul_bt (A·Bᵀ) ve matmul_ta (Aᵀ·B) — cuBLAS'ın transa/transb yolları.
-    // Bu iki varyant autograd'ın matmul geri yayılımında transpose
-    // malzemeleştirmesini ortadan kaldırır; yanlış kurulursa sessizce bozar.
-    // matmul_bt (A·Bᵀ) ve matmul_ta (Aᵀ·B) — cuBLAS'ın transa/transb yolları.
-    // Bu iki varyant autograd'ın matmul geri yayılımında transpose
-    // malzemeleştirmesini ortadan kaldırır; yanlış kurulursa sessizce bozar.
+    // matmul_bt (A*B^T) and matmul_ta (A^T*B) - cuBLAS's transa/transb paths.
+    // These two variants remove the transpose materialization from the
+    // autograd matmul backward; if set up wrongly they corrupt silently.
+    // matmul_bt (A*B^T) and matmul_ta (A^T*B) - cuBLAS's transa/transb paths.
+    // These two variants remove the transpose materialization from the
+    // autograd matmul backward; if set up wrongly they corrupt silently.
     #[cfg(feature = "cuda")]
     {
         let mut s = 55u64;
@@ -547,7 +547,7 @@ fn gpu_transposed_matmul_variants_match_cpu() {
         for i in 0..bt.data.len() {
             d = d.max((bt.data[i] - bt_ref.data[i]).abs());
         }
-        assert!(d < 1e-4, "matmul_bt yanlış: max fark {d}");
+        assert!(d < 1e-4, "matmul_bt wrong: max diff {d}");
 
         // (b) Aᵀ·B
         let at = a.transpose(); // (k, m)
@@ -559,16 +559,16 @@ fn gpu_transposed_matmul_variants_match_cpu() {
         for i in 0..ta.data.len() {
             d2 = d2.max((ta.data[i] - ta_ref.data[i]).abs());
         }
-        assert!(d2 < 1e-4, "matmul_ta yanlış: max fark {d2}");
+        assert!(d2 < 1e-4, "matmul_ta wrong: max diff {d2}");
 
-        println!("  ✅ matmul_bt / matmul_ta CPU referansıyla uyuşuyor ({d:.1e}, {d2:.1e})");
+        println!("  ✅ matmul_bt / matmul_ta match the CPU reference ({d:.1e}, {d2:.1e})");
     }
     #[cfg(not(feature = "cuda"))]
-    println!("  (CUDA kapalı — transposed matmul testi atlandı)");
+    println!("  (CUDA off - transposed matmul test skipped)");
 }
 
 // ------------------------------------------------------------
-// Uçtan uca: küçük GPT — kompozisyonu doğrular
+// End to end: a small GPT - verifies the composition
 // ------------------------------------------------------------
 
 #[test]
@@ -585,13 +585,13 @@ fn tiny_gpt_end_to_end() {
     };
     let model = GPT::new(config, &mut s);
 
-    // EPS KALİBRASYONU: Embedding init ölçeği 0.02, d_model=4 → satır std'si ~0.01.
-    // LayerNorm tam bu std'ye böler, yani eps=1e-3 satırın ~%10'u demektir ve
-    // merkezi farkın doğrusallık varsayımı çöker (ikinci türev terimi baskın çıkar).
-    // Ölçüldü: dokunulmazsa gömme gradyanlarında 1.4e-1 sahte sapma; ×50 ölçekle
-    // 8e-5'e iner ve diğer tüm parametrelerle aynı seviyeye gelir.
+    // EPS CALIBRATION: embedding init scale 0.02, d_model=4 -> row std ~0.01.
+    // RMSNorm divides by exactly that std, so eps=1e-3 is ~10% of a row and the
+    // linearity assumption of the central difference collapses (the second-order
+    // Measured: untouched it gives a spurious 1.4e-1 deviation on the embedding
+    // gradients; scaling by x50 drops it to 8e-5, level with every other parameter.
     {
-        // Gömme init ölçeği 0.02 → RMSNorm eps kalibrasyonu için ×50
+        // Embedding init scale 0.02 -> x50 for RMSNorm eps calibration
         let p = &model.embedding.token_emb;
         let scaled = p.data.borrow().scale(50.0);
         *p.data.borrow_mut() = scaled;
@@ -605,20 +605,20 @@ fn tiny_gpt_end_to_end() {
     let targets: Vec<usize> = vec![2, 4, 1, 0, 3, 2];
 
     let total: usize = params.iter().map(|p| p.data.borrow().data.len()).sum();
-    println!("  (küçük GPT: {total} parametre, B=2 S=3, tamamı numerik kontrol ediliyor)");
+    println!("  (small GPT: {total} parameters, B=2 S=3, all checked numerically)");
 
-    assert!(total < 2000, "uçtan uca gradyan testi küçük model ister");
+    assert!(total < 2000, "the end-to-end gradient test needs a small model");
 
-    gradient_check("GPT uçtan uca (B=2,S=3)", &params, || {
+    gradient_check("GPT end to end (B=2,S=3)", &params, || {
         model
             .forward_batch(&ids, batch, seq_len)
             .softmax_cross_entropy_ids(&targets)
     });
 }
 
-/// Batch'li eğitimin tek-sequence eğitimle *matematiksel olarak aynı* gradyanı
-/// verdiğini doğrular: batch'i parçalayıp gradyanları toplamak, tek pakette
-/// hesaplanan gradyana eşit olmalı (linearite).
+/// Verifies that batched training gives *mathematically the same* gradient as
+/// single-sequence training: summing the gradients of the split batch must
+/// equal the gradient computed in one pack (linearity).
 #[test]
 fn batch_grad_equals_sum_of_single_sequence_grads() {
     use stonefish_ai::transformer::{GptConfig, GPT};
@@ -633,7 +633,7 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
     };
     let model = GPT::new(config, &mut s);
     {
-        // Gömme init ölçeği 0.02 → RMSNorm eps kalibrasyonu için ×50
+        // Embedding init scale 0.02 -> x50 for RMSNorm eps calibration
         let p = &model.embedding.token_emb;
         let scaled = p.data.borrow().scale(50.0);
         *p.data.borrow_mut() = scaled;
@@ -644,7 +644,7 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
     let ids: Vec<usize> = vec![1, 3, 0, 2, 4, 1, 5, 2, 3];
     let targets: Vec<usize> = vec![2, 4, 1, 0, 3, 2, 1, 5, 0];
 
-    // (a) tek pakette batch gradyanı
+    // (a) batch gradient in a single pack
     for p in &params {
         p.zero_grad();
     }
@@ -657,7 +657,7 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
         .map(|p| p.grad.borrow().data.clone())
         .collect();
 
-    // (b) sequence'leri tek tek forward edip gradyanları topla
+    // (b) forward each sequence separately and sum the gradients
     for p in &params {
         p.zero_grad();
     }
@@ -667,8 +667,8 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
         let l = model
             .forward_batch(&ids[lo..hi], 1, seq_len)
             .softmax_cross_entropy_ids(&targets[lo..hi]);
-        // CE ortalamayı satır sayısına (B*S) böler. Tek sequence loss'u ise S'e
-        // böler; dolayısıyla L_batch = (1/B)·Σ_b L_b ilişkisi geçerlidir.
+        // CE divides the mean by the number of rows (B*S). A single-sequence loss
+        // divides by S, so L_batch = (1/B)*sum_b L_b holds.
         l.scale(1.0 / batch as f32).backward();
     }
     let g_sum: Vec<Vec<f32>> = params
@@ -684,13 +684,13 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
     }
     assert!(
         worst < 1e-5,
-        "batch gradyanı, tek tek gradyanların toplamına eşit değil (max fark {worst})"
+        "the batch gradient does not equal the sum of the individual gradients (max diff {worst})"
     );
-    println!("  ✅ batch gradyanı == Σ tek-sequence gradyanı (max fark {worst:.2e})");
+    println!("  ✅ batch gradient == sum of single-sequence gradients (max diff {worst:.2e})");
 }
 
 // ============================================================
-// v2 mimarisi: RMSNorm ve RoPE
+// v2 architecture: RMSNorm and RoPE
 // ============================================================
 
 #[test]
@@ -701,17 +701,17 @@ fn rms_norm_forward_and_grad() {
     let gamma = Tensor::leaf(Matrix::filled(1, cols, 1.0), true);
     let eps = 1e-6;
 
-    // x̂'in karesel ortalaması 1 olmalı
+    // the mean square of xhat must be 1
     let out = x.rms_norm(&gamma, eps);
     {
         let od = out.data.borrow();
         for r in 0..rows {
             let ms: f32 = (0..cols).map(|j| od.get(r, j) * od.get(r, j)).sum::<f32>() / cols as f32;
-            assert!((ms - 1.0).abs() < 1e-3, "rms_norm çıktı rms {ms}");
+            assert!((ms - 1.0).abs() < 1e-3, "rms_norm output rms {ms}");
         }
     }
 
-    // elle hesap: x / sqrt(mean(x²)+eps)
+    // by hand: x / sqrt(mean(x^2)+eps)
     {
         let xd = x.data.borrow();
         let od = out.data.borrow();
@@ -737,17 +737,17 @@ fn rms_norm_gamma_grad() {
     let mut s = 78u64;
     let (rows, cols) = (5usize, 8usize);
     let x = frozen(rows, cols, &mut s);
-    // gamma sıfırdan uzak olsun (eps kalibrasyonu)
+    // keep gamma away from zero (eps calibration)
     let gamma = Tensor::leaf(
         Matrix::random(1, cols, 1.0, &mut s).map(|v| 1.0 + v * 0.5),
         true,
     );
     let eps = 1e-6;
-    // gamma gradyanını görünür kılmak için çıktıyı gamma ile ağırlıkla
+    // weight the output by gamma to make the gamma gradient visible
     let w = frozen(rows, cols, &mut s);
     let f = || x.rms_norm(&gamma, eps).mul_elem(&w).sum();
-    // Yalnız gamma kontrol edilir: `x` donmuş bir sabittir, `gradient_check`
-    // onun analitik gradyanını 0 görüp numerikle karşılaştırırdı.
+    // Only gamma is checked: `x` is a frozen constant and `gradient_check`
+    // would see its analytic gradient as 0 and compare it numerically.
     gradient_check("rms_norm (gamma)", std::slice::from_ref(&gamma), f);
 }
 
@@ -762,17 +762,17 @@ fn rope_forward_and_grad() {
     {
         let rd = rot.data.borrow();
         let xd = x.data.borrow();
-        // 0. konum değişmemeli
+        // position 0 must not change
         for j in 0..cols {
             assert!(
                 (rd.get(0, j) - xd.get(0, j)).abs() < 1e-6,
-                "konum 0 değişti"
+                "position 0 changed"
             );
         }
-        // norm korunmalı (dönme izometridir)
+        // the norm must be preserved (rotation is an isometry)
         let n_in: f32 = xd.data.iter().map(|v| v * v).sum();
         let n_out: f32 = rd.data.iter().map(|v| v * v).sum();
-        assert!((n_in - n_out).abs() / n_in < 1e-4, "norm korunmadı");
+        assert!((n_in - n_out).abs() / n_in < 1e-4, "the norm was not preserved");
     }
 
     gradient_check("rope", std::slice::from_ref(&x), || {

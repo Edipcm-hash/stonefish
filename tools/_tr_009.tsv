@@ -1,0 +1,38 @@
+//   C(m,n) = A·B  ⇒  Cᵀ = Bᵀ·Aᵀ  (operandlar yer değişir)	//   C(m,n) = A*B  =>  C^T = B^T*A^T  (the operands swap)
+"""Türkçe -> İngilizce satır çevirisi uygular.	"""Applies line-by-line Turkish -> English translation.
+Sözlük: tools/_tr_XXX.tsv dosyaları (TAB ile ayrılmış: TÜRKÇE <TAB> İNGİLİZCE).	Dictionary: tools/_tr_XXX.tsv files (TAB separated: TURKISH <TAB> ENGLISH).
+Satır bazlı çalışır: dosyadaki bir satırın kırpılmış hâli sözlükte varsa,	Works line by line: if the trimmed form of a line is in the dictionary it is
+girinti korunarak İngilizcesiyle değiştirilir.	replaced by its English version, keeping the indentation.
+Kullanım:	Usage:
+python tools/apply_tr.py --dry-run  # yalnız rapor	python tools/apply_tr.py --dry-run  # report only
+# Türkçeye özgü, İngilizcede karşılığı olmayan kelimeler (yanlış pozitif riski düşük)	# Turkish-specific words with no English homograph (low false-positive risk)
+r"\b(bir|ve|için|ile|bu|olarak|değil|yok|hata|boyut|satır|sütun|değer|sonra|önce|	r"\b(bir|ve|için|ile|bu|olarak|değil|yok|hata|boyut|satır|sütun|değer|sonra|önce|
+r"gibi|daha|çok|veya|eğer|zaman|katman|çekirdek|bellek|tampon|gradyan|ağırlık|	r"gibi|daha|çok|veya|eğer|zaman|katman|çekirdek|bellek|tampon|gradyan|ağırlık|
+r"eğitim|dizi|örnek|toplam|ortalama|sonuç|giriş|çıkış|adım|hız|süre|yaz|döner|	r"eğitim|dizi|örnek|toplam|ortalama|sonuç|giriş|çıkış|adım|hız|süre|yaz|döner|
+r"kullan|yapılır|edilir|olur|olan|olduğu|tarafından|üzerinde|içinde|arasında|	r"kullan|yapılır|edilir|olur|olan|olduğu|tarafından|üzerinde|içinde|arasında|
+r"kadar|sadece|ayrıca|ancak|çünkü|böylece|şekilde|durum|işlem|değişken|döngü|	r"kadar|sadece|ayrıca|ancak|çünkü|böylece|şekilde|durum|işlem|değişken|döngü|
+r"koşul|sınır|kontrol|hesap|kaydet|yükle|sil|ekle|başlat|bitir|açık|kapalı)\b"	r"koşul|sınır|kontrol|hesap|kaydet|yükle|sil|ekle|başlat|bitir|açık|kapalı)\b"
+print(f"sözlük: {len(d)} satır")	print(f"dictionary: {len(d)} lines")
+# kalan Türkçe satırlar	# remaining Turkish lines
+print(f"değiştirilen satır: {replaced}")	print(f"lines replaced: {replaced}")
+print(f"kalan Türkçe satır: {total_left} (dosya: {len(remaining)})")	print(f"Turkish lines left: {total_left} (files: {len(remaining)})")
+# kalanları incelemek için dosyaya yaz	# write the leftovers to a file for review
+"""Parquet Gutenberg shard'larını düz metne çevirir (veri hazırlığı; proje bağımlılığı değil)."""	"""Converts Parquet Gutenberg shards to plain text (data prep, not a project dependency)."""
+print("parquet yok")	print("no parquet files")
+"""StonefishAI vs PyTorch - aynı mimari, aynı veri, aynı GPU, aynı donanım.	"""StonefishAI vs PyTorch - same architecture, same data, same GPU, same hardware.
+Amaç: "sıfırdan Rust ile yazılmış motor" ile "endüstri standardı framework"	Goal: MEASURE the difference between a "from-scratch Rust engine" and an
+arasındaki farkı ÖLÇMEK. Karşılaştırma adil olsun diye PyTorch tarafı	"industry-standard framework". To keep the comparison fair the PyTorch side
+RMSNorm (beta yok) -> QKV -> RoPE -> causal attention -> Wo -> residual	implements StonefishAI's v2 architecture exactly:
+İki attention modu raporlanır:	Two attention modes are reported:
+naive : skorlar materyalize edilir (StonefishAI'nin yaptığı gibi)	naive : scores are materialized (what StonefishAI does)
+sdpa  : torch SDPA (flash/memory-efficient çekirdekler) - PyTorch'un en iyi hali	sdpa  : torch SDPA (flash/memory-efficient kernels) - PyTorch at its best
+"""x: (B, S, H, Dh) -> döndürülmüş."""	"""x: (B, S, H, Dh) -> rotated."""
+# skorları materyalize et (StonefishAI ile aynı iş)	# materialize the scores (the same work StonefishAI does)
+# StonefishAI'nin swiglu_hidden() fonksiyonuyla BİREBİR aynı kural:	# exactly the same rule as StonefishAI's swiglu_hidden():
+raw = -(-(8 * d) // 3)  # yukarı yuvarla	raw = -(-(8 * d) // 3)  # round up
+print(f"batch: {a.batch} × accum {a.accum} = {tokens_per_step} token/adım")	print(f"batch: {a.batch} x accum {a.accum} = {tokens_per_step} tokens/step")
+# ısınma	# warm-up
+# StonefishAI'nin step() fonksiyonu global L2 kırpma yapar (clamp 1.0).	# StonefishAI's step() performs global L2 clipping (clamp 1.0).
+# Adil olsun diye PyTorch tarafında da aynı işi yapıyoruz.	# For fairness we do the same work on the PyTorch side.
+print(f"\nadım süresi: {dt/a.steps*1000:.0f} ms")	print(f"\nstep time: {dt/a.steps*1000:.0f} ms")
+print(f"hız        : {tok_s:,.0f} token/s")	print(f"speed      : {tok_s:,.0f} tokens/s")

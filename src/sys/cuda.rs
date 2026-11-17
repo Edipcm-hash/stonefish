@@ -1,8 +1,8 @@
 // src/sys/cuda.rs
-// CUDA Driver API'sinin (nvcuda) ihtiyacımız olan alt kümesi.
+// The subset of the CUDA Driver API (nvcuda) that we need.
 //
-// Tüm imzalar CUDA sürücü API belgelerinden birebir alınmıştır.
-// Fonksiyonlar çalışma zamanında yüklenir; CUDA yoksa `None` döner.
+// All signatures are taken verbatim from the CUDA driver API docs.
+// Functions are loaded at runtime; returns `None` if CUDA is absent.
 
 #![allow(non_camel_case_types, dead_code)]
 
@@ -21,7 +21,7 @@ pub type CUjit_option = u32;
 pub const CUDA_SUCCESS: CUresult = 0;
 pub const CU_MEMHOSTALLOC_PORTABLE: u32 = 0x01;
 
-// Cihaz öznitelikleri (ihtiyacımız olanlar)
+// Device attributes (the ones we need)
 pub const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
 pub const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: i32 = 76;
 
@@ -34,7 +34,7 @@ macro_rules! cuda_fn {
     };
 }
 
-// ---- Sürüm / cihaz / bağlam ----
+// ---- Version / device / context ----
 cuda_fn!(cuInit, unsafe extern "system" fn(u32) -> CUresult);
 cuda_fn!(
     cuDriverGetVersion,
@@ -100,7 +100,7 @@ cuda_fn!(
     unsafe extern "system" fn(*mut usize, *mut usize) -> CUresult
 );
 
-// ---- Modül / çekirdek ----
+// ---- Module / kernel ----
 cuda_fn!(
     cuModuleLoadData,
     unsafe extern "system" fn(*mut CUmodule, *const c_void) -> CUresult
@@ -124,7 +124,7 @@ cuda_fn!(
     unsafe extern "system" fn(*mut CUfunction, CUmodule, *const i8) -> CUresult
 );
 
-// ---- Çekirdek başlatma ----
+// ---- Kernel launch ----
 cuda_fn!(
     cuLaunchKernel,
     unsafe extern "system" fn(
@@ -147,10 +147,10 @@ cuda_fn!(
 );
 
 // ============================================================
-// Güvenli sarmalayıcılar
+// Safe wrappers
 // ============================================================
 
-/// Sonuç kodu hata ise açıklamasıyla panikle.
+/// Panic with a description if the result code is an error.
 pub fn check(res: CUresult, what: &str) {
     if res == CUDA_SUCCESS {
         return;
@@ -168,10 +168,10 @@ pub fn check(res: CUresult, what: &str) {
             None => format!("kod {res}"),
         }
     };
-    panic!("CUDA hatası ({what}): {name}");
+    panic!("CUDA error ({what}): {name}");
 }
 
-/// Cihaz bilgisini yazdır (teşhis).
+/// Print device information (diagnostics).
 pub fn device_info() -> Option<(String, i32, i32, usize)> {
     unsafe {
         check(cuInit()?(0), "cuInit");

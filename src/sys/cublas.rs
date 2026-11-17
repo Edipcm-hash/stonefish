@@ -1,5 +1,5 @@
 // src/sys/cublas.rs
-// cuBLAS'ın ihtiyacımız olan alt kümesi (SGEMM + strided-batched).
+// The subset of cuBLAS we need (SGEMM + strided-batched).
 
 #![allow(non_camel_case_types, dead_code)]
 
@@ -80,6 +80,6 @@ blas_fn!(
 
 pub fn check(res: cublasStatus_t, what: &str) {
     if res != CUBLAS_STATUS_SUCCESS {
-        panic!("cuBLAS hatası ({what}): kod {res}");
+        panic!("cuBLAS error ({what}): code {res}");
     }
 }

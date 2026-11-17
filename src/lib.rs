@@ -1,17 +1,17 @@
 // src/lib.rs
-// StonefishAI — kütüphane kökü.
+// StonefishAI - library root.
 //
-// Tüm motor modülleri burada yaşar; `src/main.rs` sadece CLI kabuğudur.
-// Bu ayrım sayesinde op'lar `tests/` altından (gradcheck, birim testleri) doğrudan
-// kullanılabilir.
+// All engine modules live here; `src/main.rs` is only the CLI shell.
+// Thanks to this split the ops are directly usable from `tests/` (gradcheck,
+// unit tests).
 
-// `needless_range_loop`: bu motorda iç döngüler aynı anda birden fazla diziyi
-// (q/k/v, skorlar, x_hat, dx_hat…) aynı indeksle tarıyor ve sınırlar döngü
-// değişkeninden türüyor. Iterator zincirine çevirmek hot path'lerde hem
-// okunabilirliği hem de derleyicinin vektörleştirme şansını düşürüyor.
+// `needless_range_loop`: in this engine the inner loops index several arrays
+// at once (q/k/v, scores, x_hat, dx_hat...) with the same index and the bounds
+// derive from the loop variable. Rewriting them as iterator chains would hurt
+// both readability and the compiler's chance to vectorize on hot paths.
 #![allow(clippy::needless_range_loop)]
-// `manual_is_multiple_of`: `is_multiple_of` yeni bir stabilizasyon; MSRV'yi
-// yükseltmemek için `% n == 0` tercih ediliyor.
+// `manual_is_multiple_of`: `is_multiple_of` is a recent stabilization; we keep
+// `% n == 0` to avoid raising the MSRV.
 #![allow(clippy::manual_is_multiple_of)]
 
 pub mod autograd;
@@ -40,5 +40,5 @@ pub mod tensor;
 pub mod tokenizer;
 pub mod transformer;
 
-/// Kütüphane sürümü (Cargo.toml ile tek kaynaktan).
+/// Library version (single source of truth with Cargo.toml).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

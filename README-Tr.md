@@ -95,7 +95,7 @@ cargo build --release
 | Dosya | Ne | Nereden |
 |---|---|---|
 | `data/train-images-idx3-ubyte` + 3 kardeşi | MNIST | [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist/) |
-| `data/turkce.txt` | Türkçe korpus (düz metin) | kendi metnin |
+| `data/turkish.txt` | Türkçe korpus (düz metin) | kendi metnin |
 | `data/en/train.txt` | İngilizce korpus | TinyStories v2 (~2,1 GB) |
 | `data/en/valid.txt` | İngilizce validasyon | TinyStories valid (~18 MB) |
 
@@ -245,7 +245,7 @@ BPE öğrenimi **artımlı çift sayımı** ile yapılır: her merge'den sonra y
 | Model | `d_model=128`, 4 katman, 4 head (`d_head=32`), ctx=128 |
 | Vocab | 136 karakter |
 | Parametre | **842.632** |
-| Korpus | `data/turkce.txt` — 2.870.158 karakter, 22.423 sequence |
+| Korpus | `data/turkish.txt` — 2.870.158 karakter, 22.423 sequence |
 | Checkpoint | `stonefish_gpt.bin` (v2: magic + config + vocab + tensörler) |
 | Eğitim | 6 epoch, 16.620 adım, batch 8 |
 

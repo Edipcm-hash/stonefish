@@ -9,14 +9,14 @@ keywords = ["llm", "transformer", "autograd", "cuda", "from-scratch"]
 categories = ["science", "algorithms"]
 
 [features]
-# CUDA'sı olmayan makinelerde: cargo test --no-default-features
+# On machines without CUDA: cargo test --no-default-features
 default = ["cuda"]
-# CUDA erişimi kendi FFI'mizle (src/sys) yapılır — harici crate YOK.
+# CUDA access goes through our own FFI (src/sys) - no external crate.
 cuda = []
 
 # ============================================================
-# BAĞIMLILIK YOK.
-# CUDA sürücüsü / cuBLAS / NVRTC çalışma zamanında dinamik yüklenir
+# NO DEPENDENCIES.
+# The CUDA driver / cuBLAS / NVRTC are loaded dynamically at runtime
 # (src/sys/mod.rs: LoadLibraryW / dlopen).
 # ============================================================
 [dependencies]

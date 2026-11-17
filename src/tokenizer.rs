@@ -1,9 +1,9 @@
 // src/tokenizer.rs
 // Karakter seviyesi tokenizer. Metin <-> ID.
 //
-// Vocab, eğitim korpusunun karakter kümesidir (sıralı). Checkpoint'e gömüldüğü
-// için korpus dosyası değişse bile ID'ler kaymaz; `save`/`load` ikilisi ise
-// yan dosya olarak vocab'ı taşıyıp drift tespiti yapmak için kullanılır.
+// The vocab is the character set of the training corpus (sorted). Because it is
+// embedded in the checkpoint the ids never shift even if the corpus file
+// changes; the `save`/`load` pair carries it as a sidecar to detect drift.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -16,7 +16,7 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-    /// Verilen metinden karakter setini çıkarır (sıralı → deterministik ID).
+    /// Extracts the character set from the text (sorted -> deterministic ids).
     pub fn from_text(text: &str) -> Self {
         let set: HashSet<char> = text.chars().collect();
         let mut chars: Vec<char> = set.into_iter().collect();
@@ -24,8 +24,8 @@ impl Tokenizer {
         Self::from_chars_unchecked(chars)
     }
 
-    /// Sıralı karakter listesinden kurar (checkpoint yükleme).
-    /// Liste sıralı ve tekrarsız değilse hata döner.
+    /// Builds from a sorted character list (checkpoint loading).
+    /// Returns an error if the list is not sorted and unique.
     pub fn from_chars(chars: Vec<char>) -> std::io::Result<Self> {
         let mut sorted = chars.clone();
         sorted.sort_unstable();
@@ -33,13 +33,13 @@ impl Tokenizer {
         if sorted.len() != chars.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "vocab içinde tekrarlanan karakter var",
+                "the vocabulary contains a repeated character"
             ));
         }
         if sorted != chars {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "vocab sıralı değil — ID eşlemesi bozulur",
+                "the vocabulary is not sorted - id mapping would break"
             ));
         }
         Ok(Self::from_chars_unchecked(chars))
@@ -55,7 +55,7 @@ impl Tokenizer {
         }
     }
 
-    /// Metni ID vektörüne çevir. Bilinmeyen karakter → hata (sessiz bozulma yok).
+    /// Convert text to an id vector. Unknown character -> error (no silent corruption).
     pub fn try_encode(&self, text: &str) -> Result<Vec<usize>, char> {
         let mut out = Vec::with_capacity(text.len());
         for c in text.chars() {
@@ -67,34 +67,34 @@ impl Tokenizer {
         Ok(out)
     }
 
-    /// `try_encode`'in panikleyen sarmalayıcısı (CLI için pratik).
+    /// Panicking wrapper around `try_encode` (handy for the CLI).
     pub fn encode(&self, text: &str) -> Vec<usize> {
         self.try_encode(text).unwrap_or_else(|c| {
             panic!(
-                "bilinmeyen karakter: {:?} (U+{:04X}) — bu karakter eğitim korpusunda yok",
+                "unknown character: {:?} (U+{:04X}) - this character is not in the training corpus"
                 c, c as u32
             )
         })
     }
 
-    /// ID vektörünü metne çevir.
+    /// Convert an id vector back to text.
     pub fn decode(&self, ids: &[usize]) -> String {
         ids.iter()
             .map(|&i| {
                 *self
                     .chars
                     .get(i)
-                    .unwrap_or_else(|| panic!("geçersiz token id: {i}"))
+                    .unwrap_or_else(|| panic!("invalid token id: {i}"))
             })
             .collect()
     }
 
-    /// Vocab'ı yan dosyaya yaz (ID sırasıyla, tek satır).
+    /// Write the vocabulary to a sidecar file (in id order, one line).
     pub fn save(&self, path: &str) -> std::io::Result<()> {
         fs::write(path, self.chars.iter().collect::<String>())
     }
 
-    /// Yan dosyadan vocab oku. `save` ile yazılmış olmalı.
+    /// Read the vocabulary from a sidecar file. It must have been written by `save`.
     pub fn load(path: &str) -> std::io::Result<Self> {
         let s = fs::read_to_string(path)?;
         let mut chars: Vec<char> = s.chars().collect();
@@ -103,13 +103,13 @@ impl Tokenizer {
         if chars.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "vocab dosyası boş",
+                "the vocabulary file is empty"
             ));
         }
         Ok(Self::from_chars_unchecked(chars))
     }
 
-    /// İki tokenizer aynı eşlemeyi mi kullanıyor? (korpus drift kontrolü)
+    /// Do both tokenizers use the same mapping? (corpus drift check)
     pub fn same_vocab(&self, other: &Self) -> bool {
         self.chars == other.chars
     }
@@ -121,8 +121,8 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let tok = Tokenizer::from_text("abcçdefgğ");
-        let text = "çğğabc";
+        let tok = Tokenizer::from_text("abcdefghij");
+        let text = "ijjabc";
         assert_eq!(tok.decode(&tok.encode(text)), text);
     }
 
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn ids_are_deterministic() {
-        // Aynı karakter kümesi, farklı sırayla yazılmış metin → aynı ID'ler.
+        // Same character set in a differently ordered text -> the same ids.
         let a = Tokenizer::from_text("ab");
         let b = Tokenizer::from_text("ba");
         assert!(a.same_vocab(&b));

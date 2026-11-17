@@ -1,15 +1,15 @@
 // kernels/stonefish.cu
-// StonefishAI — GPT eğitimi için CUDA çekirdekleri.
+// StonefishAI - CUDA kernels for GPT training.
 //
-// NVRTC ile ÇALIŞMA ZAMANINDA derlenir (makinede host C++ derleyicisi yok;
-// nvcc cl.exe istiyor, NVRTC istemiyor). PTX bir kez üretilip modül olarak
-// yükleniyor (src/gpu_kernels.rs).
+// Compiled AT RUNTIME via NVRTC (this machine has no host C++ compiler;
+// nvcc requires cl.exe, NVRTC does not). PTX is produced once and loaded
+// as a module (src/gpu_kernels.rs).
 //
-// Düzen: tüm çekirdekler `extern "C"` ve düz C imzasıyla; Rust tarafı
-// `stream.launch_builder(...).arg(&ptr).arg(&n)` ile çağırır.
-// Tüm matrisler row-major. "satır" = token (B*S satır), "kolon" = özellik.
+// Layout: all kernels are extern "C" with plain C signatures; the Rust
+// side launches them through `Kargs` (see src/sys/dev.rs).
+// All matrices are row-major. "row" = token (B*S rows), "col" = feature.
 
-// NVRTC varsayılan olarak math başlıklarını getirmez; INFINITY makrosu yok.
+// NVRTC does not include math headers by default; there is no INFINITY macro.
 #ifndef INFINITY
 #define INFINITY __int_as_float(0x7f800000)
 #endif
@@ -47,7 +47,7 @@ extern "C" __global__ void zero_fill(float* dst, int n) {
     if (idx < n) dst[idx] = 0.0f;
 }
 
-// GELU (tanh yaklaşımı) ileri: y = 0.5x(1+tanh(c(x+0.044715x³)))
+// GELU forward (tanh approximation): y = 0.5x(1+tanh(c(x+0.044715x^3)))
 extern "C" __global__ void gelu_forward(float* out, const float* x, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
@@ -76,8 +76,8 @@ extern "C" __global__ void gelu_backward(float* dx, const float* dy,
 // ------------------------------------------------------------
 // LayerNorm
 // ------------------------------------------------------------
-// Satır başına bir blok. cols <= 1024 varsayımı (d_model=128).
-// cache: xhat (normalize edilmiş giriş), inv_std (satır başına).
+// One block per row. Assumes cols <= 1024 (d_model=128).
+// cache: xhat (normalized input), inv_std (per row).
 
 extern "C" __global__ void layernorm_forward(float* out, float* xhat_out,
                                              float* inv_out, const float* x,
@@ -126,8 +126,8 @@ extern "C" __global__ void layernorm_forward(float* out, float* xhat_out,
     }
 }
 
-// LayerNorm geri: dx üretir; dgamma/dbeta'yı atomik olmadan biriktirmek için
-// ayrı bir kolon-indirgeme çekirdeği kullanılıyor (layernorm_param_grad).
+// LayerNorm backward: produces dx; dgamma/dbeta are accumulated without
+// atomics by a separate column-reduction kernel (layernorm_param_grad).
 extern "C" __global__ void layernorm_backward(float* dx, const float* dy,
                                               const float* xhat,
                                               const float* inv,
@@ -171,7 +171,7 @@ extern "C" __global__ void layernorm_backward(float* dx, const float* dy,
 }
 
 // dgamma[j] = Σ_r dy[r,j]*xhat[r,j];  dbeta[j] = Σ_r dy[r,j]
-// Bir blok = bir kolon (cols kadar blok), satırlar üzerinde döner.
+// One block = one column (cols blocks), looping over rows.
 extern "C" __global__ void layernorm_param_grad(float* dgamma, float* dbeta,
                                                 const float* dy,
                                                 const float* xhat, int rows,
@@ -195,15 +195,15 @@ extern "C" __global__ void add_param_grad(float* dst, const float* src, int n) {
 // ------------------------------------------------------------
 // Nedensel softmax (attention)
 // ------------------------------------------------------------
-// scores: (B*H, S, S) — her (b,h) için ayrı S×S blok, ld = S.
-// Satır başına bir warp; i. satırda yalnız j <= i geçerli, gerisi 0.
+// scores: (B*H, S, S) - a separate S x S block per (b,h), ld = S.
+// One warp per row; on row i only j <= i is valid, the rest is 0.
 
 extern "C" __global__ void masked_softmax_forward(float* w, const float* scores,
                                                   int seq, int n_heads,
                                                   int batch, float scale) {
-    // Bir blok = bir (h, b, i) satırı; thread'ler j üzerinde.
-    // Buffer yerleşimi [head][batch][seq][seq] (head en yavaş değişen) —
-    // GEMM'ler head başına batch üzerinde strided yazdığı için.
+    // One block = one (h, b, i) row; threads iterate over j.
+    // Buffer layout [head][batch][seq][seq] (head is the slowest varying) -
+    // because the GEMMs write strided over batch per head.
     int row = blockIdx.x;              // 0 .. heads*batch*seq-1
     int i = row % seq;
     int rest = row / seq;
@@ -253,7 +253,7 @@ extern "C" __global__ void masked_softmax_forward(float* w, const float* scores,
 extern "C" __global__ void masked_softmax_backward(
     float* ds, const float* w, const float* dw, int seq, int n_heads, int batch,
     float scale) {
-    // Aynı [head][batch][seq][seq] yerleşimi.
+    // Same [head][batch][seq][seq] layout.
     int row = blockIdx.x;
     int i = row % seq;
     int rest = row / seq;
@@ -304,7 +304,7 @@ extern "C" __global__ void embedding_forward(float* out, const int* ids,
     }
 }
 
-// Geri: atomik dağıtım (aynı token birden çok satırda geçebilir)
+// Backward: atomic scatter (the same token may appear on several rows)
 extern "C" __global__ void embedding_backward(float* dtok, float* dpos,
                                               const float* dout,
                                               const int* ids, int rows,
@@ -326,8 +326,8 @@ extern "C" __global__ void embedding_backward(float* dtok, float* dpos,
 // Cross-entropy (logits: rows × classes, hedefler: rows)
 // ------------------------------------------------------------
 
-// loss tek elemanlık diziye yazılır (rows'a bölünmüş ortalama).
-// probs (rows × classes) geri yayılım için saklanır.
+// the loss is written to a one-element array (mean over rows).
+// probs (rows x classes) are kept for the backward pass.
 extern "C" __global__ void ce_forward(float* loss_out, float* probs,
                                       const float* logits, const int* targets,
                                       int rows, int classes) {
@@ -408,10 +408,10 @@ extern "C" __global__ void adam_step(float* param, const float* grad, float* m,
 }
 
 // ------------------------------------------------------------
-// Gradyan kırpma (global L2 norm) — iki aşama
+// Gradient clipping (global L2 norm) - two passes
 // ------------------------------------------------------------
 
-// Her blok kısmi kareler toplamını atomik olarak biriktirir.
+// Each block atomically accumulates its partial sum of squares.
 extern "C" __global__ void sum_squares_atomic(float* acc, const float* x,
                                               int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -427,16 +427,16 @@ extern "C" __global__ void sum_squares_atomic(float* acc, const float* x,
     if (threadIdx.x == 0) atomicAdd(acc, sh[0]);
 }
 
-// Kırpma ölçeğini uygula.
+// Apply the clipping scale.
 extern "C" __global__ void scale_inplace(float* x, int n, float s) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) x[idx] *= s;
 }
 
 // ============================================================
-// RMSNorm — LayerNorm'un ortalamasız hali (LLaMA/PaLM).
+// RMSNorm - LayerNorm without the mean (LLaMA/PaLM).
 //   y = x / sqrt(mean(x^2) + eps) * gamma
-// Ortalama çıkarma ve beta yok: daha az iş, eşit kalite.
+// No mean subtraction and no beta: less work, same quality.
 // ============================================================
 
 extern "C" __global__ void rmsnorm_forward(float* out, float* xhat, float* inv,
@@ -496,10 +496,10 @@ extern "C" __global__ void rmsnorm_backward(float* dx, const float* dy,
     }
 }
 
-// dγ = Σ_r dy·x̂  (sütun başına toplam)
+// dgamma = sum_r dy*xhat  (per column)
 //
-// Satırlar bloklara bölünür (blockIdx.y): tek thread tüm satırları tararsa
-// 1024 sütun × 2048 satır seri kalır ve 250M modelde adımı ~1,8× yavaşlatır.
+// Rows are split across blocks (blockIdx.y): a single thread scanning all
+// rows leaves 1024 columns x 2048 rows serial and slows the 250M model by ~1.8x.
 extern "C" __global__ void rmsnorm_param_grad(float* dgamma, const float* dy,
                                              const float* xhat, int rows, int cols) {
     int c = blockIdx.x;
@@ -515,7 +515,7 @@ extern "C" __global__ void rmsnorm_param_grad(float* dgamma, const float* dy,
 }
 
 // ============================================================
-// SwiGLU — kapılı FFN: silu(x·W1) * (x·W3)
+// SwiGLU - gated FFN: silu(x*W1) * (x*W3)
 // ============================================================
 
 extern "C" __global__ void silu_mul_forward(float* out, const float* gate, const float* up, int n) {
@@ -543,13 +543,13 @@ extern "C" __global__ void silu_mul_backward(float* dgate, float* dup,
 }
 
 // ============================================================
-// RoPE — döner konum kodlaması. Q/K vektörlerini konuma göre döndürür.
-// Göreli konum bilgisi verir; mutlak konum kayması sorununu bitirir.
+// RoPE - rotary position encoding. Rotates Q/K vectors by position.
+// Gives relative position; removes the absolute position drift problem.
 // ============================================================
 
-// RoPE cos/sin tablosu (seq × d_head/2), bir kez hesaplanır.
-// Table olmadan her eleman için powf/cos/sin çağrılıyordu: ölçüldü, eğitimi
-// ~1,8× yavaşlatıyordu (transandantal fonksiyonlar pahalı).
+// RoPE cos/sin table (seq x d_head/2), computed once.
+// Without the table powf/cos/sin were called per element: measured, it
+// slowed training by ~1.8x (transcendental functions are expensive).
 __device__ void rope_apply(float* a, float* b, const float* cos_t, const float* sin_t,
                            int s, int j, int half, int inverse) {
     float c = cos_t[s * half + j];
@@ -597,8 +597,8 @@ extern "C" __global__ void rope_backward(float* dx, const float* dy,
 }
 
 // ============================================================
-// Dropout — eğitimde rastgele sıfırla, 1/(1-p) ile ölçekle.
-// Her iş parçacığı kendi xorshift durumunu tohumdan türetir.
+// Dropout - randomly zero during training, scale by 1/(1-p).
+// Each thread derives its own xorshift state from the seed.
 // ============================================================
 
 __device__ unsigned int hash_u32(unsigned int x) {
@@ -617,7 +617,7 @@ extern "C" __global__ void dropout_inplace(float* x, int n, float p, unsigned in
     else x[i] *= 1.0f / (1.0f - p);
 }
 
-// Dropout maskesini geri yayılımda uygula (aynı tohum → aynı maske).
+// Apply the dropout mask in the backward pass (same seed -> same mask).
 extern "C" __global__ void dropout_backward(float* dx, int n, float p, unsigned int seed) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -627,7 +627,7 @@ extern "C" __global__ void dropout_backward(float* dx, int n, float p, unsigned 
     else dx[i] *= 1.0f / (1.0f - p);
 }
 
-// RoPE'lu mimari için: yalnız token gömmesi (pozisyon gömme yok).
+// RoPE architecture: token embedding only (no positional embedding).
 extern "C" __global__ void embedding_forward_tok(float* out, const int* ids,
                                                 const float* tok_emb,
                                                 int rows, int cols) {
@@ -638,7 +638,7 @@ extern "C" __global__ void embedding_forward_tok(float* out, const int* ids,
     out[idx] = tok_emb[(long long)ids[r] * cols + c];
 }
 
-// Yalnız token gömmesinin gradyanı (pozisyon gradyanı yok).
+// Gradient of the token embedding only (no positional gradient).
 extern "C" __global__ void embedding_backward_tok(float* dtok, const float* dout,
                                                  const int* ids, int rows, int cols) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -649,10 +649,10 @@ extern "C" __global__ void embedding_backward_tok(float* dtok, const float* dout
 }
 
 // ============================================================
-// KV-cache üretimi için yardımcılar
+// Helpers for KV-cache generation
 // ============================================================
 
-// Tek satır softmax (maske yok — cache'teki tüm konumlar geçmiştedir).
+// Single-row softmax (no mask - every cached position is in the past).
 extern "C" __global__ void softmax_vec(float* out, const float* x, int n) {
     extern __shared__ float sh[];
     int t = threadIdx.x;
@@ -678,7 +678,7 @@ extern "C" __global__ void softmax_vec(float* out, const float* x, int n) {
     for (int i = t; i < n; i += blockDim.x) out[i] = expf(x[i] - m) * denom;
 }
 
-// Tek konum için RoPE (üretimde position = cache uzunluğu).
+// RoPE for a single position (position = cache length during generation).
 extern "C" __global__ void rope_forward_pos(float* out, const float* x,
                                            const float* cos_t, const float* sin_t,
                                            int n_heads, int d_head, int pos) {
@@ -696,8 +696,8 @@ extern "C" __global__ void rope_forward_pos(float* out, const float* x,
     out[base + 1] = x0 * sn + x1 * c;
 }
 
-// Cache'e yaz. Yerleşim: [head][capacity][d_head]
-// k/v: (n_heads × d_head) — tek token'ın head dilimleri.
+// Write into the cache. Layout: [head][capacity][d_head]
+// k/v: (n_heads x d_head) - the head slices of a single token.
 extern "C" __global__ void kv_store(float* cache_k, float* cache_v,
                                    const float* k, const float* v,
                                    int n_heads, int d_head, int pos, int capacity) {

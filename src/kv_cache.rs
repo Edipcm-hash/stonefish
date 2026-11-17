@@ -1,11 +1,11 @@
 // src/kv_cache.rs
-// KV-cache ile üretim: her yeni token için tüm bağlamı yeniden hesaplamak
-// yerine K ve V yalnız bir kez hesaplanıp saklanır.
+// KV-cache generation: instead of recomputing the whole context for every
+// new token, K and V are computed once and stored.
 //
-// Kazanç: token başına iş O(n) → O(1) (yalnız yeni token işlenir; attention
-// yine cache üzerinde O(n) gezer ama bu ucuz bellek erişimidir).
+// Gain: work per token goes from O(n) to O(1) (only the new token is
+// processed; attention still walks the cache in O(n) but that is cheap memory access).
 //
-// Yerleşim: her katman için K ve V (n_heads, capacity, d_head).
+// Layout: K and V per layer (n_heads, capacity, d_head).
 
 #![cfg(feature = "cuda")]
 
@@ -16,9 +16,9 @@ use crate::sys::dev::{DevBuf, DevPtr};
 use crate::transformer::RMS_EPS;
 
 pub struct KvCache {
-    /// Her katman için K: (n_heads, capacity, d_head)
+    /// K for each layer: (n_heads, capacity, d_head)
     pub k: Vec<DevBuf>,
-    /// Her katman için V: (n_heads, capacity, d_head)
+    /// V for each layer: (n_heads, capacity, d_head)
     pub v: Vec<DevBuf>,
     pub capacity: usize,
     pub len: usize,
@@ -40,12 +40,12 @@ impl KvCache {
     }
 }
 
-/// KV-cache'li üretim bağlamı: tamponlar bir kez ayrılır, her token'da yeniden
-/// kullanılır (adım başına tahsis yok).
+/// KV-cache generation context: buffers are allocated once and reused for
+/// every token (no per-step allocation).
 pub struct CachedModel<'a> {
     pub model: &'a mut GpuGpt,
     pub cache: KvCache,
-    // geçici tamponlar
+    // temporary buffers
     x: DevBuf,
     x1: DevBuf,
     xhat1: DevBuf,
@@ -117,17 +117,17 @@ impl<'a> CachedModel<'a> {
         self.cache.reset();
     }
 
-    /// Bir token'ı işler ve logitleri döndürür.
+    /// Processes one token and returns the logits.
     ///
-    /// `pos`: token'ın mutlak konumu (RoPE için). Cache uzunluğu ile aynı olmalı.
+    /// `pos`: the token's absolute position (for RoPE). Must equal the cache length.
     pub fn step(&mut self, token: u32, pos: usize) -> Vec<f32> {
         let cfg = self.model.cfg;
         let (d, nh) = (cfg.d_model, cfg.n_heads);
         let dh = d / nh;
         let f = crate::transformer::swiglu_hidden(d);
-        assert!(pos < self.cache.capacity, "KV-cache kapasitesi aşıldı");
+        assert!(pos < self.cache.capacity, "KV-cache capacity exceeded");
 
-        // --- gömme ---
+        // --- embedding ---
         self.ids.upload(&[token as i32]);
         k::embedding_forward_tok(&self.x, &self.ids, &self.model.tok_emb_ref().data, 1, d);
 
@@ -201,12 +201,12 @@ impl<'a> CachedModel<'a> {
                 pos,
             );
 
-            // --- dikkat ölçeği: 1/√d_head (softmax'tan ÖNCE uygulanmalı) ---
-            // Tam ileri geçişte bu ölçek `masked_softmax_forward` içindedir;
-            // burada softmax_vec kullanıldığı için Q'ya uyguluyoruz.
+            // --- attention scale: 1/sqrt(d_head) (must be applied BEFORE softmax) ---
+            // In the full forward pass this scale lives inside `masked_softmax_forward`;
+            // here we use softmax_vec, so we apply it to Q.
             k::scale_inplace(&self.qr, d, 1.0 / (dh as f32).sqrt());
 
-            // --- cache'e yaz ---
+            // --- write into the cache ---
             k::kv_store(
                 &self.cache.k[l],
                 &self.cache.v[l],
@@ -223,7 +223,7 @@ impl<'a> CachedModel<'a> {
             for h in 0..nh {
                 let off = h * dh;
                 let q_view = self.qr.slice(off..);
-                // cache: [head][capacity][d_head] → head h, ilk n_ctx satır
+                // cache: [head][capacity][d_head] -> head h, first n_ctx rows
                 let k_view = self.cache.k[l].slice(h * self.cache.capacity * dh..);
                 let v_view = self.cache.v[l].slice(h * self.cache.capacity * dh..);
 
@@ -241,7 +241,7 @@ impl<'a> CachedModel<'a> {
                     n_ctx,
                     GemmMode::Nt,
                 );
-                // softmax (maske gerekmez: hepsi geçmiş konumlar)
+                // softmax (no mask needed: all positions are in the past)
                 k::softmax_vec(&self.probs, &self.scores, n_ctx);
                 // out = probs·V   (1, d_head)
                 {

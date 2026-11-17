@@ -30,16 +30,16 @@ impl SGD {
 }
 
 // ============================================================
-// Gradyan kırpma
+// Gradient clipping
 // ============================================================
 
-/// Global L2 norm kırpma: tüm parametrelerin gradyanlarını tek bir vektör gibi
-/// düşünüp normu `max_norm` ile sınırlar. Norm `max_norm`'u aşmıyorsa hiçbir
-/// şeye dokunmaz. Kırpma **öncesi** normu döndürür (eğitim loglarında izlenir;
-/// patlayan gradyanı kırpmadan önce görmek istiyoruz).
+/// Global L2 norm clipping: treats every parameter gradient as one big vector
+/// and limits the norm to `max_norm`. If the norm does not exceed `max_norm`
+/// nothing is touched. Returns the norm **before** clipping (tracked in the
+/// training log: we want to see an exploding gradient before clipping it).
 ///
-/// Toplam f64'te biriktirilir: 842k parametrede f32 toplamı taşma/incelik
-/// kaybına açıktır.
+/// The sum is accumulated in f64: with 842k parameters an f32 sum is prone to
+/// overflow/precision loss.
 pub fn clip_grad_norm(params: &[Tensor], max_norm: f32) -> f32 {
     let mut sq = 0.0f64;
     for p in params {
@@ -62,7 +62,7 @@ pub fn clip_grad_norm(params: &[Tensor], max_norm: f32) -> f32 {
 }
 
 // ============================================================
-// Adam (düzeltilmiş)
+// Adam (with bias correction)
 // ============================================================
 
 pub struct Adam {
@@ -90,7 +90,7 @@ impl Adam {
             lr,
             beta1: 0.9,
             beta2: 0.999,
-            eps: 1e-6, // 1e-8 yerine 1e-6 (daha güvenli)
+            eps: 1e-6, // 1e-6 instead of 1e-8 (safer)
             t: 0,
             m,
             v,
@@ -108,7 +108,7 @@ impl Adam {
         self.t += 1;
         let t = self.t as f32;
 
-        // Bias correction (her adımda güncellenir)
+        // Bias correction (updated every step)
         let bc1 = 1.0 - self.beta1.powf(t);
         let bc2 = 1.0 - self.beta2.powf(t);
 
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn clip_leaves_small_grads_untouched() {
-        // norm = sqrt(3² + 4²) = 5 < max_norm=10 → dokunulmamalı
+        // norm = sqrt(3^2 + 4^2) = 5 < max_norm=10 -> must not touch
         let t = leaf_with_grad(1, 2, vec![3.0, 4.0]);
         let before = t.grad.borrow().data.clone();
         let norm = clip_grad_norm(std::slice::from_ref(&t), 10.0);
@@ -158,12 +158,12 @@ mod tests {
 
     #[test]
     fn clip_scales_to_max_norm() {
-        // norm = 5 → max_norm=1 ile ölçek 0.2; yön korunur.
+        // norm = 5 -> with max_norm=1 the scale is 0.2; the direction is kept.
         let t = leaf_with_grad(1, 2, vec![3.0, 4.0]);
         let norm = clip_grad_norm(std::slice::from_ref(&t), 1.0);
         assert!(
             (norm - 5.0).abs() < 1e-6,
-            "kırpma öncesi norm dönmeli: {norm}"
+            "must return the pre-clip norm: {norm}"
         );
         let g = t.grad.borrow();
         assert!((g.get(0, 0) - 0.6).abs() < 1e-6, "g0={}", g.get(0, 0));
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn clip_uses_global_norm_across_params() {
-        // İki parametre birlikte norm 5 eder; tek başına hiçbiri sınırı aşmaz.
+        // Together the two parameters have norm 5; neither exceeds the limit alone.
         let a = leaf_with_grad(1, 1, vec![3.0]);
         let b = leaf_with_grad(1, 1, vec![4.0]);
         let norm = clip_grad_norm(&[a.clone(), b.clone()], 2.5);

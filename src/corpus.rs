@@ -1,11 +1,11 @@
 // src/corpus.rs
-// Akışlı token veri hattı.
+// Streaming token data pipeline.
 //
-// Neden: 3-6 milyar token'ı `Vec<usize>` olarak RAM'de tutmak imkânsız
-// (token başına 8 bayt → 24-48 GB). Bu modül:
-//   * tokenize edilmiş korpusu **diske** u16 olarak yazar (2 bayt/token),
-//   * eğitim sırasında **pencere** okuyarak erişir (tüm dosya yüklenmez),
-//   * sabit boyutlu bir bellek penceresi tutar (varsayılan 64 MB) → ardışık
+// Why: keeping 3-6 billion tokens in RAM as `Vec<usize>` is impossible
+// (8 bytes per token -> 24-48 GB). This module:
+//   * writes the tokenized corpus **to disk** as u16 (2 bytes/token),
+//   * reads through a **window** during training (the whole file is not loaded),
+//   * keeps a fixed-size memory window -> sequential
 //     okumalar disk I/O'su yapmaz.
 
 use crate::bpe::Bpe;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 
-/// Token cache dosyası: ham u16 little-endian dizisi.
+/// Token cache file: a raw u16 little-endian array.
 pub struct TokenDataset {
     file: File,
     n_tokens: u64,
@@ -22,11 +22,11 @@ pub struct TokenDataset {
     buf_start: u64,
 }
 
-/// Pencere boyu: istenen aralığın bu katı (en az 4K token, en çok 1M).
+/// Window size: this multiple of the requested range (>= 4K tokens, <= 1M).
 ///
-/// Eğitim rastgele konumlardan okur; pencere çok büyük olursa her ıskalama
-/// onlarca MB disk okumasına dönüşür (ölçüldü: adımda ~4 GB trafik, eğitimi
-/// 1,8× yavaşlatıyordu).
+/// Training reads from random positions; if the window is too large every miss
+/// becomes tens of MB of disk reads (measured: ~4 GB per step, slowing
+/// training by 1.8x).
 const WINDOW_MIN: usize = 4096;
 const WINDOW_MAX: usize = 1 << 20;
 const WINDOW_FACTOR: usize = 8;
@@ -38,7 +38,7 @@ impl TokenDataset {
         if bytes % 2 != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "token cache boyutu çift olmalı (u16)",
+                "token cache size must be even (u16)",
             ));
         }
         let n_tokens = bytes / 2;
@@ -58,7 +58,7 @@ impl TokenDataset {
         self.n_tokens == 0
     }
 
-    /// [start, start+len) aralığını içeren pencereyi belleğe al.
+    /// Load the window covering [start, start+len) into memory.
     fn ensure_window(&mut self, start: u64, len: usize) -> io::Result<usize> {
         let need_end = start + len as u64;
         let have = self.buf_start != u64::MAX
@@ -68,8 +68,8 @@ impl TokenDataset {
             return Ok((start - self.buf_start) as usize);
         }
 
-        // Yeni pencere: istenen aralık + biraz ileriye bak (ardışık erişim
-        // için faydalı), ama asla gereksiz büyük değil.
+        // New window: the requested range plus some look-ahead (useful for
+        // sequential access), but never needlessly large.
         let want = (len.saturating_mul(WINDOW_FACTOR)).clamp(WINDOW_MIN, WINDOW_MAX);
         let remaining = self.n_tokens.saturating_sub(start);
         let take = remaining.min(want as u64).max(len as u64) as usize;
@@ -86,19 +86,19 @@ impl TokenDataset {
         Ok(0)
     }
 
-    /// [start, start+out.len()) aralığını okur (kaydırma yok).
+    /// Reads [start, start+out.len()) (no shift).
     pub fn read(&mut self, start: u64, out: &mut [u16]) -> io::Result<()> {
         assert!(
             start + out.len() as u64 <= self.n_tokens,
-            "okuma korpusu aşıyor"
+            "read exceeds the corpus"
         );
         let off = self.ensure_window(start, out.len())?;
         out.copy_from_slice(&self.buf[off..off + out.len()]);
         Ok(())
     }
 
-    /// `start`'tan itibaren `seq_len` girdi + 1 kaydırılmış hedef yazar.
-    /// `x` ve `y` çağıran tarafından sağlanır (adım başına tahsis yok).
+    /// Writes `seq_len` inputs plus 1 shifted target starting at `start`.
+    /// `x` and `y` are provided by the caller (no per-step allocation).
     pub fn fill_pair(
         &mut self,
         start: u64,
@@ -110,18 +110,18 @@ impl TokenDataset {
         assert_eq!(y.len(), seq_len);
         assert!(
             start + (seq_len as u64 + 1) <= self.n_tokens,
-            "pencere korpusu aşıyor"
+            "window exceeds the corpus"
         );
         self.read(start, x)?;
         self.read(start + 1, y)
     }
 }
 
-/// Metni parçalar hâlinde tokenize edip u16 cache dosyasına yazar.
-/// UTF-8 karakter sınırları korunur (satır sonuna hizalanarak).
+/// Tokenizes text in chunks and writes a u16 cache file.
+/// UTF-8 character boundaries are preserved (aligned to the last newline).
 ///
-/// Hız: kelime başına önbellek (HashMap) tutulur — TinyStories gibi küçük
-/// sözlü korpuslarda isabet oranı çok yüksektir ve tokenize ~50× hızlanır.
+/// Speed: a per-word cache (HashMap) is kept - for corpora with a small
+/// vocabulary like TinyStories the hit rate is very high, ~50x faster.
 pub fn tokenize_file_to_cache(
     text_path: &str,
     cache_path: &str,
@@ -131,7 +131,7 @@ pub fn tokenize_file_to_cache(
     tokenize_impl(text_path, cache_path, bpe, chunk_bytes, false)
 }
 
-/// Aynı cache dosyasına EKLEYEREK tokenize eder (çoklu korpus birleştirme).
+/// Tokenizes by APPENDING to the same cache file (merging multiple corpora).
 pub fn tokenize_append(
     text_path: &str,
     cache_path: &str,
@@ -179,7 +179,7 @@ fn tokenize_impl(
         let mut data = std::mem::take(&mut carry);
         data.extend_from_slice(&buf[..got]);
 
-        // Son satır sonundan sonrasını bir sonraki parçaya taşı
+        // Carry everything after the last newline into the next chunk
         let cut = match data.iter().rposition(|&b| b == b'\n') {
             Some(p) => p + 1,
             None => data.len(),
@@ -193,7 +193,7 @@ fn tokenize_impl(
         chunks += 1;
         if chunks % 4 == 0 {
             eprintln!(
-                "  [tokenize] {:.0} MB işlendi, {} token, önbellek {} kelime",
+                "  [tokenize] {:.0} MB processed, {} tokens, cache {} words",
                 (processed + got) as f64 / (1 << 20) as f64,
                 total,
                 cache.len()
@@ -206,7 +206,7 @@ fn tokenize_impl(
     Ok(total)
 }
 
-/// Kelime önbellekli encode: metni kelimelere böl, her kelimeyi bir kez çöz.
+/// Word-cached encode: split text into words, solve each word once.
 fn encode_into(
     bpe: &Bpe,
     text: &str,
@@ -228,7 +228,7 @@ fn encode_into(
             v.push(u16::try_from(id).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("token id {id} u16'ya sığmıyor"),
+                    format!("token id {id} does not fit in u16"),
                 )
             })?);
         }
@@ -259,7 +259,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sfish_corpus_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cache = dir.join("t.bin");
-        // 1000 token yaz
+        // write 1000 tokens
         let ids: Vec<u16> = (0..1000u16).map(|i| i.wrapping_mul(7)).collect();
         {
             let mut f = File::create(&cache).unwrap();
@@ -286,15 +286,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let txt = dir.join("c.txt");
         let cache = dir.join("c.bin");
-        let content = "the cat sat on the mat.\nthe dog ran.\nşğüöç 🙂 done\n";
+        let content = "the cat sat on the mat.\nthe dog ran.\nsample unicode 🙂 done\n";
         std::fs::write(&txt, content).unwrap();
 
         let bpe = crate::bpe::train_bpe(content, 290, 10_000);
-        // Küçük parçalarla tokenize et: UTF-8 sınırları korunmalı.
+        // Tokenize in small chunks: UTF-8 boundaries must be preserved.
         let n = tokenize_file_to_cache(txt.to_str().unwrap(), cache.to_str().unwrap(), &bpe, 16)
             .unwrap();
 
-        // Cache'in tamamını oku ve decode et → metin aynen dönmeli
+        // Read the whole cache and decode it -> the text must round-trip
         let mut ds = TokenDataset::open(cache.to_str().unwrap()).unwrap();
         assert_eq!(ds.len(), n);
         let mut raw = vec![0u16; n as usize];

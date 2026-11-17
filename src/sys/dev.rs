@@ -1,7 +1,7 @@
 // src/sys/dev.rs
-// Cihaz belleği, modül/çekirdek ve başlatma yardımcıları.
+// Device memory, module/kernel and launch helpers.
 //
-// `cudarc`'ın yerini alır: `CudaSlice` → `DevBuf`, `CudaView` → `DevView`,
+// Replaces `cudarc`: `CudaSlice` -> `DevBuf`, `CudaView` -> `DevView`,
 // `CudaModule` → `Module`, `launch_builder` → `launch`.
 
 #![allow(dead_code)]
@@ -12,21 +12,21 @@ use std::marker::PhantomData;
 use std::sync::OnceLock;
 
 // ============================================================
-// Bağlam
+// Context
 // ============================================================
 
 struct Ctx {
     ctx: cuda::CUcontext,
 }
 
-// CUDA bağlamı tutamacı tek iş parçacığında kullanılır; süreç ömrü boyunca
-// yaşadığı için Send/Sync işaretlemek güvenli.
+// The CUDA context handle is used on a single thread and lives for the
+// whole process, so marking it Send/Sync is safe.
 unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 
 static CTX: OnceLock<Ctx> = OnceLock::new();
 
-/// Bağlamı (ilk çağrıda) oluştur ve bu iş parçacığına bağla.
+/// Create the context (on first call) and bind it to this thread.
 fn ctx() -> cuda::CUcontext {
     let c = CTX.get_or_init(|| unsafe {
         cuda::check(cuda::cuInit().expect("cuInit")(0), "cuInit");
@@ -50,7 +50,7 @@ fn ctx() -> cuda::CUcontext {
     c.ctx
 }
 
-/// Cihazın hesaplama yeteneği (major, minor).
+/// The device's compute capability (major, minor).
 pub fn compute_capability() -> (i32, i32) {
     ctx();
     unsafe {
@@ -74,7 +74,7 @@ pub fn compute_capability() -> (i32, i32) {
     }
 }
 
-/// Cihaz adı ve toplam belleği.
+/// Device name and total memory.
 pub fn device_info() -> (String, usize) {
     ctx();
     unsafe {
@@ -95,7 +95,7 @@ pub fn device_info() -> (String, usize) {
     }
 }
 
-/// Boşta olan / toplam cihaz belleği (bayt).
+/// Free / total device memory (bytes).
 pub fn mem_info() -> (usize, usize) {
     ctx();
     unsafe {
@@ -107,7 +107,7 @@ pub fn mem_info() -> (usize, usize) {
     }
 }
 
-/// Tüm bekleyen işleri tamamla.
+/// Complete all pending work.
 pub fn sync() {
     ctx();
     unsafe {
@@ -121,26 +121,26 @@ pub fn sync() {
 // Cihaz tamponu
 // ============================================================
 
-/// Cihaz belleğinde sahipli tampon (f32).
+/// Owned buffer in device memory (f32).
 pub struct DevBuf {
     ptr: cuda::CUdeviceptr,
     len: usize,
 }
 
-/// Cihaz belleğinde sahipli tampon (i32) — embedding indeksleri için.
+/// Owned buffer in device memory (i32) - for embedding indices.
 pub struct DevBufI32 {
     ptr: cuda::CUdeviceptr,
     len: usize,
 }
 
-/// Cihaz belleğine işaret eden ortak arayüz (tampon, görünüm, değiştirilebilir görünüm).
+/// Common interface for device pointers (buffer, view, mutable view).
 pub trait DevPtr {
     fn dptr(&self) -> cuda::CUdeviceptr;
     fn dlen(&self) -> usize;
 }
 
 impl DevBuf {
-    /// Sıfırlanmış tampon.
+    /// Zero-initialized buffer.
     pub fn zeros(len: usize) -> Self {
         ctx();
         let len = len.max(1);
@@ -208,9 +208,9 @@ impl DevBuf {
         out
     }
 
-    /// Herhangi bir cihaz işaretçisinden kopyala (boyutlar eşit olmalı).
+    /// Copy from any device pointer (sizes must match).
     pub fn copy_from_ptr(&mut self, src: &impl DevPtr) {
-        assert_eq!(self.len, src.dlen(), "copy_from_ptr boyut");
+        assert_eq!(self.len, src.dlen(), "copy_from_ptr size");
         ctx();
         unsafe {
             cuda::check(
@@ -220,9 +220,9 @@ impl DevBuf {
         }
     }
 
-    /// Başka bir cihaz tamponundan kopyala (boyutlar eşit olmalı).
+    /// Copy from another device buffer (sizes must match).
     pub fn copy_from(&mut self, src: &DevBuf) {
-        assert_eq!(self.len, src.len, "DevBuf::copy_from boyut");
+        assert_eq!(self.len, src.len, "DevBuf::copy_from size");
         ctx();
         unsafe {
             cuda::check(
@@ -242,7 +242,7 @@ impl DevBuf {
         }
     }
 
-    /// Dilim görünümü (sahiplik yok).
+    /// Slice view (no ownership).
     pub fn slice(&self, range: std::ops::RangeFrom<usize>) -> DevView<'_> {
         let start = range.start.min(self.len);
         DevView {
@@ -260,7 +260,7 @@ impl DevBuf {
         }
     }
 
-    /// Değiştirilebilir dilim görünümü.
+    /// Mutable slice view.
     pub fn slice_mut(&mut self, range: std::ops::RangeFrom<usize>) -> DevViewMut<'_> {
         let start = range.start.min(self.len);
         DevViewMut {
@@ -329,9 +329,9 @@ impl DevBufI32 {
         self.len == 0
     }
 
-    /// Mevcut tampona host verisini yaz (yeni tahsis yok).
+    /// Write host data into an existing buffer (no new allocation).
     pub fn upload(&mut self, v: &[i32]) {
-        assert!(v.len() <= self.len, "upload: tampon çok küçük");
+        assert!(v.len() <= self.len, "upload: buffer too small");
         if v.is_empty() {
             return;
         }
@@ -448,34 +448,34 @@ impl DevPtr for &DevViewMut<'_> {
 }
 
 // ============================================================
-// Modül ve çekirdek
+// Module and kernel
 // ============================================================
 
 pub struct Module {
     m: cuda::CUmodule,
 }
 
-// Modül tutamacı süreç ömrü boyunca tek iş parçacığında kullanılır.
+// The module handle is used on a single thread for the whole process.
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
-/// Yüklenmiş çekirdek (kopyalanabilir tutamaç).
+/// A loaded kernel (copyable handle).
 #[derive(Clone, Copy)]
 pub struct Function {
     f: cuda::CUfunction,
 }
 
 impl Module {
-    /// PTX metninden modül yükle.
+    /// Load a module from PTX text.
     pub fn from_ptx(ptx: &str) -> Result<Self, String> {
         ctx();
         let c = std::ffi::CString::new(ptx).map_err(|e| e.to_string())?;
         unsafe {
             let mut m: cuda::CUmodule = std::ptr::null_mut();
-            let f = cuda::cuModuleLoadData().ok_or("cuModuleLoadData yok")?;
+            let f = cuda::cuModuleLoadData().ok_or("cuModuleLoadData unavailable")?;
             let rc = f(&mut m, c.as_ptr() as *const c_void);
             if rc != cuda::CUDA_SUCCESS {
-                return Err(format!("cuModuleLoadData başarısız (kod {rc})"));
+                return Err(format!("cuModuleLoadData failed (code {rc})"));
             }
             Ok(Self { m })
         }
@@ -485,21 +485,21 @@ impl Module {
         let c = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
         unsafe {
             let mut f: cuda::CUfunction = std::ptr::null_mut();
-            let get = cuda::cuModuleGetFunction().ok_or("cuModuleGetFunction yok")?;
+            let get = cuda::cuModuleGetFunction().ok_or("cuModuleGetFunction unavailable")?;
             let rc = get(&mut f, self.m, c.as_ptr());
             if rc != cuda::CUDA_SUCCESS {
-                return Err(format!("çekirdek bulunamadı: {name} (kod {rc})"));
+                return Err(format!("kernel not found: {name} (code {rc})"));
             }
             Ok(Function { f })
         }
     }
 }
 
-/// Çekirdek argümanlarını hazırla.
+/// Prepare kernel arguments.
 ///
-/// CUDA, argümanları "her biri bir işaretçinin gösterdiği değer" olarak alır.
-/// Tek bir u64 slotu hem cihaz işaretçisi (8 bayt) hem i32/f32 (ilk 4 bayt,
-/// little-endian) için yeterli.
+/// CUDA takes arguments as "a pointer to each value".
+/// A single u64 slot fits both a device pointer (8 bytes) and an i32/f32
+/// (the low 4 bytes, little-endian).
 pub struct Kargs {
     vals: [u64; 24],
     ptrs: [*mut c_void; 24],
@@ -522,23 +522,23 @@ impl Kargs {
     }
 
     fn push(&mut self, v: u64) -> &mut Self {
-        assert!(self.n < 24, "çok fazla çekirdek argümanı");
+        assert!(self.n < 24, "too many kernel arguments");
         self.vals[self.n] = v;
         self.n += 1;
         self
     }
 
-    /// Cihaz tamponu / görünümü argümanı.
+    /// Device buffer / view argument.
     pub fn buf<P: DevPtr>(&mut self, p: &P) -> &mut Self {
         self.push(p.dptr())
     }
 
-    /// i32 argüman (4 bayt okunur).
+    /// i32 argument (4 bytes are read).
     pub fn i32(&mut self, v: i32) -> &mut Self {
         self.push(v as i64 as u64)
     }
 
-    /// f32 argüman (4 bayt okunur).
+    /// f32 argument (4 bytes are read).
     pub fn f32(&mut self, v: f32) -> &mut Self {
         self.push(v.to_bits() as u64)
     }
@@ -551,7 +551,7 @@ impl Kargs {
     }
 }
 
-/// Çekirdeği başlat (varsayılan akış).
+/// Launch the kernel (default stream).
 pub fn launch(
     f: Function,
     grid: (u32, u32, u32),
@@ -576,7 +576,7 @@ pub fn launch(
             std::ptr::null_mut(),
         );
         if rc != cuda::CUDA_SUCCESS {
-            panic!("cuLaunchKernel başarısız (kod {rc})");
+            panic!("cuLaunchKernel failed (code {rc})");
         }
     }
 }

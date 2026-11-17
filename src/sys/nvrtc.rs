@@ -1,7 +1,7 @@
 // src/sys/nvrtc.rs
-// NVRTC (çalışma zamanında CUDA C derleyicisi) alt kümesi.
+// The subset of NVRTC (the runtime CUDA C compiler) that we need.
 //
-// Host C++ derleyicisi olmayan makinelerde CUDA çekirdeği derlemenin tek yolu.
+// The only way to compile CUDA kernels on machines without a host C++ compiler.
 
 #![allow(non_camel_case_types, dead_code)]
 
@@ -58,16 +58,16 @@ nvrtc_fn!(
     unsafe extern "system" fn(*mut nvrtcProgram) -> nvrtcResult
 );
 
-/// CUDA C kaynağını PTX'e derle.
+/// Compile CUDA C source to PTX.
 pub fn compile(src: &str, opts: &[&str]) -> Result<String, String> {
     unsafe {
-        let create = nvrtcCreateProgram().ok_or("nvrtc bulunamadı")?;
-        let compile_f = nvrtcCompileProgram().ok_or("nvrtcCompileProgram yok")?;
-        let ptx_size = nvrtcGetPTXSize().ok_or("nvrtcGetPTXSize yok")?;
-        let get_ptx = nvrtcGetPTX().ok_or("nvrtcGetPTX yok")?;
-        let log_size = nvrtcGetProgramLogSize().ok_or("nvrtcGetProgramLogSize yok")?;
-        let get_log = nvrtcGetProgramLog().ok_or("nvrtcGetProgramLog yok")?;
-        let destroy = nvrtcDestroyProgram().ok_or("nvrtcDestroyProgram yok")?;
+        let create = nvrtcCreateProgram().ok_or("nvrtc not found")?;
+        let compile_f = nvrtcCompileProgram().ok_or("nvrtcCompileProgram unavailable")?;
+        let ptx_size = nvrtcGetPTXSize().ok_or("nvrtcGetPTXSize unavailable")?;
+        let get_ptx = nvrtcGetPTX().ok_or("nvrtcGetPTX unavailable")?;
+        let log_size = nvrtcGetProgramLogSize().ok_or("nvrtcGetProgramLogSize unavailable")?;
+        let get_log = nvrtcGetProgramLog().ok_or("nvrtcGetProgramLog unavailable")?;
+        let destroy = nvrtcDestroyProgram().ok_or("nvrtcDestroyProgram unavailable")?;
 
         let cs = std::ffi::CString::new(src).map_err(|e| e.to_string())?;
         let cname = std::ffi::CString::new("stonefish").unwrap();
@@ -81,7 +81,7 @@ pub fn compile(src: &str, opts: &[&str]) -> Result<String, String> {
             std::ptr::null(),
         ) != NVRTC_SUCCESS
         {
-            return Err("nvrtcCreateProgram başarısız".into());
+            return Err("nvrtcCreateProgram failed".into());
         }
 
         let c_opts: Vec<std::ffi::CString> = opts
@@ -103,18 +103,18 @@ pub fn compile(src: &str, opts: &[&str]) -> Result<String, String> {
                 }
             }
             destroy(&mut prog);
-            return Err(format!("NVRTC derleme hatası (kod {rc}):\n{log}"));
+            return Err(format!("NVRTC compilation error (code {rc}):\n{log}"));
         }
 
         let mut n = 0usize;
         if ptx_size(prog, &mut n) != NVRTC_SUCCESS {
             destroy(&mut prog);
-            return Err("nvrtcGetPTXSize başarısız".into());
+            return Err("nvrtcGetPTXSize failed".into());
         }
         let mut buf = vec![0i8; n];
         if get_ptx(prog, buf.as_mut_ptr()) != NVRTC_SUCCESS {
             destroy(&mut prog);
-            return Err("nvrtcGetPTX başarısız".into());
+            return Err("nvrtcGetPTX failed".into());
         }
         destroy(&mut prog);
         Ok(std::ffi::CStr::from_ptr(buf.as_ptr())

@@ -1,16 +1,16 @@
-"""StonefishAI vs PyTorch - aynı mimari, aynı veri, aynı GPU, aynı donanım.
+"""StonefishAI vs PyTorch - same architecture, same data, same GPU, same hardware.
 
-Amaç: "sıfırdan Rust ile yazılmış motor" ile "endüstri standardı framework"
-arasındaki farkı ÖLÇMEK. Karşılaştırma adil olsun diye PyTorch tarafı
+Goal: MEASURE the difference between a "from-scratch Rust engine" and an
+"industry-standard framework". To keep the comparison fair the PyTorch side
 StonefishAI'nin v2 mimarisini birebir uygular:
 
-  RMSNorm (beta yok) -> QKV -> RoPE -> causal attention -> Wo -> residual
+  implements StonefishAI's v2 architecture exactly:
   RMSNorm -> SwiGLU (silu(xW1) * (xW3)) -> W2 -> residual
   final RMSNorm -> logits = x * tok_embT  (weight tying)
 
-İki attention modu raporlanır:
-  naive : skorlar materyalize edilir (StonefishAI'nin yaptığı gibi)
-  sdpa  : torch SDPA (flash/memory-efficient çekirdekler) - PyTorch'un en iyi hali
+Two attention modes are reported:
+  naive : scores are materialized (what StonefishAI does)
+  sdpa  : torch SDPA (flash/memory-efficient kernels) - PyTorch at its best
 """
 
 import argparse
@@ -33,7 +33,7 @@ class RMSNorm(nn.Module):
 
 
 def rope(x, n_heads, d_head, base=10000.0):
-    """x: (B, S, H, Dh) -> döndürülmüş."""
+    """x: (B, S, H, Dh) -> rotated."""
     S = x.size(1)
     half = d_head // 2
     j = torch.arange(half, device=x.device, dtype=torch.float32)
@@ -82,7 +82,7 @@ class Block(nn.Module):
         q = rope(q, self.n_heads, self.d_head)
         k = rope(k, self.n_heads, self.d_head)
         if self.naive:
-            # skorları materyalize et (StonefishAI ile aynı iş)
+            # materialize the scores (the same work StonefishAI does)
             qq = q.transpose(1, 2)  # (B,H,S,Dh)
             kk = k.transpose(1, 2)
             vv = v.transpose(1, 2)
@@ -106,8 +106,8 @@ class Block(nn.Module):
 class GPT(nn.Module):
     def __init__(self, vocab, ctx, d, layers, heads, naive):
         super().__init__()
-        # StonefishAI'nin swiglu_hidden() fonksiyonuyla BİREBİR aynı kural:
-        raw = -(-(8 * d) // 3)  # yukarı yuvarla
+        # exactly the same rule as StonefishAI's swiglu_hidden():
+        raw = -(-(8 * d) // 3)  # round up
         step = 256 if raw >= 1024 else (64 if raw >= 256 else 8)
         hidden = -(-raw // step) * step
         self.tok = nn.Embedding(vocab, d)
@@ -150,12 +150,12 @@ def main():
         f"model: d={a.d} layers={a.layers} heads={a.heads} ctx={a.ctx} vocab={a.vocab}"
         f" -> {n_params/1e6:.1f}M parametre"
     )
-    print(f"batch: {a.batch} × accum {a.accum} = {tokens_per_step} token/adım")
+    print(f"batch: {a.batch} x accum {a.accum} = {tokens_per_step} tokens/step")
     print(f"tf32: {torch.backends.cuda.matmul.allow_tf32}")
 
     x = torch.randint(0, a.vocab, (a.batch, a.ctx + 1), device=dev)
 
-    # ısınma
+    # warm-up
     for _ in range(2):
         opt.zero_grad(set_to_none=True)
         for _m in range(a.accum):
@@ -173,8 +173,8 @@ def main():
             logits = model(x[:, :-1])
             loss = lossf(logits.reshape(-1, a.vocab), x[:, 1:].reshape(-1)) / a.accum
             loss.backward()
-        # StonefishAI'nin step() fonksiyonu global L2 kırpma yapar (clamp 1.0).
-        # Adil olsun diye PyTorch tarafında da aynı işi yapıyoruz.
+        # StonefishAI's step() performs global L2 clipping (clamp 1.0).
+        # For fairness we do the same work on the PyTorch side.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         torch.cuda.synchronize()
         opt.step()
@@ -183,8 +183,8 @@ def main():
 
     tok_s = a.steps * tokens_per_step / dt
     peak = torch.cuda.max_memory_allocated() / 1e9
-    print(f"\nadım süresi: {dt/a.steps*1000:.0f} ms")
-    print(f"hız        : {tok_s:,.0f} token/s")
+    print(f"\nstep time: {dt/a.steps*1000:.0f} ms")
+    print(f"speed      : {tok_s:,.0f} tokens/s")
     print(f"zirve VRAM : {peak:.1f} GB")
     print(f"son loss   : {loss.item()*a.accum:.4f}")
 

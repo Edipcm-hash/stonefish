@@ -1,6 +1,6 @@
 // examples/grad_probe.rs
-// Geçici teşhis aracı: küçük GPT'de tek bir parametrenin analitik ve numerik
-// gradyanını yan yana basar. (Gradyan hatası avlamak için.)
+// Diagnostic tool: prints the analytic and numeric gradient of a single
+// parameter of a small GPT side by side. (For hunting gradient bugs.)
 #![allow(clippy::needless_range_loop)]
 
 use stonefish_ai::transformer::{GptConfig, GPT};
@@ -49,8 +49,8 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
     );
     l.backward();
 
-    // v2 parametre sırası: gömme → her blok (norm1, wq/wk/wv/wo, norm2,
-    // ff_gate/ff_up/ff_down) → final norm. Sıra `GPT::parameters()` ile aynı.
+    // v2 parameter order: embedding -> each block (norm1, wq/wk/wv/wo, norm2,
+    // ff_gate/ff_up/ff_down) -> final norm. Same order as `GPT::parameters()`.
     let names = [
         "token_emb",
         "norm1_g",
@@ -87,7 +87,7 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
         }
         let flag = if worst > 2e-2 { "❌" } else { "✅" };
         println!(
-            "{flag} {name:<12} ({:>2}x{:<2}) en kötü rel={:.2e}  {worst_detail}",
+            "{flag} {name:<12} ({:>2}x{:<2}) worst rel={:.2e}  {worst_detail}",
             p.data.borrow().rows,
             p.data.borrow().cols,
             worst
@@ -99,5 +99,5 @@ fn main() {
     probe("tek sequence", 1, 3, false, 1.0);
     probe("batch=2", 2, 3, false, 1.0);
     probe("batch=2, emb×50", 2, 3, false, 50.0);
-    probe("batch=2, emb×50, attn yok", 2, 3, true, 50.0);
+    probe("batch=2, emb x50, no attn", 2, 3, true, 50.0);
 }

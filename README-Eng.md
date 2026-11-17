@@ -11,7 +11,7 @@ Everything from `Tensor` and topological backprop to optimizers and CUDA kernels
 
 On machines without CUDA, `--no-default-features` runs everything on the CPU.
 
-> Türkçe sürüm: [README-Tr.md](README-Tr.md)
+> Turkish version: [README-Tr.md](README-Tr.md)
 
 ---
 
@@ -77,7 +77,7 @@ cargo build --release
 
 # --- Turkish GPT (character level) ---
 ./target/release/stonefish_ai gpt-train 6 8                        # epochs, batch
-./target/release/stonefish_ai gpt-gen "Akşam erken iner" 300 0.8   # prompt, tokens, temperature
+./target/release/stonefish_ai gpt-gen "evening falls early" 300 0.8   # prompt, tokens, temperature
 
 # --- English GPT (BPE-16k, 236 M) ---
 ./target/release/stonefish_ai en-prepare           # learn BPE + build u16 cache
@@ -95,7 +95,7 @@ cargo build --release
 | File | What | Where |
 |---|---|---|
 | `data/train-images-idx3-ubyte` + 3 siblings | MNIST | [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist/) |
-| `data/turkce.txt` | Turkish corpus (plain text) | your own text |
+| `data/turkish.txt` | Turkish corpus (plain text) | your own text |
 | `data/en/train.txt` | English corpus | TinyStories v2 (~2.1 GB) |
 | `data/en/valid.txt` | English validation | TinyStories valid (~18 MB) |
 
@@ -245,7 +245,7 @@ BPE learning uses **incremental pair counting**: after each merge only words con
 | Model | `d_model=128`, 4 layers, 4 heads (`d_head=32`), ctx=128 |
 | Vocab | 136 characters |
 | Parameters | **842,632** |
-| Corpus | `data/turkce.txt` — 2,870,158 characters, 22,423 sequences |
+| Corpus | `data/turkish.txt` — 2,870,158 characters, 22,423 sequences |
 | Checkpoint | `stonefish_gpt.bin` (v2: magic + config + vocab + tensors) |
 | Training | 6 epochs, 16,620 steps, batch 8 |
 

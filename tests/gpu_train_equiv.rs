@@ -1,13 +1,13 @@
 // tests/gpu_train_equiv.rs
 //
-// Device-resident GPU eğiticisinin, doğrulanmış CPU autograd yoluna karşı
-// eşdeğerliği:
-//   1) aynı ağırlıklar, aynı batch → aynı loss
-//   2) aynı gradyanlar (tüm parametreler)
-//   3) N optimizer adımı sonrası aynı loss eğrisi
+// Equivalence of the device-resident GPU trainer against the verified CPU
+// autograd path:
+//   1) same weights, same batch -> same loss
+//   2) the same gradients (all parameters)
+//   3) the same loss curve after N optimizer steps
 //
-// CUDA çekirdekleri `use_fast_math` ile derlendiği için birebir bit eşitliği
-// beklenmiyor; toleranslar ölçülen değerlere göre belgelenmiştir.
+// CUDA kernels are compiled with `use_fast_math`, so bit-exact equality is
+// not expected; the tolerances are documented from the measured values.
 
 #![cfg(feature = "cuda")]
 
@@ -48,7 +48,7 @@ fn case() -> Case {
     }
 }
 
-/// CPU referansı: (loss, isim → gradyan)
+/// CPU reference: (loss, name -> gradient)
 fn cpu_forward_backward(c: &Case) -> (f32, Vec<(String, Vec<f32>)>) {
     use stonefish_ai::autograd::Tensor;
 
@@ -103,7 +103,7 @@ fn gpu_trainer_matches_cpu_gradients() {
 
     let d_loss = (loss_gpu - loss_cpu).abs();
     println!("  loss: cpu={loss_cpu:.6} gpu={loss_gpu:.6} fark={d_loss:.2e}");
-    assert!(d_loss < LOSS_TOL, "loss farkı {d_loss}");
+    assert!(d_loss < LOSS_TOL, "loss diff {d_loss}");
 
     let mut worst = 0.0f32;
     let mut worst_name = String::new();
@@ -118,13 +118,13 @@ fn gpu_trainer_matches_cpu_gradients() {
             }
         }
     }
-    println!("  gradyanlar: en kötü |fark| = {worst:.2e}  ({worst_name})");
-    assert!(worst < GRAD_TOL, "gradyan farkı {worst}: {worst_name}");
+    println!("  gradients: worst |diff| = {worst:.2e}  ({worst_name})");
+    assert!(worst < GRAD_TOL, "gradient diff {worst}: {worst_name}");
 }
 
 #[test]
 fn gpu_trainer_matches_cpu_loss_curve() {
-    // Beş Adam adımı: iki eğitici aynı loss eğrisini izlemeli.
+    // Five Adam steps: both trainers must follow the same loss curve.
     use stonefish_ai::optim::Adam;
 
     let c = case();
@@ -137,7 +137,7 @@ fn gpu_trainer_matches_cpu_loss_curve() {
     let targets: Vec<usize> = c.targets.iter().map(|&x| x as usize).collect();
 
     for step in 0..5 {
-        // CPU adımı (Adam)
+        // CPU step (Adam)
         let logits = cpu_model.forward_batch(&ids, c.batch, c.seq);
         let loss_t = logits.softmax_cross_entropy_ids(&targets);
         let loss_cpu = loss_t.item();
@@ -145,7 +145,7 @@ fn gpu_trainer_matches_cpu_loss_curve() {
         loss_t.backward();
         cpu_opt.step();
 
-        // GPU adımı (Adam, kırpma kapalı)
+        // GPU step (Adam, clipping off)
         let loss_gpu = gpu.forward_backward(&c.ids, &c.targets);
         gpu.step(lr, 0.0);
 
@@ -153,7 +153,7 @@ fn gpu_trainer_matches_cpu_loss_curve() {
         println!("  step {step}: cpu={loss_cpu:.6} gpu={loss_gpu:.6} fark={d:.2e}");
         assert!(
             d < LOSS_TOL * (1.0 + step as f32),
-            "adım {step} loss farkı {d} (birikmiş olabilir)"
+            "step {step} loss diff {d} (may accumulate)"
         );
     }
 }

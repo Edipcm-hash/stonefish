@@ -1,20 +1,20 @@
 // src/checkpoint.rs
-// GPT checkpoint formatu — sürüm 2.
+// GPT checkpoint format - version 2.
 //
-// v1 (eski `save_gpt`) sadece ham tensörleri yazıyordu: config yok, vocab yok,
-// magic yok. Sonuç: korpus dosyası bir karakter değişse ID'ler kayıyor ve model
-// sessizce saçmalıyordu. v2 her şeyi tek dosyaya gömer ve yüklemede doğrular.
+// v1 (the old `save_gpt`) wrote raw tensors only: no config, no vocab, no
+// magic. Result: if the corpus file changed by a single character the ids
+// shifted and the model produced garbage silently. v2 embeds everything in one
 //
-// Düzen (little-endian):
+// Layout (little-endian):
 //   magic        : 8 bayt  b"SFGPT002"
 //   version      : u32
 //   config       : vocab_size, max_seq_len, d_model, n_layers, n_heads  (5 × u32)
 //   vocab        : n_chars u32 + n_chars × u32 (char kodu)
 //   n_tensors    : u32
-//   tensörler    : n × (rows u32, cols u32, rows*cols × f32)
+//   tensors      : n x (rows u32, cols u32, rows*cols x f32)
 //
-// Tensör sırası `GPT::parameters()` ile birebir aynıdır; yüklemede hem sayı hem
-// her tensörün şekli doğrulanır.
+// Tensor order is identical to `GPT::parameters()`; on load both the count
+// and every tensor's shape are validated.
 
 use crate::tokenizer::Tokenizer;
 use crate::transformer::{GptConfig, GPT};
@@ -38,7 +38,7 @@ fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 
-/// Modeli ve tokenizer'ı tek dosyaya yazar.
+/// Writes the model and the tokenizer into a single file.
 pub fn save_gpt(path: &str, model: &GPT, tok: &Tokenizer) -> io::Result<()> {
     let cfg = model.config;
     let f = File::create(path)?;
@@ -64,7 +64,7 @@ pub fn save_gpt(path: &str, model: &GPT, tok: &Tokenizer) -> io::Result<()> {
         write_u32(&mut w, c as u32)?;
     }
 
-    // tensörler
+    // tensors
     let params = model.parameters();
     write_u32(&mut w, params.len() as u32)?;
     for p in &params {
@@ -79,9 +79,9 @@ pub fn save_gpt(path: &str, model: &GPT, tok: &Tokenizer) -> io::Result<()> {
     Ok(())
 }
 
-/// Checkpoint'i okur ve modeli + tokenizer'ı yeniden kurar.
-/// `tokenizer::Tokenizer::from_chars` ile vocab birebir geri gelir; korpus
-/// dosyasına artık ihtiyaç yoktur.
+/// Reads a checkpoint and rebuilds the model + tokenizer.
+/// `tokenizer::Tokenizer::from_chars` restores the vocabulary exactly; the
+/// corpus file is no longer needed.
 pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
     let f = File::open(path)?;
     let mut r = BufReader::new(f);
@@ -90,7 +90,7 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
     r.read_exact(&mut magic)?;
     if &magic != MAGIC {
         return Err(invalid(
-            "magic yanlış — bu bir StonefishAI GPT checkpoint'i değil (ya da v1 formatı)",
+            "wrong magic - this is not a StonefishAI GPT checkpoint (or it is v1 format)",
         ));
     }
     let version = read_u32(&mut r)?;
@@ -119,18 +119,18 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
     for _ in 0..n_chars {
         let code = read_u32(&mut r)?;
         let c = char::from_u32(code)
-            .ok_or_else(|| invalid(format!("geçersiz karakter kodu: {code}")))?;
+            .ok_or_else(|| invalid(format!("invalid character code: {code}")))?;
         chars.push(c);
     }
     let tok = Tokenizer::from_chars(chars)?;
     if tok.vocab_size != config.vocab_size {
         return Err(invalid(format!(
-            "vocab boyutu uyuşmuyor: checkpoint config {} != vocab {}",
+            "vocabulary size mismatch: checkpoint config {} != vocab {}",
             config.vocab_size, tok.vocab_size
         )));
     }
 
-    // Modeli aynı mimariyle kur (ağırlıklar birazdan üzerine yazılacak).
+    // Build the model with the same architecture (weights are overwritten next).
     let mut seed = 0u64;
     let model = GPT::new(config, &mut seed);
 
@@ -138,7 +138,7 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
     let params = model.parameters();
     if n_tensors != params.len() {
         return Err(invalid(format!(
-            "tensör sayısı uyuşmuyor: dosyada {n_tensors}, modelde {}",
+            "tensor count mismatch: file has {n_tensors}, model has {}",
             params.len()
         )));
     }
@@ -150,7 +150,7 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
         let mut d = p.data.borrow_mut();
         if (d.rows, d.cols) != (rows, cols) {
             return Err(invalid(format!(
-                "tensör {i} şekli uyuşmuyor: dosyada {rows}x{cols}, modelde {}x{}",
+                "tensor {i} shape mismatch: file has {rows}x{cols}, model has {}x{}",
                 d.rows, d.cols
             )));
         }

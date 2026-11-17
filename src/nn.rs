@@ -28,7 +28,7 @@ impl Linear {
         vec![self.weight.clone(), self.bias.clone()]
     }
 
-    // ----- Kaydet / Yükle -----
+    // ----- Save / Load -----
 
     pub fn write_to<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
         write_matrix(w, &self.weight.data.borrow())?;
@@ -73,7 +73,7 @@ fn read_u32<R: Read>(r: &mut R) -> std::io::Result<u32> {
     Ok(u32::from_le_bytes(buf))
 }
 
-// ----- Model toplu kaydet/yükle -----
+// ----- Bulk model save/load -----
 
 const MAGIC: &[u8; 8] = b"SFISH001";
 const VERSION: u32 = 1;
@@ -99,7 +99,7 @@ pub fn load_model(path: &str, n_layers: usize) -> std::io::Result<Vec<Linear>> {
     r.read_exact(&mut magic)?;
     assert_eq!(
         &magic, MAGIC,
-        "magic yanlış — bu bir Stonefish modeli değil"
+        "wrong magic - this is not a Stonefish model"
     );
 
     let version = read_u32(&mut r)?;
@@ -108,7 +108,7 @@ pub fn load_model(path: &str, n_layers: usize) -> std::io::Result<Vec<Linear>> {
     let saved_layers = read_u32(&mut r)? as usize;
     assert_eq!(
         saved_layers, n_layers,
-        "kaydedilmiş katman sayısı ({}) ile yüklenen ({}) uyuşmuyor",
+        "saved layer count ({}) does not match the loaded one ({})",
         saved_layers, n_layers
     );
 

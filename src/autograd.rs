@@ -1,12 +1,12 @@
 // src/autograd.rs
 // StonefishAI — autograd motoru.
 //
-// Tasarım notu (batch'leme):
-// Batch'li işler ayrı bir 3D tensor tipiyle değil, **satır paketleme** ile yapılır:
-// (B, S, D) tensörü (B*S, D) matrisi olarak tutulur. LayerNorm, Linear, GELU,
-// bias-add, softmax zaten satır-bazlıdır; tek istisna attention'dır ve o da
-// `Op::CausalAttention` içinde batch/seq/head bilgisiyle çözülür.
-// Böylece tek bir autograd motoru hem MLP'yi hem GPT'yi taşır.
+// Design note (batching):
+// Batched work is not done with a separate 3D tensor type but by **row packing**:
+// The (B, S, D) tensor is stored as a (B*S, D) matrix. LayerNorm, Linear, GELU,
+// bias-add and softmax are already row-wise; the only exception is attention,
+// resolved inside `Op::CausalAttention` with batch/seq/head metadata.
+// So a single autograd engine carries both the MLP and the GPT.
 
 use crate::tensor::Matrix;
 use std::cell::RefCell;
@@ -26,29 +26,29 @@ pub enum Op {
     Sum,
     SoftmaxCE,
     /// Seyrek (index) hedefli cross-entropy: one-hot matrisi tahsis etmez.
-    /// dense `SoftmaxCE` ile aynı gradyanı üretir.
+    /// produces the same gradient as dense `SoftmaxCE`.
     SoftmaxCEIds,
     Softmax,
     GELU,
     LayerNorm(f32), // eps
-    /// Satır paketli embedding: `seq_len` pozisyon indeksini geri türetmek için.
+    /// Row-packed embedding: `seq_len` is needed to recover the position index.
     Embedding {
         seq_len: usize,
     },
     MaskCausal,
     /// Fused causal multi-head self-attention.
-    /// q, k, v: (batch*seq, d_model). Çıktı: (batch*seq, d_model).
-    /// Her head d_model/n_heads boyutlu dilimi kendi içinde softmax'lar.
+    /// q, k, v: (batch*seq, d_model). Output: (batch*seq, d_model).
+    /// Each head softmaxes its own d_model/n_heads slice.
     CausalAttention {
         batch: usize,
         seq: usize,
         n_heads: usize,
     },
-    /// RMSNorm — LayerNorm'un ortalamasız hâli (LLaMA/PaLM).
-    /// `y = x / sqrt(mean(x²)+eps) · gamma`. Beta yok.
+    /// RMSNorm - LayerNorm without the mean (LLaMA/PaLM).
+    /// `y = x / sqrt(mean(x^2)+eps) * gamma`. No beta.
     RmsNorm(f32),
-    /// Döner konum kodlaması (RoPE). Girdi: (batch*seq, n_heads·d_head).
-    /// Her head dilimindeki (2i, 2i+1) çifti, token konumuna göre döndürülür.
+    /// Rotary position encoding (RoPE). Input: (batch*seq, n_heads*d_head).
+    /// The (2i, 2i+1) pair inside each head slice is rotated by token position.
     Rope {
         batch: usize,
         seq: usize,
@@ -59,7 +59,7 @@ pub enum Op {
 pub struct Node {
     pub op: Op,
     pub inputs: Vec<Tensor>,
-    /// Forward sırasında hesaplanan ara değerler (backward için cache)
+    /// Intermediate values computed during the forward pass (cache for backward)
     pub cache: Vec<Matrix>,
 }
 
@@ -116,18 +116,18 @@ impl Tensor {
     pub fn apply_grad(&self, lr: f32) {
         let g = self.grad.borrow();
         let mut d = self.data.borrow_mut();
-        assert_eq!((d.rows, d.cols), (g.rows, g.cols), "apply_grad boyut");
+        assert_eq!((d.rows, d.cols), (g.rows, g.cols), "apply_grad size");
         for i in 0..d.data.len() {
             d.data[i] -= lr * g.data[i];
         }
     }
 
-    /// 1x1 tensörün değeri.
+    /// The value of a 1x1 tensor.
     pub fn item(&self) -> f32 {
         self.data.borrow().scalar()
     }
 
-    // ---- İleri ----
+    // ---- Forward ----
 
     pub fn add(&self, other: &Tensor) -> Tensor {
         let data = self.data.borrow().add(&other.data.borrow());
@@ -181,7 +181,7 @@ impl Tensor {
     pub fn softmax_cross_entropy(&self, onehot: &Tensor) -> Tensor {
         let zd = self.data.borrow();
         let td = onehot.data.borrow();
-        assert_eq!((zd.rows, zd.cols), (td.rows, td.cols), "CE boyut");
+        assert_eq!((zd.rows, zd.cols), (td.rows, td.cols), "CE size");
 
         let batch = zd.rows;
         let classes = zd.cols;
@@ -220,9 +220,9 @@ impl Tensor {
         )
     }
 
-    /// Seyrek hedefli cross-entropy: `targets[i]`, i. satırın doğru sınıfı.
-    /// One-hot matrisi tahsis etmez — GPT eğitiminde (B*S × vocab) matrisinden
-    /// kurtarır. Dense `softmax_cross_entropy` ile aynı gradyanı verir.
+    /// Sparse-target cross-entropy: `targets[i]` is the correct class of row i.
+    /// It does not allocate a one-hot matrix - during GPT training it saves a
+    /// (B*S x vocab) matrix. Same gradient as dense `softmax_cross_entropy`.
     pub fn softmax_cross_entropy_ids(&self, targets: &[usize]) -> Tensor {
         let t = crate::profile::start();
         let zd = self.data.borrow();
@@ -230,7 +230,7 @@ impl Tensor {
         assert_eq!(
             targets.len(),
             rows,
-            "CE: hedef sayısı satır sayısına eşit olmalı"
+            "CE: number of targets must equal the number of rows"
         );
 
         let mut total_loss = 0.0f32;
@@ -239,7 +239,7 @@ impl Tensor {
 
         for i in 0..rows {
             let t = targets[i];
-            assert!(t < classes, "CE: hedef {t} >= sınıf sayısı {classes}");
+            assert!(t < classes, "CE: target {t} >= class count {classes}");
             tgt.set(i, 0, t as f32);
 
             let mut max = f32::NEG_INFINITY;
@@ -372,10 +372,10 @@ impl Tensor {
         Tensor::from_op(out, Op::MaskCausal, vec![self.clone()])
     }
 
-    /// RMSNorm: `y = x / sqrt(mean(x²)+eps) · gamma` (ortalama çıkarma yok).
+    /// RMSNorm: `y = x / sqrt(mean(x^2)+eps) * gamma` (no mean subtraction).
     ///
-    /// LayerNorm'dan farkı: ortalama hesaplanmaz ve beta yok. LLaMA/PaLM
-    /// tarafından kullanılır; aynı kalitede daha az iş.
+    /// Unlike LayerNorm: no mean is computed and there is no beta. Used by
+    /// LLaMA/PaLM; the same quality for less work.
     pub fn rms_norm(&self, gamma: &Tensor, eps: f32) -> Tensor {
         let xd = self.data.borrow();
         let (rows, cols) = (xd.rows, xd.cols);
@@ -409,14 +409,14 @@ impl Tensor {
         )
     }
 
-    /// RoPE: (batch*seq, n_heads·d_head) tensörünü konuma göre döndürür.
+    /// RoPE: rotates a (batch*seq, n_heads*d_head) tensor by position.
     pub fn rope(&self, batch: usize, seq: usize, n_heads: usize) -> Tensor {
         let xd = self.data.borrow();
         let (rows, cols) = (xd.rows, xd.cols);
-        assert_eq!(rows, batch * seq, "rope: satır sayısı batch*seq olmalı");
-        assert_eq!(cols % n_heads, 0, "rope: sütun sayısı n_heads'e bölünmeli");
+        assert_eq!(rows, batch * seq, "rope: rows must equal batch*seq");
+        assert_eq!(cols % n_heads, 0, "rope: columns must be divisible by n_heads");
         let d_head = cols / n_heads;
-        assert!(d_head % 2 == 0, "rope: d_head çift olmalı");
+        assert!(d_head % 2 == 0, "rope: d_head must be even");
 
         let mut data = Matrix::zeros(rows, cols);
         for r in 0..rows {
@@ -448,10 +448,10 @@ impl Tensor {
 
     /// Fused causal multi-head self-attention.
     ///
-    /// * `self` = Q, `k` = K, `v` = V; üçü de `(batch*seq, d_model)`.
-    /// * `d_model`, `n_heads`'e tam bölünmeli; her head kendi `d_head` diliminde
-    ///   softmax alır, çıkışta dilimler tekrar birleşir.
-    /// * `1/sqrt(d_head)` ölçeği ve causal maske op'un içindedir.
+    /// * `self` = Q, `k` = K, `v` = V; all three are `(batch*seq, d_model)`.
+    /// * `d_model` must be divisible by `n_heads`; each head softmaxes inside its
+    ///   own `d_head` slice and the slices are merged on output.
+    /// * The `1/sqrt(d_head)` scale and the causal mask live inside the op.
     pub fn causal_attention(
         &self,
         k: &Tensor,
@@ -472,21 +472,21 @@ impl Tensor {
             let vd = v.data.borrow();
 
             let (rows, d_model) = (qd.rows, qd.cols);
-            assert_eq!(rows, batch * seq, "attention: satır = batch*seq olmalı");
-            assert_eq!(kd.rows, rows, "attention: K satır sayısı");
-            assert_eq!(vd.rows, rows, "attention: V satır sayısı");
+            assert_eq!(rows, batch * seq, "attention: rows must equal batch*seq");
+            assert_eq!(kd.rows, rows, "attention: K row count");
+            assert_eq!(vd.rows, rows, "attention: V row count");
             assert_eq!(kd.cols, d_model, "attention: K boyutu");
             assert_eq!(vd.cols, d_model, "attention: V boyutu");
             assert_eq!(d_model % n_heads, 0, "attention: d_model % n_heads");
             let d_head = d_model / n_heads;
             let scale = 1.0 / (d_head as f32).sqrt();
 
-            // cache: (batch*n_heads*seq, seq) attention ağırlıkları
+            // cache: (batch*n_heads*seq, seq) attention weights
             let mut w_cache = Matrix::zeros(batch * n_heads * seq, seq);
             let mut out = Matrix::zeros(rows, d_model);
             let mut scores = vec![0.0f32; seq];
 
-            // İç döngüler dilim tabanlı: sınır kontrolü yok, vektörleştirmeye açık.
+            // Inner loops are slice-based: no bounds checks, open to vectorization.
             for b in 0..batch {
                 for h in 0..n_heads {
                     let off = h * d_head;
@@ -495,7 +495,7 @@ impl Tensor {
                         let q_row = b * seq + i;
                         let q_s = &qd.data[q_row * d_model + off..q_row * d_model + off + d_head];
 
-                        // skorlar (yalnızca j <= i)
+                        // scores (only j <= i)
                         let mut max = f32::NEG_INFINITY;
                         for j in 0..=i {
                             let k_row = b * seq + j;
@@ -523,7 +523,7 @@ impl Tensor {
                             w_cache.set(w_row0 + i, j, scores[j]);
                         }
 
-                        // ağırlıklı V toplamı
+                        // weighted sum of V
                         let out_off = q_row * d_model + off;
                         let o_s = &mut out.data[out_off..out_off + d_head];
                         for d in 0..d_head {
@@ -562,11 +562,11 @@ impl Tensor {
 
     // ---- Backward ----
 
-    /// Kök tensörün gradyanını 1.0 ile tohumlar ve ters topolojik sırada
-    /// tüm ara gradyanları biriktirir.
+    /// Seeds the root tensor's gradient with 1.0 and accumulates all intermediate
+    /// gradients in reverse topological order.
     ///
-    /// Not: gradyanlar sıfırlanmaz — ardışık `backward()` çağrıları birikir.
-    /// Eğitim döngüsünde `optimizer::zero_grad()` bunu yönetir.
+    /// Note: gradients are not zeroed - consecutive `backward()` calls accumulate.
+    /// The training loop manages this via `optimizer::zero_grad()`.
     pub fn backward(&self) {
         let mut topo: Vec<Tensor> = Vec::new();
         let mut visited: HashSet<*const Node> = HashSet::new();
@@ -582,11 +582,11 @@ impl Tensor {
                 Some(n) => n.clone(),
                 None => continue,
             };
-            // ÖNEMLİ: upstream'i klonlamak yerine ödünç alıyoruz. Eskiden her düğüm
-            // için gradyan matrisinin tam kopyası alınıyordu; 4 katmanlı modelde bu
-            // adım başına onlarca MB'lık gereksiz kopya demekti. Düğümün kendi
-            // gradyanı ile girdilerinin gradyanları farklı RefCell'ler olduğu için
-            // (DAG) ödünç çakışması yok.
+            // IMPORTANT: we borrow the upstream instead of cloning it. Previously a full
+            // copy of the gradient matrix was taken per node; in a 4-layer model that
+            // meant dozens of MB of useless copying per step. Since a node's own
+            // gradient and its inputs' gradients are different RefCells
+            // (a DAG), there is no borrow conflict.
             let upstream = t.grad.borrow();
             apply_backward(&node, &upstream);
             drop(upstream);
@@ -641,10 +641,10 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         Op::MatMul => {
             let a = &node.inputs[0];
             let b = &node.inputs[1];
-            // Transpose'ları malzemeleştirmek yerine cuBLAS'a yaptırıyoruz:
+            // We let cuBLAS do the transposes instead of materializing them: strided
             // dA = dOut·Bᵀ, dB = Aᵀ·dOut. Eskiden her backward'da (1024×128)'lik
-            // strided transpose kopyaları alınıyordu — ölçümde "diğer" kaleminin
-            // önemli bir parçasıydı.
+            // transpose copies used to be taken - a significant part of the "other"
+            // bucket in the profile.
             let ga = crate::gpu::matmul_bt_gpu(upstream, &b.data.borrow());
             let gb = crate::gpu::matmul_ta_gpu(&a.data.borrow(), upstream);
             accumulate(a, &ga);
@@ -835,7 +835,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             let mut g_gamma = Matrix::zeros(1, cols);
 
             for i in 0..rows {
-                // dγ katkısı: dy · x̂
+                // dgamma contribution: dy * xhat
                 for j in 0..cols {
                     g_gamma.set(
                         0,
@@ -872,7 +872,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             };
             let d_head = cols / n_heads;
             let mut g_x = Matrix::zeros(rows, cols);
-            // Ters dönüş: R(−θ) = R(θ)ᵀ
+            // Inverse rotation: R(-theta) = R(theta)^T
             for r in 0..rows {
                 let s = r % seq;
                 for h in 0..n_heads {
@@ -892,8 +892,8 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         }
 
         Op::MaskCausal => {
-            // Nedensel maske: üst üçgen (j > i) ileri geçişte maskelenir,
-            // dolayısıyla o bölgeye gradyan akmaz.
+            // Causal mask: the upper triangle (j > i) is masked in the forward pass,
+            // so no gradient flows into that region.
             let x = &node.inputs[0];
             let (rows, cols) = {
                 let d = x.data.borrow();
@@ -912,7 +912,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
 
         Op::Embedding { seq_len } => {
             // v2: girdiler (tok_emb, ids). Konum bilgisi RoPE'den gelir,
-            // dolayısıyla pozisyon gömme gradyanı yoktur.
+            // therefore there is no positional embedding gradient.
             let _ = seq_len;
             let tok_emb = &node.inputs[0];
             let ids = &node.inputs[1];
@@ -977,8 +977,8 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                         let i1 = i + 1;
                         let q_row = b * seq + i;
                         let q_off = q_row * d_model + off;
-                        // Dilimleri bir kez al: iç döngülerde sınır kontrolü yok,
-                        // zip'ler vektörleştirmeye açık.
+                        // Take the slices once: no bounds checks in the inner loops,
+                        // the zips are open to vectorization.
                         let q_s = &qd.data[q_off..q_off + d_head];
                         let up_s = &up[q_off..q_off + d_head];
                         let w_row = &weights.data[(w_row0 + i) * seq..(w_row0 + i) * seq + i1];
@@ -996,7 +996,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                             dsum += w_row[j] * acc;
                         }
 
-                        // softmax geri yayılımı (ölçek dahil) + dV
+                        // softmax backward (including the scale) + dV
                         for j in 0..i1 {
                             let wj = w_row[j];
                             ds[j] = wj * (dw[j] - dsum) * scale;
@@ -1043,15 +1043,15 @@ fn accumulate(t: &Tensor, g: &Matrix) {
         return;
     }
     let mut tg = t.grad.borrow_mut();
-    assert_eq!((tg.rows, tg.cols), (g.rows, g.cols), "grad boyut");
+    assert_eq!((tg.rows, tg.cols), (g.rows, g.cols), "grad size");
     for i in 0..tg.data.len() {
         tg.data[i] += g.data[i];
     }
 }
 
-/// `accumulate` + `reduce_to`'nun klonsuz birleşimi: aynı şekilde doğrudan,
-/// (1, cols) broadcast'inde satırları toplayarak biriktirir. `negate` çıkarma
-/// için işareti çevirir. Add/Sub gibi kopya üretmeye değmeyen op'larda kullanılır.
+/// A clone-free combination of `accumulate` + `reduce_to`: adds directly when
+/// shapes match, or by summing rows for a (1, cols) broadcast. `negate` flips
+/// the sign for subtraction. Used by ops like Add/Sub that do not deserve a copy.
 fn accumulate_reduced(t: &Tensor, upstream: &Matrix, negate: bool) {
     if !t.requires_grad {
         return;
@@ -1076,7 +1076,7 @@ fn accumulate_reduced(t: &Tensor, upstream: &Matrix, negate: bool) {
         }
     } else {
         panic!(
-            "accumulate_reduced: {}x{} -> {}x{} yapılamıyor",
+            "accumulate_reduced: cannot {}x{} -> {}x{}",
             upstream.rows, upstream.cols, rows, cols
         );
     }
@@ -1096,7 +1096,7 @@ fn reduce_to(upstream: &Matrix, rows: usize, cols: usize) -> Matrix {
         return out;
     }
     panic!(
-        "reduce_to: {}x{} -> {}x{} yapılamıyor",
+        "reduce_to: cannot {}x{} -> {}x{}",
         upstream.rows, upstream.cols, rows, cols
     );
 }

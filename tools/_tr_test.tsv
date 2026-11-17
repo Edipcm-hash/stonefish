@@ -1,0 +1,3 @@
+# CUDA'sız derleme + tüm CPU testleri. GPU'suz koşucuda da projenin	# CPU-only build + all CPU tests. Also proves that the project
+# derlenip test edilebildiğini kanıtlar (tasarlanan özellik).	# builds and tests on a runner without a GPU (a designed feature).
+// StonefishAI — GPT eğitimi için CUDA çekirdekleri.	// StonefishAI - CUDA kernels for GPT training.

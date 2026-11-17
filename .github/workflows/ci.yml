@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # CUDA'sız derleme + tüm CPU testleri. GPU'suz koşucuda da projenin
-  # derlenip test edilebildiğini kanıtlar (tasarlanan özellik).
+  # CPU-only build + all CPU tests. Also proves that the project
+  # builds and tests on a runner without a GPU (a designed feature).
   cpu-only:
     name: CPU-only build & tests
     runs-on: ubuntu-latest
@@ -26,8 +26,8 @@ jobs:
       - name: Tests
         run: cargo test --release --no-default-features
 
-  # CUDA'lı derleme: sürücü yok, bu yüzden yalnız derleme + clippy.
-  # (GPU testleri gerçek donanım ister; README'de ayrıca raporlanır.)
+  # CUDA build: no driver here, so only compilation + clippy.
+  # (GPU tests need real hardware; reported separately in the README.)
   cuda-build:
     name: CUDA feature build (no GPU)
     runs-on: ubuntu-latest
@@ -41,7 +41,7 @@ jobs:
       - name: Build
         run: cargo build --release --features cuda
 
-  # Zero-dependency iddiasının kanıtı: bağımlılık ağacı tek satır olmalı.
+  # Proof of the zero-dependency claim: the tree must be a single line.
   zero-deps:
     name: Zero dependencies
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
           LINES=$(cargo tree --all-features | wc -l)
           cargo tree --all-features
           if [ "$LINES" -ne 1 ]; then
-            echo "❌ Bağımlılık bulundu: $LINES satır (1 olmalı)"
+            echo "❌ Dependency found: $LINES lines (expected 1)"
             exit 1
           fi
-          echo "✅ Sıfır bağımlılık doğrulandı"
+          echo "✅ Zero dependencies verified"

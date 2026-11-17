@@ -1,15 +1,15 @@
 // src/sys/mod.rs
-// Sıfır bağımlılık: CUDA sürücüsüne doğrudan FFI.
+// Zero dependencies: direct FFI to the CUDA driver.
 //
-// `cudarc` kaldırıldı. Bu modül işletim sisteminin dinamik kütüphane
-// yükleyicisini (Windows: kernel32!LoadLibraryW/GetProcAddress,
-// Linux: libdl!dlopen/dlsym) kullanarak CUDA sürücüsünü, cuBLAS'ı ve
-// NVRTC'yi ÇALIŞMA ZAMANINDA yükler.
+// `cudarc` was removed. This module uses the operating system's dynamic
+// library loader (Windows: kernel32!LoadLibraryW/GetProcAddress,
+// Linux: libdl!dlopen/dlsym) to load the CUDA driver, cuBLAS and
+// NVRTC at RUNTIME.
 //
-// Kazançlar:
-//  * `[dependencies]` boş — harici crate yok
-//  * Derleme zamanında CUDA SDK gerekmez (import lib yok)
-//  * CUDA yoksa zarifçe `None` döner, CPU yoluna düşülür
+// Benefits:
+//  * `[dependencies]` is empty - no external crates
+//  * No CUDA SDK needed at build time (no import lib)
+//  * Returns `None` gracefully if CUDA is absent, falls back to the CPU path
 
 #![allow(non_snake_case)]
 
@@ -17,7 +17,7 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 // ============================================================
-// Dinamik kütüphane yükleyici
+// Dynamic library loader
 // ============================================================
 
 #[cfg(windows)]
@@ -99,7 +99,7 @@ mod loader {
     }
 }
 
-/// Açık bir kütüphaneyi (ilk bulunan adla) yükle.
+/// Load a library by name (the first name that resolves wins).
 pub fn library(names: &[&str]) -> Option<*mut c_void> {
     for n in names {
         if let Some(h) = loader::open(n) {
@@ -109,31 +109,31 @@ pub fn library(names: &[&str]) -> Option<*mut c_void> {
     None
 }
 
-/// Kütüphaneden fonksiyon işaretçisi al.
+/// Get a function pointer from the library.
 ///
 /// # Safety
-/// Dönen işaretçi çağıranın bildirdiği imzayla uyumlu olmalıdır; yanlış
-/// imzayla çağırmak tanımsız davranışa yol açar.
+/// The returned pointer must match the signature the caller declares;
+/// calling it with the wrong signature is undefined behaviour.
 pub unsafe fn symbol(module: *mut c_void, name: &str) -> Option<*mut c_void> {
     loader::sym(module, name)
 }
 
-/// Fonksiyon işaretçisini tipli bir `fn`'e dönüştür.
+/// Cast a function pointer to a typed `fn`.
 ///
 /// # Safety
-/// `T`, `p`'nin gerçekte işaret ettiği fonksiyon imzasıyla birebir aynı
-/// olmalıdır. Aksi hâlde çağrı tanımsız davranışa yol açar.
+/// `T` must be exactly the signature that `p` really points to.
+/// Otherwise the call is undefined behaviour.
 pub unsafe fn cast<T: Copy>(p: *mut c_void) -> T {
     debug_assert_eq!(
         std::mem::size_of::<T>(),
         std::mem::size_of::<*mut c_void>(),
-        "fonksiyon işaretçisi boyutu"
+        "function pointer size"
     );
     std::mem::transmute_copy(&p)
 }
 
 // ============================================================
-// Geç yüklenen fonksiyon işaretçisi
+// Lazily loaded function pointer
 // ============================================================
 
 pub struct LazyFn<T> {
@@ -181,7 +181,7 @@ fn load_module(names: &'static [&'static str]) -> Option<*mut c_void> {
     h
 }
 
-/// Bu derleme/ortamda CUDA sürücüsü var mı?
+/// Is the CUDA driver available in this build/environment?
 pub fn cuda_available() -> bool {
     CUDA_MODULES.iter().any(|n| library(&[n]).is_some())
 }

@@ -1,16 +1,16 @@
 // src/gpu.rs
-// GPU matmul — cuBLAS üzerinden, HARİCİ CRATE YOK (kendi FFI'miz, src/sys).
+// GPU matmul through cuBLAS, NO EXTERNAL CRATE (our own FFI, src/sys).
 //
-// `cuda` feature'ı kapalıyken her şey CPU'da çalışır; bu, CUDA'sı olmayan
-// makinelerde projenin derlenip test edilebilmesini sağlar.
+// With the `cuda` feature off everything runs on the CPU; this keeps the
+// project buildable and testable on machines without CUDA.
 //
-// Row-major ↔ kolon-major köprüsü: cuBLAS kolon-major olduğu için
-//   C(m,n) = A·B  ⇒  Cᵀ = Bᵀ·Aᵀ  (operandlar yer değişir)
-// ve transa/transb ile ifade edilir. Böylece transpose malzemeleştirilmez.
+// The row-major <-> column-major bridge: cuBLAS is column-major, so
+//   C(m,n) = A*B  =>  C^T = B^T*A^T  (the operands swap)
+// expressed through transa/transb. Transposes are never materialized.
 
 use crate::tensor::Matrix;
 
-/// Bu derlemede GPU yolu var mı?
+/// Is the GPU path available in this build?
 pub const HAS_CUDA: bool = cfg!(feature = "cuda");
 
 #[cfg(feature = "cuda")]
@@ -31,7 +31,7 @@ mod imp {
         Tn,
     }
 
-    // ---- cuBLAS tutamacı ----
+    // ---- cuBLAS handle ----
     struct Blas(cublas::cublasHandle_t);
     unsafe impl Send for Blas {}
     unsafe impl Sync for Blas {}
@@ -93,7 +93,7 @@ mod imp {
         B: DevPtr,
         C: DevPtr,
     {
-        // Kolon-major dünyada operandlar yer değiştirir.
+        // In the column-major world the operands swap.
         let (transa, transb) = match mode {
             GemmMode::Nn => (cublas::CUBLAS_OP_N, cublas::CUBLAS_OP_N),
             GemmMode::Nt => (cublas::CUBLAS_OP_T, cublas::CUBLAS_OP_N),
@@ -151,7 +151,7 @@ mod imp {
         }
     }
 
-    /// CPU'daki iki matrisi GPU'da çarp (basit yol).
+    /// Multiply two CPU matrices on the GPU (simple path).
     pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
         let mut c = DevBuf::zeros(a.rows * b.cols);
         let da = DevBuf::from_host(&a.data);
@@ -172,7 +172,7 @@ mod imp {
         Matrix::from_vec(a.rows, b.cols, out)
     }
 
-    /// C = A·Bᵀ (transpose malzemeleştirmeden).
+    /// C = A*B^T (without materializing the transpose).
     pub fn matmul_bt_gpu(a: &Matrix, b: &Matrix) -> Matrix {
         let mut c = DevBuf::zeros(a.rows * b.rows);
         let da = DevBuf::from_host(&a.data);
@@ -192,12 +192,12 @@ mod imp {
         Matrix::from_vec(a.rows, b.rows, c.to_host())
     }
 
-    /// C = Aᵀ·B (transpose malzemeleştirmeden).
+    /// C = A^T*B (without materializing the transpose).
     pub fn matmul_ta_gpu(a: &Matrix, b: &Matrix) -> Matrix {
         let mut c = DevBuf::zeros(a.cols * b.cols);
         let da = DevBuf::from_host(&a.data);
         let db = DevBuf::from_host(&b.data);
-        // Tn: A (k×m) gibi davranır → m = a.cols, n = b.cols, k = a.rows
+        // Tn: A acts as (k x m) -> m = a.cols, n = b.cols, k = a.rows
         dev_gemm(
             &mut c,
             &da,
@@ -213,7 +213,7 @@ mod imp {
         Matrix::from_vec(a.cols, b.cols, c.to_host())
     }
 
-    // ---- CUDA çekirdek modülü (NVRTC ile çalışma zamanında) ----
+    // ---- CUDA kernel module (via NVRTC, at runtime) ----
 
     static MODULE: OnceLock<Module> = OnceLock::new();
 
@@ -221,15 +221,15 @@ mod imp {
         MODULE.get_or_init(|| {
             let src = crate::gpu_kernels::SRC;
             let ptx = compile_cached(src);
-            Module::from_ptx(&ptx).unwrap_or_else(|e| panic!("GPU modülü yüklenemedi: {e}"))
+            Module::from_ptx(&ptx).unwrap_or_else(|e| panic!("could not load the GPU module: {e}"))
         })
     }
 
-    /// Çekirdek fonksiyonunu al (paniklersiz).
+    /// Fetch a kernel function (panics if missing).
     pub fn kernel(name: &str) -> Function {
         module()
             .func(name)
-            .unwrap_or_else(|e| panic!("çekirdek yüklenemedi: {name}: {e}"))
+            .unwrap_or_else(|e| panic!("could not load kernel: {name}: {e}"))
     }
 
     fn compile_cached(src: &str) -> String {
@@ -262,7 +262,7 @@ mod imp {
 
         let opt = format!("--gpu-architecture={arch}");
         let ptx = nvrtc::compile(src, &[&opt, "--fmad=true", "--use_fast_math"])
-            .unwrap_or_else(|e| panic!("CUDA çekirdekleri derlenemedi (NVRTC): {e}"));
+            .unwrap_or_else(|e| panic!("could not compile the CUDA kernels (NVRTC): {e}"));
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(&path, &ptx);
         ptx
@@ -275,12 +275,12 @@ mod imp {
         ((blocks, 1, 1), (threads, 1, 1))
     }
 
-    /// Satır başına bir blok.
+    /// One block per row.
     pub fn cfg_rows(rows: usize, threads: u32) -> ((u32, u32, u32), (u32, u32, u32)) {
         ((rows as u32, 1, 1), (threads, 1, 1))
     }
 
-    /// Çekirdek başlatma kısayolu.
+    /// Kernel launch shortcut.
     pub fn launch(
         name: &str,
         grid: ((u32, u32, u32), (u32, u32, u32)),
@@ -297,7 +297,7 @@ pub use imp::{
     matmul_ta_gpu, GemmMode,
 };
 
-/// CUDA kapalıyken: aynı arayüz, CPU yolu.
+/// With CUDA off: the same interface, CPU path.
 #[cfg(not(feature = "cuda"))]
 pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
     a.matmul(b)

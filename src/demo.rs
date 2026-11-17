@@ -1,8 +1,8 @@
 // src/demo.rs
-// Tek komutluk demo: küçük bir korpustan sıfırdan GPT eğit, metin üret.
+// One-command demo: train a GPT from scratch on a small corpus, then generate.
 //
-// Amaç: projeyi klonlayan birinin 90 saniyede çalışan bir şey görmesi.
-// GPU varsa device-resident eğitici kullanılır (yoksa CPU yolu).
+// Goal: someone who clones the project sees something working in 90 seconds.
+// Uses the device-resident trainer when a GPU is present (CPU path otherwise).
 
 #![cfg(feature = "cuda")]
 
@@ -13,13 +13,13 @@ use crate::transformer::{GptConfig, GPT};
 
 pub fn run(seconds: u64) {
     println!("🐟 StonefishAI — tek komut demo\n");
-    println!("Sıfırdan eğitim: harici ML kütüphanesi yok, bağımlılık yok.\n");
+    println!("Training from scratch: no ML libraries, no dependencies.\n");
 
     // ---- 1) Korpus + tokenizer ----
     let path = "examples/data/tiny_shakespeare.txt";
     if !std::path::Path::new(path).exists() {
-        println!("❌ Demo korpusu bulunamadı: {path}");
-        println!("   (depo kökünden çalıştırın: cargo run --release -- demo)");
+        println!("❌ Demo corpus not found: {path}");
+        println!("   (run from the repository root: cargo run --release -- demo)");
         return;
     }
     let text = data::load_text(path);
@@ -44,7 +44,7 @@ pub fn run(seconds: u64) {
     let mut seed = 0xDEAD_BEEFu64;
     let model = GPT::new(cfg, &mut seed);
     println!(
-        "Model     : d_model={}, {} katman, {} head, ctx={} → {} parametre",
+        "Model     : d_model={}, {} layers, {} heads, ctx={} -> {} parameters",
         cfg.d_model,
         cfg.n_layers,
         cfg.n_heads,
@@ -52,12 +52,12 @@ pub fn run(seconds: u64) {
         model.n_params()
     );
 
-    // ---- 3) Eğitim (GPU-native) ----
+    // ---- 3) Training (GPU-native) ----
     let mut g = GpuGpt::new_random(cfg, batch, seq, 0xDEAD_BEEF);
-    let total_steps = ((seconds * 350_000) / (batch * seq) as u64) as usize; // ~350k tok/s (ölçüldü)
+    let total_steps = ((seconds * 350_000) / (batch * seq) as u64) as usize; // ~350k tok/s (measured)
     let warmup = (total_steps / 20).max(10);
     println!(
-        "Eğitim    : {} adım × {} token = {:.1} M token, hedef {} s\n",
+        "Training  : {} steps x {} tokens = {:.1} M tokens, target {} s\n",
         total_steps,
         batch * seq,
         (total_steps * batch * seq) as f64 / 1e6,
@@ -92,7 +92,7 @@ pub fn run(seconds: u64) {
         if last_report.elapsed().as_secs_f32() > (seconds as f32 / 8.0).max(1.0) {
             last_report = std::time::Instant::now();
             println!(
-                "  adım {:5}/{}  loss {:.4}  lr {:.2e}  {:6.0} tok/s  [{:.0} s]",
+                "  step {:5}/{}  loss {:.4}  lr {:.2e}  {:6.0} tok/s  [{:.0} s]",
                 step + 1,
                 total_steps,
                 loss_avg / loss_n as f64,
@@ -106,12 +106,12 @@ pub fn run(seconds: u64) {
     }
     let secs = t0.elapsed().as_secs_f64();
     println!(
-        "\nEğitim bitti: {:.0} s, {:.0} tok/s\n",
+        "\nTraining finished: {:.0} s, {:.0} tok/s\n",
         secs,
         (total_steps * batch * seq) as f64 / secs
     );
 
-    // ---- 4) Üretim ----
+    // ---- 4) Generation ----
     let mut cpu = model;
     g.copy_to_cpu(&mut cpu);
     for prompt in ["ROMEO:", "To be, or not", "JULIET:"] {
@@ -140,10 +140,10 @@ pub fn run(seconds: u64) {
         println!("\n");
     }
     println!(
-        "Bu metin {} saniyelik eğitimden geliyor — motor çalışıyor.",
+        "This text comes from {} seconds of training - the engine works.",
         seconds
     );
-    println!("Gerçek model: `stonefish_ai en-gen` (236M parametre, 12 saat eğitim).");
+    println!("Real model: `stonefish_ai en-gen` (222M parameters, 2 B tokens of training).");
 }
 
 fn xorshift(s: &mut u64) -> u64 {

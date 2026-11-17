@@ -1,9 +1,9 @@
 // tests/kv_cache.rs
 //
-// KV-cache'in TAM ileri geçişle aynı sonucu verdiğini doğrular.
-// En kritik test: cache yolu ayrı bir kod yolu olduğu için (tek token, m=1
-// GEMM'ler, kademeli K/V) sessizce sapabilir. Referans, doğrulanmış tam
-// ileri geçiştir (`forward_logits_at`).
+// Verifies that the KV-cache gives the same result as the FULL forward pass.
+// The most critical test: the cache path is a separate code path (single
+// token, m=1 GEMMs, incremental K/V) that can drift silently. The reference
+// is the verified full forward pass (`forward_logits_at`).
 
 #![cfg(feature = "cuda")]
 
@@ -47,8 +47,8 @@ fn kv_cache_matches_full_forward() {
     let mut s = 7u64;
     let tokens = rnd(20, &mut s, cfg.vocab_size as u32);
 
-    // --- referans: TAM ileri geçiş (sağdan dolgu ile) ---
-    // Son token'ın logitleri, prefix'in tamamı görülerek hesaplanır.
+    // --- reference: FULL forward pass (with right padding) ---
+    // The last token's logits are computed seeing the whole prefix.
     let mut padded: Vec<i32> = tokens.iter().map(|&t| t as i32).collect();
     while padded.len() < seq {
         padded.push(*padded.last().unwrap());
@@ -63,18 +63,18 @@ fn kv_cache_matches_full_forward() {
     }
 
     let d = max_diff(&full, &last);
-    println!("  ✅ kv-cache ↔ tam ileri geçiş: max fark {d:.2e}");
+    println!("  ✅ kv-cache <-> full forward pass: max diff {d:.2e}");
     assert!(
         d < 3e-4,
-        "KV-cache tam ileri geçişle uyuşmuyor: max fark {d} (ölçek {})",
+        "the KV-cache does not match the full forward pass: max diff {d} (scale {})",
         full.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
     );
 }
 
 #[test]
 fn kv_cache_prefix_logits_are_consistent() {
-    // Her adımda cache'ten gelen logitler, aynı prefix'in tam ileri geçişiyle
-    // uyuşmalı — yalnız son adım değil, tüm adımlar.
+    // The logits from the cache must match the full forward pass of the same
+    // prefix at every step - not only the last one.
     let cfg = GptConfig {
         vocab_size: 61,
         max_seq_len: 16,
@@ -89,7 +89,7 @@ fn kv_cache_prefix_logits_are_consistent() {
     let mut s = 11u64;
     let tokens = rnd(12, &mut s, cfg.vocab_size as u32);
 
-    // Referansları ÖNCE hesapla (model ödünç alınmadan)
+    // Compute the references FIRST (before the model is borrowed)
     let mut refs: Vec<Vec<f32>> = Vec::new();
     for pos in 0..tokens.len() {
         let mut padded: Vec<i32> = tokens[..=pos].iter().map(|&x| x as i32).collect();
@@ -105,6 +105,6 @@ fn kv_cache_prefix_logits_are_consistent() {
         let logits = cached.step(t, pos);
         worst = worst.max(max_diff(&refs[pos], &logits));
     }
-    println!("  ✅ tüm prefix'lerde en kötü fark {worst:.2e}");
-    assert!(worst < 3e-4, "prefix tutarsızlığı: {worst}");
+    println!("  ✅ worst diff over all prefixes {worst:.2e}");
+    assert!(worst < 3e-4, "prefix inconsistency: {worst}");
 }

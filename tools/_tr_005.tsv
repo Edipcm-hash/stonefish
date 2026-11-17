@@ -1,0 +1,148 @@
+//   C(m,n) = A·B  ⇒  Cᵀ = Bᵀ·Aᵀ  (operandlar yer değiştirir)	//   C(m,n) = A*B  =>  C^T = B^T*A^T  (the operands swap)
+/// KV-cache üretim yolu için salt-okunur erişimciler.	/// Read-only accessors for the KV-cache generation path.
+// Tam ileri geçişte bu ölçek `masked_softmax_forward` içindedir;	// In the full forward pass this scale lives inside `masked_softmax_forward`;
+// burada softmax_vec kullanıldığı için Q'ya uyguluyoruz.	// here we use softmax_vec, so we apply it to Q.
+// --- cache'e yaz ---	// --- write into the cache ---
+// cache: [head][capacity][d_head] → head h, ilk n_ctx satır	// cache: [head][capacity][d_head] -> head h, first n_ctx rows
+// softmax (maske gerekmez: hepsi geçmiş konumlar)	// softmax (no mask needed: all positions are in the past)
+// StonefishAI — kütüphane kökü.	// StonefishAI - library root.
+// Tüm motor modülleri burada yaşar; `src/main.rs` sadece CLI kabuğudur.	// All engine modules live here; `src/main.rs` is only the CLI shell.
+// Bu ayrım sayesinde op'lar `tests/` altından (gradcheck, birim testleri) doğrudan	// Thanks to this split the ops are directly usable from `tests/` (gradcheck,
+// kullanılabilir.	// unit tests).
+// `needless_range_loop`: bu motorda iç döngüler aynı anda birden fazla diziyi	// `needless_range_loop`: in this engine the inner loops index several arrays
+// (q/k/v, skorlar, x_hat, dx_hat…) aynı indeksle tarıyor ve sınırlar döngü	// at once (q/k/v, scores, x_hat, dx_hat...) with the same index and the bounds
+// değişkeninden türüyor. Iterator zincirine çevirmek hot path'lerde hem	// derive from the loop variable. Rewriting them as iterator chains would hurt
+// okunabilirliği hem de derleyicinin vektörleştirme şansını düşürüyor.	// both readability and the compiler's chance to vectorize on hot paths.
+// `manual_is_multiple_of`: `is_multiple_of` yeni bir stabilizasyon; MSRV'yi	// `manual_is_multiple_of`: `is_multiple_of` is a recent stabilization; we keep
+// yükseltmemek için `% n == 0` tercih ediliyor.	// `% n == 0` to avoid raising the MSRV.
+/// Kütüphane sürümü (Cargo.toml ile tek kaynaktan).	/// Library version (single source of truth with Cargo.toml).
+// Kayıp fonksiyonları. (MSE kaldırıldı: hiçbir yerde kullanılmıyordu — YAGNI.)	// Loss functions. (MSE was removed: it was never used - YAGNI.)
+/// Softmax + Cross-Entropy (sayısal olarak kararlı, log-sum-exp ile).	/// Softmax + cross-entropy (numerically stable, via log-sum-exp).
+// CLI kabuğu. Motorun tamamı `stonefish_ai` kütüphanesinde (src/lib.rs).	// CLI shell. The whole engine lives in the `stonefish_ai` library (src/lib.rs).
+// İç döngüler aynı anda birden çok diziyi indeksliyor (bkz. src/lib.rs).	// Inner loops index several arrays at once (see src/lib.rs).
+/// Checkpoint'in yanına yazılan vocab dosyası (korpus drift tespiti için).	/// The vocab file written next to the checkpoint (to detect corpus drift).
+/// Tüm CLI modları: (isim, kısa açıklama). `help` bunu basar, `main` bunu eşler.	/// All CLI modes: (name, short description). `help` prints it, `main` dispatches it.
+("train", "MNIST MLP eğit (784→128→10, SGD)"),	("train", "train the MNIST MLP (784->128->10, SGD)"),
+("eval", "kayıtlı MNIST modelini test setinde ölç"),	("eval", "measure the saved MNIST model on the test set"),
+("predict", "kayıtlı MNIST modeliyle tahmin (eval ile aynı)"),	("predict", "predict with the saved MNIST model (same as eval)"),
+("tokenize", "tokenizer'ı doğrula + sequence sayısını bas"),	("tokenize", "validate the tokenizer and print the sequence count"),
+"mini GPT eğit [epoch] [batch] [max_steps] [max_lr]",	"train the mini GPT [epochs] [batch] [max_steps] [max_lr]",
+"kayıtlı GPT ile metin üret  [prompt] [token] [sıcaklık]",	"generate text with the saved GPT  [prompt] [tokens] [temperature]",
+("test-cuda", "CUDA context açılabiliyor mu"),	("test-cuda", "can a CUDA context be created"),
+"gerçek model şeklinde CPU vs GPU matmul",	"CPU vs GPU matmul at real model shapes",
+("test-gpu-train", "küçük MLP'te 10 adım süresi"),	("test-gpu-train", "time 10 steps on a small MLP"),
+("test-gpt-gpu", "küçük GPT'te adım süresi"),	("test-gpt-gpu", "step time on a small GPT"),
+"gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)",	"where the time goes in the real model (matmul/transfer/attn)",
+"GPU-native eğiticiyi ölç (device-resident, çekirdekler)",	"measure the GPU-native trainer (device-resident, kernels)",
+"İngilizce korpus: BPE öğren + u16 token cache üret",	"English corpus: learn BPE + build the u16 token cache",
+("en-train", "İngilizce GPT eğit [token_sayısı] [d_model]"),	("en-train", "train the English GPT [token_budget] [d_model]"),
+"Tek komut demo: 90 saniyede sıfırdan eğit + metin üret [saniye]",	"one-command demo: train from scratch in 90 s + generate [seconds]",
+("test-ffi", "Kendi CUDA FFI öz-testi (kendi sürücü FFI'si)"),	("test-ffi", "self-test of our own CUDA FFI (driver, cuBLAS, NVRTC)"),
+"İngilizce modeli valid sette ölç (loss/perplexity/BPC)",	"evaluate the English model on the validation set (loss/perplexity/BPC)",
+("en-gen", "İngilizce metin üret [prompt] [token] [sıcaklık]"),	("en-gen", "generate English text [prompt] [tokens] [temperature]"),
+"açık (CUDA)"	"available (CUDA)"
+"kapalı (CPU)"	"not available (CPU)"
+println!("\nKullanım: stonefish_ai <mod> [arg…]\n\nModlar:");	println!("\nUsage: stonefish_ai <mode> [arg...]\n\nModes:");
+"Geçerli modlar: {}",	"Valid modes: {}",
+eprintln!("Ayrıntı için: stonefish_ai help");	eprintln!("For details: stonefish_ai help");
+// GPT EĞİTİMİ — gerçek batch (tek forward/backward/step)	// GPT TRAINING - real batch (a single forward/backward/step)
+let max_steps = arg_usize(args, 2, 0); // 0 = sınırsız (duman testi için)	let max_steps = arg_usize(args, 2, 0); // 0 = unlimited (for smoke tests)
+// --- Hiperparametreler (tek yerde, loglanır ve manifest'e yazılır) ---	// --- Hyperparameters (one place, logged and written to the manifest) ---
+println!("🐟 StonefishAI v{} — GPT eğitimi\n", stonefish_ai::VERSION);	println!("🐟 StonefishAI v{} - GPT training\n", stonefish_ai::VERSION);
+"Donanım : GPU={} ({})\n",	"Hardware : GPU={} ({})\n",
+// Sondaki bir kısmı validasyon için ayır (ezber mi öğrenme mi?).	// Hold out the tail for validation (memorization or learning?).
+// GPU eğiticisi sabit (batch, seq) boyutuyla kurulduğu için train ve val	// The GPU trainer is built for a fixed (batch, seq), so train and val are
+// atlanır (ölçüm etkisi ihmal edilebilir).	// skipped (the measurement impact is negligible).
+"Optim   : Adam β=(0.9,0.999), max_lr={}, warmup={} adım, cosine → {}x, clip_norm={}",	"Optim   : Adam beta=(0.9,0.999), max_lr={}, warmup={} steps, cosine -> {}x, clip_norm={}",
+"Plan    : {} epoch × {} adım = {} adım, batch={} ({} token/adım)",	"Plan    : {} epochs x {} steps = {} steps, batch={} ({} tokens/step)",
+// En iyi validasyonu izle: iyileşme olduğunda checkpoint'i tazele.	// Track the best validation: refresh the checkpoint whenever it improves.
+let mut history: Vec<(usize, f64, f64, f64, f32)> = Vec::new(); // epoch, train, val, süre, lr	let mut history: Vec<(usize, f64, f64, f64, f32)> = Vec::new(); // epoch, train, val, seconds, lr
+// Epoch'a özgü karıştırma (her epoch farklı sıra).	// Epoch-specific shuffling (a different order every epoch).
+// --- LR programı: doğrusal warmup + cosine decay ---	// --- LR schedule: linear warmup + cosine decay ---
+// Batch'i satır paketle: (bs*seq_len, …)	// Pack the batch by rows: (bs*seq_len, ...)
+// Tek adım: ileri + geri + Adam + gradyan kırpma	// One step: forward + backward + Adam + gradient clipping
+"\n⏹  max_steps={} sınırına ulaşıldı (duman testi) — checkpoint yazılmadı.",	"\n⏹  reached max_steps={} (smoke test) - no checkpoint written.",
+"\nEpoch {} → train CE = {:.4}, val CE = {:.4} ({:.1}s, gnorm ort {:.2}, kırpılan adım %{:.1}){}\n",	"\nEpoch {} -> train CE = {:.4}, val CE = {:.4} ({:.1}s, mean gnorm {:.2}, clipped steps {:.1}%){}\n",
+// Nihai durumu da sakla (en iyi ile karşılaştırmak için).	// Also save the final state (to compare against the best one).
+eprintln!("⚠️  nihai checkpoint yazılamadı ({final_path}): {e}");	eprintln!("⚠️  could not write the final checkpoint ({final_path}): {e}");
+Err(e) => eprintln!("⚠️  manifest yazılamadı: {e}"),	Err(e) => eprintln!("⚠️  could not write the manifest: {e}"),
+"\nToplam {:.1} dk, {} adım, ortalama {:.0} tok/s\n🐟 GPT eğitimi tamam.",	"\nTotal {:.1} min, {} steps, average {:.0} tok/s\n🐟 GPT training complete.",
+/// Doğrusal warmup + cosine decay. `step` 0-tabanlı.	/// Linear warmup + cosine decay. `step` is 0-based.
+// 0'dan başlamak yerine ilk adımda küçük ama pozitif bir LR	// A small but positive LR on the first step instead of starting from 0
+/// Koşuyu tekrar üretilebilir kılan manifest (JSON). `runs/` altına yazılır.	/// The manifest (JSON) that makes the run reproducible. Written under `runs/`.
+// GPT ÜRETİMİ	// GPT GENERATION
+"🐟 StonefishAI v{} — GPT metin üretimi\n",	"🐟 StonefishAI v{} - GPT text generation\n",
+eprintln!("Checkpoint yüklenemedi ({GPT_PATH}): {e}");	eprintln!("Could not load the checkpoint ({GPT_PATH}): {e}");
+eprintln!("Önce `stonefish_ai gpt-train` çalıştır.");	eprintln!("Run `stonefish_ai gpt-train` first.");
+"✅ Yüklendi: d_model={}, layers={}, heads={}, vocab={}",	"✅ Loaded: d_model={}, layers={}, heads={}, vocab={}",
+// Korpus drift kontrolü: yan dosyadaki vocab checkpoint'le aynı mı?	// Corpus drift check: does the sidecar vocab match the checkpoint?
+"⚠️  {GPT_VOCAB_PATH} checkpoint vocab'ı ile uyuşmuyor — dosya eski olabilir."	"⚠️  {GPT_VOCAB_PATH} does not match the checkpoint vocab - the file may be stale."
+.unwrap_or_else(|| "Akşam erken iner".to_string());	.unwrap_or_else(|| "evening falls early".to_string());
+"Prompt: {:?}  ({} token, sıcaklık {})\n",	"Prompt: {:?}  ({} tokens, temperature {})\n",
+"❌ Prompt'taki {:?} karakteri bu modelin vocab'ında yok.",	"❌ The character {:?} in the prompt is not in this model's vocabulary.",
+eprintln!("❌ Prompt boş.");	eprintln!("❌ The prompt is empty.");
+// Bağlamı son seq_len token'a kırp (modelin gördüğü maksimum pencere).	// Clip the context to the last seq_len tokens (the maximum window the model sees).
+// açgözlü (deterministik)	// greedy (deterministic)
+// sıcaklıklı örnekleme	// temperature sampling
+println!("--- Üretilen metin ---\n");	println!("--- Generated text ---\n");
+"🐟 StonefishAI v{} — MNIST eğitimi\n",	"🐟 StonefishAI v{} - MNIST training\n",
+save_model(MODEL_PATH, &[&l1, &l2]).expect("kaydetme başarısız");	save_model(MODEL_PATH, &[&l1, &l2]).expect("save failed");
+let layers = load_model(MODEL_PATH, 2).expect("model yüklenemedi");	let layers = load_model(MODEL_PATH, 2).expect("could not load the model");
+// Round-trip: korpustan bir parça ve Türkçe karakterler	// Round-trip: a slice of the corpus plus non-ASCII characters
+let sample = "Akşam erken iner mahpushaneye";	let sample = "the quick brown fox jumps";
+Err(c) => println!("❌ Örnek metinde bilinmeyen karakter: {:?}", c),	Err(c) => println!("❌ Unknown character in the sample text: {:?}", c),
+println!("Sequence: {}\n✅ Hazır.", seqs.len());	println!("Sequences: {}\n✅ Ready.", seqs.len());
+// DUMAN TESTLERİ	// SMOKE TESTS
+println!("✅ LayerNorm OK\n🎉 Tüm op testleri geçti!");	println!("✅ LayerNorm OK\n🎉 All op tests passed!");
+println!("Çıktı boyutu: {}x{}", od.rows, od.cols);	println!("Output size: {}x{}", od.rows, od.cols);
+// loss = sum(çıktı) olduğu için her token satırının gradyanı 1'dir;	// since loss = sum(output) every token row's gradient is 1;
+// token 1 ve 3 birer kez geçtiği için o satırların toplamı d_model olmalı.	// tokens 1 and 3 appear once, so those rows must sum to d_model.
+"token_emb grad toplamı yanlış"	"token_emb gradient sum is wrong"
+println!("✅ Embedding OK (RoPE: pozisyon gömme yok)");	println!("✅ Embedding OK (RoPE: no positional embedding)");
+assert!(sum_abs(&x.grad.borrow()) > 1e-6, "x gradyanı sıfır");	assert!(sum_abs(&x.grad.borrow()) > 1e-6, "x gradient is zero");
+"w_q gradyanı sıfır"	"w_q gradient is zero"
+"w_k gradyanı sıfır"	"w_k gradient is zero"
+"w_v gradyanı sıfır"	"w_v gradient is zero"
+"w_o gradyanı sıfır"	"w_o gradient is zero"
+println!("✅ Tüm gradyanlar sıfır değil\n🎉 Attention testi geçti!");	println!("✅ No gradient is zero\n🎉 Attention test passed!");
+// GPU TESTLERİ	// GPU TESTS
+println!("❌ Bu derlemede CUDA kapalı (--no-default-features).");	println!("❌ CUDA is off in this build (--no-default-features).");
+println!("✅ CUDA çalışıyor! (kendi FFI, harici crate yok)");	println!("✅ CUDA works! (our own FFI, no external crates)");
+/// CPU naif matmul ile GPU'yu karşılaştırır.	/// Compares the GPU against a naive CPU matmul.
+println!("✅ GPU matmul doğru!");	println!("✅ GPU matmul is correct!");
+println!("❌ GPU matmul yanlış! (max fark: {})", diff);	println!("❌ GPU matmul is wrong! (max diff: {})", diff);
+println!("🐟 GPU matmul hız testi (256²)\n");	println!("🐟 GPU matmul speed test (256^2)\n");
+println!("Hızlanma: {:.2}x", cpu.as_secs_f64() / gpu_t.as_secs_f64());	println!("Speed-up: {:.2}x", cpu.as_secs_f64() / gpu_t.as_secs_f64());
+println!("🐟 GPU matmul hız testi (büyük matrisler)\n");	println!("🐟 GPU matmul speed test (large matrices)\n");
+"Hızlanma: {:.2}x\n",	"Speed-up: {:.2}x\n",
+/// Modelin gerçekte kullandığı matmul şekilleri — asıl karar bunlara dayanır.	/// The matmul shapes the model really uses - the real decision rests on these.
+println!("🐟 Gerçek model şekillerinde matmul (10 tekrar, ortalama)\n");	println!("🐟 Matmul at real model shapes (10 repeats, averaged)\n");
+// Isınma: ilk GPU çağrısı CUDA context + cuBLAS handle kurar (~200 ms).	// Warm-up: the first GPU call builds the CUDA context + cuBLAS handle (~200 ms).
+// Bu maliyet ölçüme karışmasın.	// Keep that cost out of the measurement.
+// (B*S, k) @ (k, n) — GPT'nin içindeki GEMM'ler	// (B*S, k) @ (k, n) - the GEMMs inside the GPT
+(128, 128, 128, "batch=1 (üretim)"),	(128, 128, 128, "batch=1 (generation)"),
+// her iki yol için de birer ısınma	// one warm-up for each path
+println!("🐟 GPU eğitim testi (küçük MLP)\n");	println!("🐟 GPU training test (small MLP)\n");
+println!("10 adım: {:?}  (GPU={})", t0.elapsed(), gpu::HAS_CUDA);	println!("10 steps: {:?}  (GPU={})", t0.elapsed(), gpu::HAS_CUDA);
+println!("✅ GPU eğitim testi tamam!");	println!("✅ GPU training test complete!");
+println!("🐟 GPT adım hızı (d_model=64, 2 katman, batch=8)\n");	println!("🐟 GPT step speed (d_model=64, 2 layers, batch=8)\n");
+// Isınma (CUDA context + cuBLAS handle)	// Warm-up (CUDA context + cuBLAS handle)
+// --- sadece forward ---	// --- forward only ---
+"{} adım → {:.2} ms/adım ({:.0} tok/s)  GPU={}",	"{} steps -> {:.2} ms/step ({:.0} tok/s)  GPU={}",
+println!("✅ GPT hız testi tamam!");	println!("✅ GPT speed test complete!");
+// İngilizce hat (BPE + disk cache + 250M sınıfı model)	// English pipeline (BPE + disk cache + 250M-class model)
+// BPE öğrenimi ve tokenize GPU gerektirmez; CUDA'sız derlemede de çalışır.	// BPE learning and tokenization need no GPU; they work in a CUDA-less build.
+let mut f = std::fs::File::open("data/en/train.txt").expect("korpus açılamadı");	let mut f = std::fs::File::open("data/en/train.txt").expect("could not open the corpus");
+println!("❌ en-train CUDA gerektirir (--no-default-features ile derlendi).");	println!("❌ en-train requires CUDA (built with --no-default-features).");
+// Basit --anahtar değer ayrıştırma	// Simple --key value parsing
+"StonefishAI {} | {} | sıfır bağımlılık",	"StonefishAI {} | {} | zero dependencies",
+println!("batch: {batch} × accum {accum} = {tps} token/adım");	println!("batch: {batch} x accum {accum} = {tps} tokens/step");
+// ısınma	// warm-up
+println!("\nadım süresi: {:.0} ms", dt / steps as f64 * 1000.0);	println!("\nstep time: {:.0} ms", dt / steps as f64 * 1000.0);
+println!("hız        : {:.0} token/s", steps as f64 * tps as f64 / dt);	println!("speed      : {:.0} tokens/s", steps as f64 * tps as f64 / dt);
+println!("zirve VRAM : ~{used:.1} GB (toplam {:.1} GB)", total as f64 / 1e9);	println!("peak VRAM  : ~{used:.1} GB (total {:.1} GB)", total as f64 / 1e9);
+println!("❌ demo CUDA gerektirir (--no-default-features ile derlendi).");	println!("❌ demo requires CUDA (built with --no-default-features).");
+println!("❌ CUDA kapalı.");	println!("❌ CUDA is off.");
+println!("🐟 İngilizce model değerlendirmesi\n");	println!("🐟 English model evaluation\n");
+println!("\n--- SONUÇ ---");	println!("\n--- RESULT ---");
+println!("Örneklenen     : {tokens} token");	println!("Sampled        : {tokens} tokens");

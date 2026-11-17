@@ -1,22 +1,22 @@
 // src/gpu_train.rs
-// Device-resident GPT eğiticisi.
+// Device-resident GPT trainer.
 //
-// Tüm ağırlıklar, ara sonuçlar ve gradyanlar GPU'da kalır; adım başına tek
-// CPU↔GPU trafiği loss değerini okumaktır. GEMM'ler cuBLAS, elementwise /
-// normalizasyon / softmax / attention işleri `gpu_kernels` çekirdekleri.
+// All weights, intermediates and gradients stay on the GPU; the only
+// CPU<->GPU traffic per step is reading the loss value. GEMMs go to cuBLAS;
+// elementwise / normalization / softmax / attention go to `gpu_kernels`.
 //
-// Autograd grafiği YOK: GPT mimarisine özel, elle yazılmış ileri/geri geçiş.
-// Genel motor (autograd) referans yol olarak duruyor;
-// `tests/gpu_train_equiv.rs` iki yolu hem gradyan hem loss eğrisi düzeyinde
-// karşılaştırıyor.
+// NO autograd graph: a hand-written forward/backward pass specific to GPT.
+// The general engine (autograd) remains as the reference path;
+// `tests/gpu_train_equiv.rs` compares the two paths at both the gradient
+// and the loss-curve level.
 //
-// Mimarî (CPU ile birebir):
+// Architecture (identical to the CPU path):
 //   x = emb(ids) + pos
 //   blok:  h1 = x + attn(LN1(x)) ;  out = h1 + ff2(gelu(ff1(LN2(h1))))
 //   son:   logits = head(LNf(h))
 //
-// Satır paketleme: (batch, seq, d) → (batch*seq, d). Head dilimleri ve batch,
-// GEMM view'ları + strided-batched çağrılarla ele alınır.
+// Row packing: (batch, seq, d) -> (batch*seq, d). Head slices and batch are
+// handled with GEMM views + strided-batched calls.
 
 #![cfg(feature = "cuda")]
 
@@ -106,23 +106,23 @@ impl Param {
 // ============================================================
 
 pub struct GpuBlock {
-    /// RMSNorm gama (beta yok)
+    /// RMSNorm gamma (no beta)
     norm1_g: Param,
     wq: Param,
     wk: Param,
     wv: Param,
     wo: Param,
     norm2_g: Param,
-    /// SwiGLU kapısı (d → hidden)
+    /// SwiGLU gate (d -> hidden)
     ff_gate: Param,
-    /// SwiGLU yukarı izdüşümü (d → hidden)
+    /// SwiGLU up projection (d -> hidden)
     ff_up: Param,
-    /// SwiGLU aşağı izdüşümü (hidden → d)
+    /// SwiGLU down projection (hidden -> d)
     ff_down: Param,
 }
 
 impl GpuBlock {
-    // KV-cache üretim yolu için salt-okunur erişimciler.
+    // Read-only accessors for the KV-cache generation path.
     pub fn gamma1(&self) -> &DevBuf {
         &self.norm1_g.data
     }
@@ -151,18 +151,18 @@ impl GpuBlock {
         &self.ff_down.data
     }
 }
-/// Katman başına geri yayılım için saklanan ara sonuçlar.
+/// Intermediate results kept for the per-layer backward pass.
 struct Acts {
-    x1: DevBuf,    // RMSNorm1 çıktısı
-    xhat1: DevBuf, // normalize edilmiş (gama öncesi)
+    x1: DevBuf,    // RMSNorm1 output
+    xhat1: DevBuf, // normalized (before gamma)
     inv1: DevBuf,
     q: DevBuf,
     k: DevBuf,
     v: DevBuf,
-    w: DevBuf,    // attention ağırlıkları (B·H·S, S)
-    attn: DevBuf, // projeksiyon öncesi attention çıktısı
+    w: DevBuf,    // attention weights (B*H*S, S)
+    attn: DevBuf, // attention output before the projection
     res1: DevBuf, // x + attn_proj
-    x2: DevBuf,   // RMSNorm2 çıktısı
+    x2: DevBuf,   // RMSNorm2 output
     xhat2: DevBuf,
     inv2: DevBuf,
     gate: DevBuf, // x2·W1
@@ -199,7 +199,7 @@ impl Dims {
 }
 
 // ============================================================
-// Eğitici
+// Trainer
 // ============================================================
 
 pub struct GpuGpt {
@@ -207,15 +207,15 @@ pub struct GpuGpt {
     pub batch: usize,
     pub seq: usize,
 
-    /// Token gömmesi — ÇIKIŞ MATRİSİ DE BU (weight tying).
+    /// Token embedding - this is ALSO THE OUTPUT MATRIX (weight tying).
     tok_emb: Param,
     blocks: Vec<GpuBlock>,
     lnf_g: Param,
-    /// Eğitimde dropout olasılığı (değerlendirme/üretimde 0).
+    /// Dropout probability during training (0 for evaluation/generation).
     pub dropout_p: f32,
-    /// Dropout maskeleri için tohum (adım başına güncellenir).
+    /// Seed for the dropout masks (updated every step).
     drop_seed: u32,
-    /// true ise dropout uygulanır.
+    /// Dropout is applied when true.
     pub training: bool,
     /// RoPE cos/sin tablosu: (seq × d_head/2)
     rope_cos: DevBuf,
@@ -240,7 +240,7 @@ pub struct GpuGpt {
     tmp_fa: DevBuf,
     tmp_fb: DevBuf,
     tmp_fc: DevBuf,
-    /// İleri geçişte attention skorları, geri geçişte dW için yeniden kullanılır.
+    /// Attention scores in the forward pass, reused for dW in the backward pass.
     scores: DevBuf,
     dscores: DevBuf,
     #[allow(dead_code)]
@@ -254,8 +254,8 @@ fn mk_param(t: &crate::autograd::Tensor, name: &'static str) -> Param {
     Param::from_host(data.rows, data.cols, name, &data.data)
 }
 
-/// CPU ağırlık ikizi olmadan doğrudan cihazda rastgele başlatma.
-/// (250M modelde CPU ikizi 1 GB RAM ve yükleme süresi demek.)
+/// Random initialization directly on the device, without a CPU weight twin.
+/// (For a 250M model a CPU twin means 1 GB of RAM and upload time.)
 fn seed_uniform(n: usize, scale: f32, seed: &mut u64) -> Vec<f32> {
     let mut v = Vec::with_capacity(n);
     for _ in 0..n {
@@ -269,8 +269,8 @@ fn seed_uniform(n: usize, scale: f32, seed: &mut u64) -> Vec<f32> {
 }
 
 impl GpuGpt {
-    /// Sıfırdan rastgele başlatma (CPU ikizi yok). GPT::new ile aynı dağılım:
-    /// gömme 0.02, projeksiyonlar 1/sqrt(d) ölçeğinde.
+    /// Random initialization from scratch (no CPU twin). Same distribution as
+    /// GPT::new: embeddings 0.02, projections at a 1/sqrt(d) scale.
     pub fn new_random(cfg: GptConfig, batch: usize, seq: usize, seed: u64) -> Self {
         let (v, d) = (cfg.vocab_size, cfg.d_model);
         let f = swiglu_hidden(d);
@@ -372,7 +372,7 @@ impl GpuGpt {
         }
     }
 
-    /// CPU modelindeki ağırlıklarla kurar — iki eğitici aynı noktadan başlar.
+    /// Builds from the CPU model's weights - both trainers start from the same point.
     pub fn from_cpu(model: &GPT, batch: usize, seq: usize) -> Self {
         let cfg = model.config;
         assert!(seq <= cfg.max_seq_len, "seq > max_seq_len");
@@ -464,7 +464,7 @@ impl GpuGpt {
         }
     }
 
-    /// KV-cache üretim yolu için salt-okunur erişimciler.
+    /// Read-only accessors for the KV-cache generation path.
     pub fn tok_emb_ref(&self) -> &Param {
         &self.tok_emb
     }
@@ -515,7 +515,7 @@ impl GpuGpt {
         }
     }
 
-    /// Adam + global gradyan kırpma. Kırpma öncesi normu döndürür.
+    /// Adam + global gradient clipping. Returns the norm before clipping.
     pub fn step(&mut self, lr: f32, clip: f32) -> f32 {
         self.adam_t += 1;
         let t = self.adam_t;
@@ -539,9 +539,9 @@ impl GpuGpt {
         norm
     }
 
-    /// Sadece ileri + cross-entropy: gradyan hesaplamaz (değerlendirme yolu).
+    /// Forward + cross-entropy only: no gradients (the evaluation path).
     pub fn forward_loss(&mut self, ids: &[i32], targets: &[i32]) -> f32 {
-        self.training = false; // değerlendirme: dropout yok
+        self.training = false; // evaluation: no dropout
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs());
         assert_eq!(targets.len(), dm.bs());
@@ -561,30 +561,30 @@ impl GpuGpt {
         self.loss.to_host()[0]
     }
 
-    /// Yalnız ileri geçiş: son satırın logitlerini döndürür (üretim yolu).
+    /// Forward only: returns the last row's logits (the generation path).
     pub fn forward_last_logits(&mut self, ids: &[i32]) -> Vec<f32> {
         let row = self.batch * self.seq - 1;
         self.forward_logits_at(ids, row)
     }
 
-    /// Belirtilen satırın logitlerini döndürür. Üretimde bağlam sağdan
-    /// doldurulduğunda (nedensel attention sayesinde konumlar kaymaz) son
-    /// gerçek tokenin satırını okumak için kullanılır.
+    /// Returns the logits of the given row. During generation the context is
+    /// right-padded (causal attention keeps the positions unchanged), so this
+    /// reads the row of the last real token.
     pub fn forward_logits_at(&mut self, ids: &[i32], row: usize) -> Vec<f32> {
-        self.training = false; // üretim: dropout yok
+        self.training = false; // generation: no dropout
         let dm = self.dims();
-        assert_eq!(ids.len(), dm.bs(), "ids.len() = batch*seq olmalı");
+        assert_eq!(ids.len(), dm.bs(), "ids.len() must equal batch*seq");
         let ids_dev = upload_i32(ids);
 
         self.head_forward(&ids_dev, &dm);
 
-        // istenen satırın logitleri
+        // the requested row's logits
         let all = self.logits.to_host();
         let last = row * dm.v;
         all[last..last + dm.v].to_vec()
     }
 
-    /// Gövde ileri geçişi: gömme → katmanlar → final RMSNorm → logits (tied).
+    /// Body forward pass: embedding -> layers -> final RMSNorm -> logits (tied).
     fn head_forward(&mut self, ids_dev: &DevBufI32, dm: &Dims) {
         k::embedding_forward_tok(&self.h[0], ids_dev, &self.tok_emb.data, dm.bs(), dm.d);
         for l in 0..self.cfg.n_layers {
@@ -615,19 +615,19 @@ impl GpuGpt {
         );
     }
 
-    /// Tek bir token'ın logitlerini hesaplamak için `seq` uzunluğu 1 olmalı.
+    /// `seq` must be 1 to compute the logits of a single token.
     pub fn seq_len(&self) -> usize {
         self.seq
     }
 
-    /// Ağırlıkları diske yaz (resume için). CPU ikizi gerekmez.
-    /// Format: magic, sürüm, config (5×u32), adam_t (u64), tensör sayısı,
-    ///         her tensör için rows/cols + f32 veri.
+    /// Write the weights to disk (for resume). No CPU twin needed.
+    /// Format: magic, version, config (5 x u32), adam_t (u64), tensor count,
+    ///         then rows/cols + f32 data for every tensor.
     ///
-    /// **Atomik yazma:** veri önce `path.tmp` dosyasına yazılır, diske
-    /// senkronlanır ve ancak ondan sonra `path` üzerine taşınır. Elektrik
-    /// kesintisi yazma sırasında olursa eski checkpoint bozulmadan kalır
-    /// (aksi hâlde yarım yazılmış 848 MB'lık dosya kurtarılamaz).
+    /// **Atomic write:** data is first written to `path.tmp`, synced to disk,
+    /// and only then moved over `path`. If the power fails during the write
+    /// the previous checkpoint stays intact (otherwise a half-written 848 MB
+    /// file would be unrecoverable).
     pub fn save_state(&mut self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
         let cfg = self.cfg;
@@ -659,15 +659,15 @@ impl GpuGpt {
             w.write_all(&bytes)?;
         }
         w.flush()?;
-        // Fiziksel diske indir, sonra atomik olarak yerine taşı.
+        // Flush to the physical disk, then move atomically into place.
         w.get_ref().sync_all()?;
         drop(w);
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
-    /// `save_state` ile yazılmış ağırlıkları yükler; `adam_t`'yi döndürür.
-    /// Config uyuşmazsa hata verir (sessiz bozulma yok).
+    /// Loads weights written by `save_state`; returns `adam_t`.
+    /// Errors out on a config mismatch (no silent corruption).
     pub fn load_state(&mut self, path: &str) -> std::io::Result<usize> {
         use std::io::Read;
         let f = std::fs::File::open(path)?;
@@ -677,7 +677,7 @@ impl GpuGpt {
         if &magic != b"SFEN001\0" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "magic yanlış — bu bir SFEN ağırlık dosyası değil",
+                "wrong magic - this is not an SFEN weight file",
             ));
         }
         let mut u4 = [0u8; 4];
@@ -686,7 +686,7 @@ impl GpuGpt {
         if ver != 1 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("desteklenmeyen sürüm: {ver}"),
+                format!("unsupported version: {ver}"),
             ));
         }
         let mut cfg = [0usize; 5];
@@ -705,7 +705,7 @@ impl GpuGpt {
         if cfg != want {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("config uyuşmuyor: dosya {cfg:?}, model {want:?}"),
+                format!("config mismatch: file {cfg:?}, model {want:?}"),
             ));
         }
         let mut u8b = [0u8; 8];
@@ -717,7 +717,7 @@ impl GpuGpt {
         if n != params.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("tensör sayısı uyuşmuyor: dosya {n}, model {}", params.len()),
+                format!("tensor count mismatch: file {n}, model {}", params.len()),
             ));
         }
         for p in params {
@@ -729,7 +729,7 @@ impl GpuGpt {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
-                        "{}: şekil uyuşmuyor (dosya {rows}x{cols}, model {}x{})",
+                        "{}: shape mismatch (file {rows}x{cols}, model {}x{})",
                         p.name, p.rows, p.cols
                     ),
                 ));
@@ -749,16 +749,16 @@ impl GpuGpt {
     }
 
     // ========================================================
-    // İleri + geri
+    // Forward + backward
     // ========================================================
 
     pub fn forward_backward(&mut self, ids: &[i32], targets: &[i32]) -> f32 {
         self.forward_backward_with(ids, targets, true, 1.0)
     }
 
-    /// Gradyan biriktirme desteği: `zero_grads=false` ile ardışık çağrılar
-    /// gradyanları toplar; `loss_scale` ile her mikro-batch'in katkısı
-    /// ölçeklenir (efektif batch'in ortalaması için 1/accum).
+    /// Gradient accumulation support: with `zero_grads=false` consecutive calls
+    /// sum the gradients; `loss_scale` scales each micro-batch's contribution
+    /// (use 1/accum for the mean over the effective batch).
     pub fn forward_backward_with(
         &mut self,
         ids: &[i32],
@@ -769,7 +769,7 @@ impl GpuGpt {
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs());
         assert_eq!(targets.len(), dm.bs());
-        // her adımda yeni dropout maskeleri
+        // fresh dropout masks every step
         self.drop_seed = self.drop_seed.wrapping_add(0x9E37_79B9);
         self.training = true;
 
@@ -854,7 +854,7 @@ impl GpuGpt {
     }
 
     fn block_forward(&mut self, l: usize, dm: &Dims) {
-        // Disjoint alan ödünçleri: tek `&mut self` yerine alanları ayır.
+        // Disjoint field borrows: split the fields instead of one `&mut self`.
         let Self {
             acts,
             blocks,
@@ -876,7 +876,7 @@ impl GpuGpt {
         let x_in = &h_lo[l];
         let out = &mut h_hi[0];
 
-        // Katman başına farklı dropout maskesi (geri geçişte aynısı üretilir).
+        // A different dropout mask per layer (the same one is regenerated in backward).
         let base = *drop_seed ^ (l as u32).wrapping_mul(0x9E37_79B1);
         let (seed_proj, seed_ffn) = (base, base ^ 0x5BF0_3635);
         let drop = if *training && *dropout_p > 0.0 {
@@ -897,7 +897,7 @@ impl GpuGpt {
             RMS_EPS,
         );
 
-        // --- q, k, v (bias yok) ---
+        // --- q, k, v (no bias) ---
         gpu::dev_gemm(
             &mut a.q,
             &a.x1,
@@ -935,11 +935,11 @@ impl GpuGpt {
             GemmMode::Nn,
         );
 
-        // --- RoPE: yalnız Q ve K döndürülür (yerinde güvenli) ---
+        // --- RoPE: only Q and K are rotated (in-place is safe) ---
         k::rope_forward(&a.q, &a.q, rope_cos, rope_sin, dm.b, s, nh, dhh);
         k::rope_forward(&a.k, &a.k, rope_cos, rope_sin, dm.b, s, nh, dhh);
 
-        // --- skorlar (her head, batch üzerinde strided) ---
+        // --- scores (per head, strided over batch) ---
         for hh in 0..nh {
             let off = hh * dhh;
             let q_view = a.q.slice(off..);
@@ -1105,8 +1105,8 @@ impl GpuGpt {
             0.0
         };
 
-        // ================= FFN dalı =================
-        // dfn = dOut (dropout maskesi aynı) → tmp_b
+        // ================= FFN branch =================
+        // dfn = dOut (same dropout mask) -> tmp_b
         dtod(tmp_b, &dout);
         if drop > 0.0 {
             k::dropout_backward(tmp_b, bs * d, drop, seed_ffn);
@@ -1205,12 +1205,12 @@ impl GpuGpt {
         }
         k::rmsnorm_backward(tmp_c, tmp_b, &a.xhat2, &a.inv2, &blk.norm2_g.data, bs, d);
 
-        // dh[l] = dOut (residual) + dx_rmsnorm2 → attention dalının yukarı akışı
+        // dh[l] = dOut (residual) + dx_rmsnorm2 -> upstream of the attention branch
         dtod(&mut dh_lo[l], &dout);
         k::add_inplace(&dh_lo[l], tmp_c, bs * d);
 
-        // ================= attention dalı =================
-        // dattn = dh[l]·woᵀ (BS,D) → tmp_a   (+ aynı dropout maskesi)
+        // ================= attention branch =================
+        // dattn = dh[l]*wo^T (BS,D) -> tmp_a   (+ the same dropout mask)
         gpu::dev_gemm(
             tmp_a,
             &dh_lo[l],
@@ -1264,7 +1264,7 @@ impl GpuGpt {
                 GemmMode::Tn,
             );
         }
-        // dW = dAttn·Vᵀ → scores (yeniden kullanım)
+        // dW = dAttn*V^T -> scores (reused buffer)
         for hh in 0..nh {
             let off = hh * dhh;
             let da_view = tmp_a.slice(off..);
@@ -1338,11 +1338,11 @@ impl GpuGpt {
             }
         }
 
-        // RoPE geri: dQ/dK ters döndürülür (Q, K ileri geçişte döndürülmüştü)
+        // RoPE backward: dQ/dK are rotated back (Q, K were rotated in the forward pass)
         k::rope_backward(&a.dq, &a.dq, rope_cos, rope_sin, dm.b, s, nh, dhh);
         k::rope_backward(&a.dk, &a.dk, rope_cos, rope_sin, dm.b, s, nh, dhh);
 
-        // dln1 = dQ·wqᵀ + dK·wkᵀ + dV·wvᵀ (beta ile biriktir) → tmp_b
+        // dln1 = dQ*wq^T + dK*wk^T + dV*wv^T (accumulated with beta) -> tmp_b
         gpu::dev_gemm(tmp_b, &a.dq, &blk.wq.data, bs, d, d, d, d, d, GemmMode::Nt);
         gpu::dev_gemm_batched(
             tmp_b,
@@ -1429,7 +1429,7 @@ impl GpuGpt {
 }
 
 impl GpuGpt {
-    /// Test/teşhis için: isimle parametre gradyanı.
+    /// For tests/diagnostics: a parameter gradient by name.
     pub fn grad_of(&mut self, name: &str, block: usize) -> Option<Vec<f32>> {
         for p in self.params_mut() {
             if p.name == name && block == usize::MAX {
@@ -1452,8 +1452,8 @@ impl GpuGpt {
         Some(p.download_grad())
     }
 
-    /// Cihazdaki ağırlıkları CPU modeline geri yazar (checkpoint için —
-    /// checkpoint formatı CPU modeli üzerinden tanımlı).
+    /// Writes the device weights back into the CPU model (for checkpoints -
+    /// the checkpoint format is defined in terms of the CPU model).
     pub fn copy_to_cpu(&self, model: &mut GPT) {
         let put = |t: &crate::autograd::Tensor, p: &Param| {
             let host = p.download();
@@ -1474,7 +1474,7 @@ impl GpuGpt {
             put(&blk.ff_up, &gb.ff_up);
             put(&blk.ff_down, &gb.ff_down);
         }
-        // weight tying: ayrı çıkış matrisi yok (tok_emb paylaşılır)
+        // weight tying: no separate output matrix (tok_emb is shared)
         put(&model.ln_f_gamma, &self.lnf_g);
     }
 }

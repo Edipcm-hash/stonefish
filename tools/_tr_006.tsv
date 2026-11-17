@@ -1,0 +1,134 @@
+//   C(m,n) = A·B  ⇒  Cᵀ = Bᵀ·Aᵀ  (operandlar yer değiştirir)	//   C(m,n) = A*B  =>  C^T = B^T*A^T  (the operands swap)
+// Yardımcılar	// Helpers
+/// GPU-native (device-resident) eğiticinin gerçek konfigdeki hızı.	/// Speed of the GPU-native (device-resident) trainer in the real config.
+"🐟 GPU-native eğitici (device-resident) — d=128, 4 katman, 4 head, S=128, batch={batch}\n"	"🐟 GPU-native trainer (device-resident) - d=128, 4 layers, 4 heads, S=128, batch={batch}\n"
+"Model: {} param, {} tensör cihazda",	"Model: {} parameters, {} tensors on the device",
+"\n{steps} adım → {:.2} ms/adım  ({:.0} tok/s)",	"\n{steps} steps -> {:.2} ms/step  ({:.0} tok/s)",
+println!("\nKarşılaştırma (CPU+cuBLAS yolu): ~120 ms/adım, ~8.500 tok/s");	println!("\nComparison (CPU+cuBLAS path): ~120 ms/step, ~8,500 tok/s");
+println!("Hızlanma: {:.1}x", 0.120 / per_step);	println!("Speed-up: {:.1}x", 0.120 / per_step);
+// Eğitici soyutlaması: GPU-native (hızlı) / CPU+autograd (yedek)	// Trainer abstraction: GPU-native (fast) / CPU+autograd (fallback)
+/// İki eğitici de aynı arayüzü sunar; eğitim döngüsü tek yazılır.	/// Both trainers expose the same interface, so the loop is written once.
+/// GPU yolu device-resident'tır (`gpu_train::GpuGpt`), CPU yolu doğrulanmış	/// The GPU path is device-resident (`gpu_train::GpuGpt`); the CPU path uses
+/// autograd motorunu kullanır. Ağırlıklar ayrıca bir "dış" modelde tutulur	/// the verified autograd engine. The weights are also kept in an "outer" model
+/// çünkü checkpoint formatı CPU modeli üzerinden tanımlı.	/// because the checkpoint format is defined in terms of the CPU model.
+/// Tek eğitim adımı. Döner: (loss, kırpma öncesi global gradyan normu).	/// A single training step. Returns (loss, global gradient norm before clipping).
+/// Eğitilen ağırlıkları dış (checkpoint) modeline kopyalar.	/// Copies the trained weights into the outer (checkpoint) model.
+/// Gerçek model konfigürasyonunda bir eğitim adımının zaman bütçesi.	/// The time budget of one training step in the real model configuration.
+/// "Tam GPU" yatırımının ne kazandıracağını tahminle değil ölçümle göstermek için.	/// To show what a "full GPU" investment buys with measurement, not guesses.
+println!("🐟 Gerçek modelde adım profili (d=128, 4 katman, 4 head, S=128, batch={batch})\n");	println!("🐟 Step profile on the real model (d=128, 4 layers, 4 heads, S=128, batch={batch})\n");
+// Isınma (CUDA context, cuBLAS handle, bellek havuzu)	// Warm-up (CUDA context, cuBLAS handle, buffer pool)
+let hesap = matmul_compute + attn;	let compute = matmul_compute + attn;
+"{steps} adım → {:.2} ms/adım ({:.0} tok/s, GPU={})",	"{steps} steps -> {:.2} ms/step ({:.0} tok/s, GPU={})",
+println!("  matmul çağrısı: {} / adım\n", calls / steps as u64);	println!("  matmul calls: {} / step\n", calls / steps as u64);
+"  {:<38} {:8.2} ms/adım  %{:5.1}",	"  {:<38} {:8.2} ms/step  %{:5.1}",
+"    {:<36} {:8.2} ms/adım  %{:5.1}",	"    {:<36} {:8.2} ms/step  %{:5.1}",
+"└─ gerçek GEMM",	"+- real GEMM",
+"float_zero_grad (param sıfırlama)",	"float_zero_grad (parameter reset)",
+"ara tensör tahsisi (from_op)",	"intermediate tensor allocation (from_op)",
+"diğer (softmax, paketleme, …)",	"other (softmax, packing, ...)",
+"\n  Hesap (GEMM+attention) %{:.1} · Transfer %{:.1} · Diğer %{:.1}",	"\n  Compute (GEMM+attention) {:.1}% - transfer {:.1}% - other {:.1}%",
+"\n  Yorum: adımın %{:.0}'ı CPU'da koşuyor (attention + elementwise + Adam).\n\	n\n  Interpretation: {:.0}% of the step runs on the CPU (attention + elementwise + Adam).\n\
+// ----- Kaydet / Yükle -----	// ----- Save / Load -----
+// ----- Model toplu kaydet/yükle -----	// ----- Bulk model save/load -----
+"magic yanlış — bu bir Stonefish modeli değil"	"wrong magic - this is not a Stonefish model"
+"kaydedilmiş katman sayısı ({}) ile yüklenen ({}) uyuşmuyor",	"saved layer count ({}) does not match the loaded one ({})",
+/// Global L2 norm kırpma: tüm parametrelerin gradyanlarını tek bir vektör gibi	/// Global L2 norm clipping: treats every parameter gradient as one big vector
+/// düşünüp normu `max_norm` ile sınırlar. Norm `max_norm`'u aşmıyorsa hiçbir	/// and limits the norm to `max_norm`. If the norm does not exceed `max_norm`
+/// şeye dokunmaz. Kırpma **öncesi** normu döndürür (eğitim loglarında izlenir;	/// nothing is touched. Returns the norm **before** clipping (tracked in the
+/// patlayan gradyanı kırpmadan önce görmek istiyoruz).	/// training log: we want to see an exploding gradient before clipping it).
+/// Toplam f64'te biriktirilir: 842k parametrede f32 toplamı taşma/incelik	/// The sum is accumulated in f64: with 842k parameters an f32 sum is prone to
+/// kaybına açıktır.	/// overflow/precision loss.
+// Adam (düzeltilmiş)	// Adam (with bias correction)
+eps: 1e-6, // 1e-8 yerine 1e-6 (daha güvenli)	eps: 1e-6, // 1e-6 instead of 1e-8 (safer)
+// Bias correction (her adımda güncellenir)	// Bias correction (updated every step)
+// norm = sqrt(3² + 4²) = 5 < max_norm=10 → dokunulmamalı	// norm = sqrt(3^2 + 4^2) = 5 < max_norm=10 -> must not touch
+// norm = 5 → max_norm=1 ile ölçek 0.2; yön korunur.	// norm = 5 -> with max_norm=1 the scale is 0.2; the direction is kept.
+"kırpma öncesi norm dönmeli: {norm}"	"must return the pre-clip norm: {norm}"
+// İki parametre birlikte norm 5 eder; tek başına hiçbiri sınırı aşmaz.	// Together the two parameters have norm 5; neither exceeds the limit alone.
+// Hafif profil sayacları — "tam GPU" tartışmasını tahminle değil ölçümle	// Lightweight profiling counters - to settle the "full GPU" debate with
+// yürütmek için. Kapalıyken maliyeti tek bir atomic load'dur; `enable()` ile	// measurement instead of guesses. When disabled the cost is a single atomic
+// açılır (CLI'daki `test-gpt-profile` modu kullanır).	// load; `enable()` turns it on (used by the CLI's `test-gpt-profile` mode).
+// Ölçülen kovalar:	// Measured buckets:
+//   matmul  : gpu::matmul_gpu içindeki toplam süre (transfer dahil)	//   matmul  : total time inside gpu::matmul_gpu (including transfer)
+//   transfer: bunun içinden CPU→GPU + GPU→CPU kopyaları	//   transfer: the CPU->GPU + GPU->CPU copies inside it
+/// Anlık değerler: (matmul çağrısı, matmul ns, transfer ns, attn_fwd ns, attn_bwd ns)	/// Instant values: (matmul calls, matmul ns, transfer ns, attn_fwd ns, attn_bwd ns)
+/// Detaylı anlık görüntü (profil modunun kullandığı).	/// Detailed snapshot (used by the profile mode).
+/// Profil kapalıyken `None` döner (tek atomic load maliyeti).	/// Returns `None` when profiling is off (the cost of a single atomic load).
+// StonefishAI — sıfırdan yazılmış row-major 2D matris.	// StonefishAI - a from-scratch row-major 2D matrix.
+// Batch'li işler (GPT eğitimi) ayrı bir 3D tipiyle değil, **satır paketleme**	// Batched work (GPT training) is not done with a separate 3D type but by
+// ile yapılır: (B, S, D) yerine (B*S, D) matrisi kullanılır. LayerNorm, Linear,	// **row packing**: a (B*S, D) matrix instead of (B, S, D). LayerNorm, Linear,
+// GELU, bias-add ve softmax zaten satır-bazlı olduğu için bu dönüşüm bedava;	// GELU, bias-add and softmax are already row-wise so the conversion is free;
+// yalnızca attention gerçek 3D yapı ister ve o tek yer `Op::CausalAttention`	// only attention needs real 3D structure and that single place is resolved
+// içinde batch/seq bilgisiyle çözülür. Böylece tek bir autograd motoru yeter.	// inside `Op::CausalAttention` with batch/seq metadata. One engine suffices.
+assert_eq!(rows * cols, data.len(), "boyut uyuşmuyor");	assert_eq!(rows * cols, data.len(), "size mismatch");
+/// `other` ya aynı şekildedir ya da (1, cols) — satır bazlı broadcast.	/// `other` either has the same shape or is (1, cols) - row-wise broadcast.
+// Bias ekleme her katmanda çalışır; dilim tabanlı zip sınır kontrolü	// Bias addition runs in every layer; the slice-based zip performs no bounds
+// yapmaz ve vektörleşir (eski get/set döngüsü ölçümde pahalıydı).	// checks and vectorizes (the old get/set loop was expensive in the profile).
+"add boyut"	"add size"
+"sub boyut"	"sub size"
+"mul_elem boyut"	"mul_elem size"
+/// Performans kritik yerlerde `gpu::matmul_gpu` kullanılır.	/// Performance-critical places use `gpu::matmul_gpu`.
+assert_eq!(self.cols, other.rows, "matmul boyut");	assert_eq!(self.cols, other.rows, "matmul size");
+/// Bir skaler değeri okurken kullanılan kısayol (yalnızca 1x1 matrislerde anlamlı).	/// Shortcut for reading a scalar value (only meaningful for 1x1 matrices).
+// Vocab, eğitim korpusunun karakter kümesidir (sıralı). Checkpoint'e gömüldüğü	// The vocab is the character set of the training corpus (sorted). Because it is
+// için korpus dosyası değişse bile ID'ler kaymaz; `save`/`load` ikilisi ise	// embedded in the checkpoint the ids never shift even if the corpus file
+// yan dosya olarak vocab'ı taşıyıp drift tespiti yapmak için kullanılır.	// changes; the `save`/`load` pair carries it as a sidecar to detect drift.
+/// Verilen metinden karakter setini çıkarır (sıralı → deterministik ID).	/// Extracts the character set from the text (sorted -> deterministic ids).
+/// Sıralı karakter listesinden kurar (checkpoint yükleme).	/// Builds from a sorted character list (checkpoint loading).
+/// Liste sıralı ve tekrarsız değilse hata döner.	/// Returns an error if the list is not sorted and unique.
+"vocab içinde tekrarlanan karakter var",	"the vocabulary contains a repeated character"
+"vocab sıralı değil — ID eşlemesi bozulur",	"the vocabulary is not sorted - id mapping would break"
+/// Metni ID vektörüne çevir. Bilinmeyen karakter → hata (sessiz bozulma yok).	/// Convert text to an id vector. Unknown character -> error (no silent corruption).
+/// `try_encode`'in panikleyen sarmalayıcısı (CLI için pratik).	/// Panicking wrapper around `try_encode` (handy for the CLI).
+"bilinmeyen karakter: {:?} (U+{:04X}) — bu karakter eğitim korpusunda yok",	"unknown character: {:?} (U+{:04X}) - this character is not in the training corpus"
+/// ID vektörünü metne çevir.	/// Convert an id vector back to text.
+.unwrap_or_else(|| panic!("geçersiz token id: {i}"))	.unwrap_or_else(|| panic!("invalid token id: {i}"))
+/// Vocab'ı yan dosyaya yaz (ID sırasıyla, tek satır).	/// Write the vocabulary to a sidecar file (in id order, one line).
+/// Yan dosyadan vocab oku. `save` ile yazılmış olmalı.	/// Read the vocabulary from a sidecar file. It must have been written by `save`.
+"vocab dosyası boş",	"the vocabulary file is empty"
+/// İki tokenizer aynı eşlemeyi mi kullanıyor? (korpus drift kontrolü)	/// Do both tokenizers use the same mapping? (corpus drift check)
+let tok = Tokenizer::from_text("abcçdefgğ");	let tok = Tokenizer::from_text("abcdefghij");
+let text = "çğğabc";	let text = "ijjabc";
+// Aynı karakter kümesi, farklı sırayla yazılmış metin → aynı ID'ler.	// Same character set in a differently ordered text -> the same ids.
+// Transformer bileşenleri (v2 mimarisi): Embedding, MultiHeadSelfAttention,	// Transformer components (v2 architecture): Embedding, MultiHeadSelfAttention,
+// v2'de değişenler (v1 → v2):	// What changed in v2 (v1 -> v2):
+//   LayerNorm  → RMSNorm  (ortalama ve beta yok, daha az iş, eşit kalite)	//   LayerNorm  -> RMSNorm  (no mean, no beta, less work, same quality)
+//   GELU FFN   → SwiGLU   (kapılı: silu(x·W1)·(x·W3), aynı parametre bütçesi)	//   GELU FFN   -> SwiGLU   (gated: silu(x*W1)*(x*W3), same parameter budget)
+//   mutlak pos → RoPE     (Q/K döndürülür; göreli konum, uzun bağlama genelleme)	//   absolute pos -> RoPE   (Q/K rotated; relative position, longer context)
+//   ayrı head  → weight tying (giriş gömmesi = çıkış matrisi, -V·d parametre)	//   separate head -> weight tying (input embedding = output matrix, -V*d params)
+// Tüm bileşenler **satır paketli** çalışır: (batch, seq, d_model) tensörü	// All components work **row-packed**: the (batch, seq, d_model) tensor is
+// (batch*seq, d_model) matrisi olarak temsil edilir. RMSNorm/SwiGLU/Linear	// represented as a (batch*seq, d_model) matrix. RMSNorm/SwiGLU/Linear are
+// satır bazlı olduğu için bu bedava; attention `Tensor::causal_attention`	// row-wise so this is free; attention is resolved inside
+// içinde batch/seq/head bilgisiyle çözülür.	// `Tensor::causal_attention` with batch/seq/head metadata.
+/// SwiGLU gizli boyutu: LLaMA tarzı ~8/3·d.	/// SwiGLU hidden size: LLaMA style, ~8/3*d.
+/// Çıktı, GPU verimliliği için bir basamağa yuvarlanır. Basamak model	/// The output is rounded to a step for GPU efficiency. The step scales with
+/// boyutuyla ölçeklenir — yoksa d_model=4 olan gradyan testi modeli 256	/// the model size - otherwise the d_model=4 gradient-test model would have
+/// gizli nörona sahip olurdu (test için 64× fazla parametre).	/// 256 hidden neurons (64x too many parameters for a test).
+/// Böylece toplam FFN parametresi v1'in (d→4d→d) ile aynı kalır.	/// This keeps the total FFN parameter count equal to v1's (d->4d->d).
+// Embedding (yalnız token — konum bilgisi RoPE'den gelir)	// Embedding (token only - position comes from RoPE)
+/// `ids` satır paketli: uzunluk = batch*seq, pozisyon = satır % seq_len.	/// `ids` is row-packed: length = batch*seq, position = row % seq_len.
+assert!(n_heads > 0, "n_heads > 0 olmalı");	assert!(n_heads > 0, "n_heads must be > 0");
+assert_eq!(d_model % n_heads, 0, "d_model, n_heads'e bölünmeli");	assert_eq!(d_model % n_heads, 0, "d_model must be divisible by n_heads");
+// RoPE yalnız Q ve K'ye uygulanır (V'ye uygulanmaz).	// RoPE is applied to Q and K only (not to V).
+/// Model hiperparametreleri — checkpoint'e gömülür, yüklemede doğrulanır.	/// Model hyperparameters - embedded in the checkpoint, validated on load.
+/// Gerçek parametre sayısı (v2 mimarisi, weight tying dahil).	/// The real parameter count (v2 architecture, including weight tying).
+let norm = 3 * d; // block içi 2 + final 1 (beta yok)	let norm = 3 * d; // 2 inside the block + 1 final (no beta)
+let ff = 3 * d * h; // W1 + W3 + W2, bias yok	let ff = 3 * d * h; // W1 + W3 + W2, no bias
+// gömme yalnız bir kez sayılır (çıkış matrisi onunla paylaşılır)	// the embedding is counted once (the output matrix shares it)
+/// `ids`: uzunluk batch*seq. Döner: logits (batch*seq, vocab_size).	/// `ids`: length batch*seq. Returns logits (batch*seq, vocab_size).
+assert_eq!(ids.len(), batch * seq, "ids.len() = batch*seq olmalı");	assert_eq!(ids.len(), batch * seq, "ids.len() must equal batch*seq");
+assert!(seq <= self.config.max_seq_len, "seq, max_seq_len'i aşıyor");	assert!(seq <= self.config.max_seq_len, "seq exceeds max_seq_len");
+// weight tying: logits = x · tok_embᵀ  (ayrı çıkış matrisi yok)	// weight tying: logits = x * tok_emb^T  (no separate output matrix)
+/// Tek sequence (üretim yolu). Döner: (seq, vocab_size).	/// A single sequence (the generation path). Returns (seq, vocab_size).
+// Checkpoint v2 sözleşmesi:	// The checkpoint v2 contract:
+//  * yaz → oku → aynı config, aynı vocab, birebir aynı ağırlıklar, aynı forward	//  * write -> read -> same config, same vocab, identical weights, same forward
+//  * bozuk/yanlış dosya PANİK değil, io::Error döndürür	//  * a corrupt/wrong file returns an io::Error, not a PANIC
+//  * vocab uyuşmazlığı kaydetmeyi reddeder (sessiz bozulma yok)	//  * a vocab mismatch refuses to save (no silent corruption)
+Tokenizer::from_chars(chars).expect("vocab sıralı olmalı")	Tokenizer::from_chars(chars).expect("the vocabulary must be sorted")
+let (loaded, tok2) = checkpoint::load_gpt(p).expect("yükleme");	let (loaded, tok2) = checkpoint::load_gpt(p).expect("load");
+assert!(tok2.same_vocab(&tok), "vocab eşlemesi bozuldu");	assert!(tok2.same_vocab(&tok), "the vocab mapping broke");
+assert_eq!(a.len(), b.len(), "parametre sayısı");	assert_eq!(a.len(), b.len(), "parameter count");
+"parametre {i} birebir aynı değil"	"parameter {i} is not identical"
+// Aynı girdi → aynı çıktı	// Same input -> same output
+"forward çıktısı farklı"	"the forward output differs"
+"  ✅ checkpoint roundtrip: config + vocab + {n} tensör birebir",	"  ✅ checkpoint roundtrip: config + vocab + {n} tensors identical",

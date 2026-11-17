@@ -1,12 +1,12 @@
 // src/en_train.rs
-// İngilizce (BPE tokenizer + disk cache) eğitim hattı.
+// English training pipeline (BPE tokenizer + disk cache).
 //
-// Türkçe karakter-seviyesi yoldan (`gpt-train`) ayrıdır çünkü:
-//  * veri kaynağı disk cache'ten AKIŞLA okunur (RAM'de tutulmaz),
-//  * tokenizer BPE'dir (checkpoint yerine ayrı `SFBPE` dosyası + config'te
+// Separate from the Turkish character-level path (`gpt-train`) because:
+//  * the data source is STREAMED from a disk cache (not held in RAM),
+//  * the tokenizer is BPE (a separate `SFBPE` file plus a vocab size in the
 //    vocab_size),
-//  * model CPU ikizi olmadan doğrudan cihazda başlatılır,
-//  * gradyan biriktirme ve periyodik resume vardır.
+//  * the model is initialized on the device without a CPU twin,
+//  * gradient accumulation and periodic resume are supported.
 
 #![cfg(feature = "cuda")]
 
@@ -19,7 +19,7 @@ use std::io::{Read, Write};
 pub const MERGES_MAGIC: &[u8; 8] = b"SFBPE001";
 
 // ============================================================
-// Tokenizer dosyası
+// Tokenizer file
 // ============================================================
 
 pub fn save_bpe(path: &str, bpe: &Bpe) -> std::io::Result<()> {
@@ -43,7 +43,7 @@ pub fn load_bpe(path: &str) -> std::io::Result<Bpe> {
     if &magic != MERGES_MAGIC {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "BPE dosyası tanınmadı",
+            "BPE file not recognized",
         ));
     }
     let mut u4 = [0u8; 4];
@@ -51,7 +51,7 @@ pub fn load_bpe(path: &str) -> std::io::Result<Bpe> {
     if u32::from_le_bytes(u4) != 1 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "desteklenmeyen BPE sürümü",
+            "unsupported BPE version",
         ));
     }
     r.read_exact(&mut u4)?;
@@ -68,16 +68,16 @@ pub fn load_bpe(path: &str) -> std::io::Result<Bpe> {
 }
 
 // ============================================================
-// prepare: BPE öğren + cache üret
+// prepare: learn BPE + build the cache
 // ============================================================
 
-/// Karma korpus hazırlığı: TinyStories + Gutenberg.
+/// Mixed corpus preparation: TinyStories + Gutenberg.
 ///
-/// BPE, iki korpustan alınan örneklem üzerinde öğrenilir (Gutenberg'in kelime
-/// dağarcığı çok daha geniş; yalnız TinyStories ile eğitilmiş BPE kitapları
-/// kötü kodlar). Ardından iki korpus TEK cache dosyasına yazılır: önce
-/// TinyStories, sonra Gutenberg. Eğitim rastgele pencere örneklediği için bu
-/// sıralama dengeli bir karışım verir.
+/// BPE is learned on a sample from both corpora (Gutenberg's vocabulary is
+/// much larger; a BPE trained on TinyStories alone encodes books badly).
+/// Both corpora are then written into ONE cache file: TinyStories first,
+/// then Gutenberg. Since training samples random windows, this ordering
+/// yields a balanced mixture.
 pub fn prepare(
     stories_txt: &str,
     books_txt: &str,
@@ -86,13 +86,13 @@ pub fn prepare(
     out_prefix: &str,
 ) {
     let t0 = std::time::Instant::now();
-    println!("🐟 İngilizce veri hazırlığı (karma korpus)\n");
+    println!("🐟 English data preparation (mixed corpus)\n");
     println!("TinyStories : {stories_txt}");
     println!("Gutenberg   : {books_txt}");
     println!("Valid       : {valid_txt}");
-    println!("Hedef       : vocab={vocab}, çıktı={out_prefix}.{{bpe,train.bin,valid.bin}}\n");
+    println!("Target      : vocab={vocab}, output={out_prefix}.{{bpe,train.bin,valid.bin}}\n");
 
-    // --- 1) BPE örneklemi: her korpustan 100 MB ---
+    // --- 1) BPE sample: 100 MB from each corpus ---
     let mut sample = String::new();
     for path in [stories_txt, books_txt] {
         match std::fs::File::open(path) {
@@ -101,24 +101,24 @@ pub fn prepare(
                 let got = f.read(&mut buf).unwrap_or(0);
                 buf.truncate(got);
                 sample.push_str(&String::from_utf8_lossy(&buf));
-                println!("BPE örneklemi: {} MB ← {path}", got >> 20);
+                println!("BPE sample: {} MB <- {path}", got >> 20);
             }
-            Err(e) => println!("⚠️  {path} açılamadı ({e}) — atlanıyor"),
+            Err(e) => println!("⚠️  could not open {path} ({e}) - skipping"),
         }
     }
     if sample.is_empty() {
-        println!("❌ Hiç korpus bulunamadı.");
+        println!("❌ No corpus found at all.");
         return;
     }
     let bpe = train_bpe(&sample, vocab, 300_000);
     println!(
-        "BPE hazır: vocab={} ({} merge), {:.1} s",
+        "BPE ready: vocab={} ({} merges), {:.1} s",
         bpe.vocab(),
         bpe.merges.len(),
         t0.elapsed().as_secs_f64()
     );
     let bpe_path = format!("{out_prefix}.bpe");
-    save_bpe(&bpe_path, &bpe).expect("BPE yazılamadı");
+    save_bpe(&bpe_path, &bpe).expect("could not write BPE");
     drop(sample);
 
     // --- 2) Tokenize: TinyStories (truncate) + Gutenberg (append) ---
@@ -138,7 +138,7 @@ pub fn prepare(
             Ok(n) => {
                 total += n;
                 println!(
-                    "{:12}: {n} token, {:.1} s (kümülatif {})",
+                    "{:12}: {n} tokens, {:.1} s (cumulative {})",
                     if i == 0 { "TinyStories" } else { "Gutenberg" },
                     t.elapsed().as_secs_f64(),
                     total
@@ -148,7 +148,7 @@ pub fn prepare(
         }
     }
 
-    // --- 3) Valid (yalnız stories) ---
+    // --- 3) Validation (stories only) ---
     let va_bin = format!("{out_prefix}.valid.bin");
     let t = std::time::Instant::now();
     match tokenize_file_to_cache(valid_txt, &va_bin, &bpe, 64 << 20) {
@@ -164,14 +164,14 @@ pub fn prepare(
         .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
         .sum();
     println!(
-        "\nToplam: {} token, sıkıştırma {:.2} karakter/token",
+        "\nTotal: {} tokens, compression {:.2} chars/token",
         total,
         corpus_bytes as f64 / total.max(1) as f64
     );
-    println!("Süre: {:.1} dk", t0.elapsed().as_secs_f64() / 60.0);
+    println!("Elapsed: {:.1} min", t0.elapsed().as_secs_f64() / 60.0);
 }
 // ============================================================
-// train: 250M konfigürasyonu
+// train: the 250M configuration
 // ============================================================
 
 pub struct EnTrainArgs {
@@ -213,9 +213,9 @@ impl Default for EnTrainArgs {
 }
 
 pub fn train(a: &EnTrainArgs) {
-    let bpe = load_bpe(&format!("{}.bpe", a.corpus_prefix)).expect("BPE yüklenemedi");
+    let bpe = load_bpe(&format!("{}.bpe", a.corpus_prefix)).expect("could not load BPE");
     let mut data =
-        TokenDataset::open(&format!("{}.train.bin", a.corpus_prefix)).expect("cache açılamadı");
+        TokenDataset::open(&format!("{}.train.bin", a.corpus_prefix)).expect("could not open cache");
     let vocab = bpe.vocab();
     let cfg = GptConfig {
         vocab_size: vocab,
@@ -227,7 +227,7 @@ pub fn train(a: &EnTrainArgs) {
     let tokens_per_step = (a.batch * a.accum * a.seq_len) as u64;
     let total_steps = (a.total_tokens / tokens_per_step) as usize;
 
-    println!("🐟 StonefishAI — İngilizce GPT eğitimi (250M sınıfı)\n");
+    println!("🐟 StonefishAI - English GPT training (250M class)\n");
     println!("Tokenizer : BPE vocab={vocab}");
     println!(
         "Korpus    : {} token (cache), seq_len={}",
@@ -243,21 +243,21 @@ pub fn train(a: &EnTrainArgs) {
         a.seq_len
     );
     println!(
-        "Batch     : {} × accum {} = {} dizi ({} token/adım)",
+        "Batch     : {} x accum {} = {} sequences ({} tokens/step)",
         a.batch,
         a.accum,
         a.batch * a.accum,
         tokens_per_step
     );
     println!(
-        "Plan      : {:.2} B token → {} adım, max_lr={}, clip={}",
+        "Plan      : {:.2} B tokens -> {} steps, max_lr={}, clip={}",
         a.total_tokens as f64 / 1e9,
         total_steps,
         a.max_lr,
         a.clip
     );
     println!(
-        "Checkpoint: her {} adım → {}.state\n",
+        "Checkpoint: every {} steps -> {}.state\n",
         a.ckpt_every, a.out_prefix
     );
 
@@ -276,13 +276,13 @@ pub fn train(a: &EnTrainArgs) {
         match model.load_state(&ckpt) {
             Ok(t) => {
                 start_step = t;
-                println!("▶ Resume: {ckpt} (adım {start_step})");
+                println!("▶ Resume: {ckpt} (step {start_step})");
             }
-            Err(e) => println!("⚠️  Resume edilemedi ({e}), sıfırdan başlanıyor"),
+            Err(e) => println!("⚠️  Could not resume ({e}), starting from scratch"),
         }
     }
 
-    // --- Zamanlama sondası (SFISH_TIME=1) ---
+    // --- Timing probe (SFISH_TIME=1) ---
     if std::env::var("SFISH_TIME").is_ok() {
         use std::time::Instant;
         let bs = a.batch;
@@ -295,7 +295,7 @@ pub fn train(a: &EnTrainArgs) {
             *v = ((i + 1) % 1000) as i32;
         }
         model.training = false;
-        let _ = model.forward_loss(&xi, &yi); // ısınma
+        let _ = model.forward_loss(&xi, &yi); // warm-up
         let t = Instant::now();
         for _ in 0..3 {
             let _ = model.forward_loss(&xi, &yi);
@@ -303,14 +303,14 @@ pub fn train(a: &EnTrainArgs) {
         let fwd = t.elapsed().as_secs_f64() / 3.0;
 
         model.dropout_p = 0.0;
-        let _ = model.forward_backward(&xi, &yi); // ısınma
+        let _ = model.forward_backward(&xi, &yi); // warm-up
         let t = Instant::now();
         for _ in 0..3 {
             let _ = model.forward_backward(&xi, &yi);
         }
         let tot = t.elapsed().as_secs_f64() / 3.0;
         println!(
-            "\n[zaman] ileri {:.3} s | ileri+geri {:.3} s → geri {:.3} s | oran {:.1}x",
+            "\n[time] forward {:.3} s | forward+backward {:.3} s -> backward {:.3} s | ratio {:.1}x",
             fwd,
             tot,
             tot - fwd,
@@ -336,7 +336,7 @@ pub fn train(a: &EnTrainArgs) {
         let mut step_loss = 0.0f64;
 
         for micro in 0..a.accum {
-            // her mikro-batch için rastgele konum
+            // a random position for each micro-batch
             for b in 0..a.batch {
                 let max_start = data.len() - a.seq_len as u64 - 1;
                 let start = (xorshift(&mut rng) % max_start) as u64;
@@ -378,15 +378,15 @@ pub fn train(a: &EnTrainArgs) {
 
         if (step + 1) % a.ckpt_every == 0 {
             match model.save_state(&ckpt) {
-                Ok(()) => println!("  💾 checkpoint → {ckpt} (adım {})", step + 1),
-                Err(e) => println!("  ⚠️  checkpoint yazılamadı: {e}"),
+                Ok(()) => println!("  💾 checkpoint -> {ckpt} (step {})", step + 1),
+                Err(e) => println!("  ⚠️  could not write checkpoint: {e}"),
             }
         }
     }
 
     let _ = model.save_state(&format!("{}.final.state", a.out_prefix));
     println!(
-        "\n✅ Eğitim tamam: {} adım, {:.1} dk, ortalama {:.0} tok/s",
+        "\n✅ Training complete: {} steps, {:.1} min, average {:.0} tok/s",
         total_steps - start_step,
         run_t0.elapsed().as_secs_f64() / 60.0,
         (tokens_done as f64) / run_t0.elapsed().as_secs_f64()
@@ -404,23 +404,23 @@ pub fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f
 }
 
 // ============================================================
-// eval: valid korpusu üzerinde kayıp + perplexity + BPC
+// eval: loss + perplexity + BPC on the validation corpus
 // ============================================================
 
-/// Değerlendirme. Döner: (val loss nat/token, perplexity, BPC, örneklenen token).
+/// Evaluation. Returns (val loss in nats/token, perplexity, BPC, sampled tokens).
 pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f64, u64) {
-    let _ = load_bpe(&format!("{corpus}.bpe")).expect("BPE yüklenemedi");
-    let mut data = TokenDataset::open(&format!("{corpus}.valid.bin")).expect("valid cache yok");
+    let _ = load_bpe(&format!("{corpus}.bpe")).expect("could not load BPE");
+    let mut data = TokenDataset::open(&format!("{corpus}.valid.bin")).expect("no validation cache");
     let state = state_path.to_string();
 
-    // Model boyutunu state dosyasından oku (config başlığın içinde)
-    let cfg = read_state_cfg(&state).expect("state dosyası okunamadı");
+    // Read the model size from the state file (the config sits in the header)
+    let cfg = read_state_cfg(&state).expect("could not read the state file");
     let batch = 8usize;
     let seq = cfg.max_seq_len;
     let mut model = GpuGpt::new_random(cfg, batch, seq, 1);
-    let t = model.load_state(&state).expect("ağırlıklar yüklenemedi");
+    let t = model.load_state(&state).expect("could not load the weights");
     println!(
-        "Model: d={}, layers={}, heads={}, ctx={}, vocab={} (adım {t})",
+        "Model: d={}, layers={}, heads={}, ctx={}, vocab={} (step {t})",
         cfg.d_model, cfg.n_layers, cfg.n_heads, cfg.max_seq_len, cfg.vocab_size
     );
 
@@ -448,7 +448,7 @@ pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f6
         sum += model.forward_loss(&x_i, &y_i) as f64;
         if (b + 1) % 50 == 0 {
             println!(
-                "  {}/{} batch  (ortalama loss {:.4}, {:.0} tok/s)",
+                "  {}/{} batches (average loss {:.4}, {:.0} tok/s)",
                 b + 1,
                 n_batches,
                 sum / (b + 1) as f64,
@@ -459,7 +459,7 @@ pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f6
 
     let loss = sum / n_batches.max(1) as f64;
     let ppl = loss.exp();
-    // BPC: karakter başına bit. chars/token = valid.txt bayt / valid.bin token
+    // BPC: bits per character. chars/token = valid.txt bytes / valid.bin tokens
     let chars_per_token = {
         let txt = std::fs::metadata("data/en/valid.txt")
             .map(|m| m.len() as f64)
@@ -475,7 +475,7 @@ pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f6
     (loss, ppl, bpc, n_batches as u64 * per_batch)
 }
 
-/// State dosyasının başlığından config oku (ağırlıkları yüklemeden).
+/// Read the config from a state file header (without loading the weights).
 fn read_state_cfg(path: &str) -> std::io::Result<GptConfig> {
     let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut magic = [0u8; 8];
@@ -483,11 +483,11 @@ fn read_state_cfg(path: &str) -> std::io::Result<GptConfig> {
     if &magic != b"SFEN001\0" {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "state dosyası tanınmadı",
+            "state file not recognized",
         ));
     }
     let mut u4 = [0u8; 4];
-    r.read_exact(&mut u4)?; // sürüm
+    r.read_exact(&mut u4)?; // version
     let mut c = [0usize; 5];
     for v in c.iter_mut() {
         r.read_exact(&mut u4)?;
@@ -503,7 +503,7 @@ fn read_state_cfg(path: &str) -> std::io::Result<GptConfig> {
 }
 
 // ============================================================
-// generate: BPE + kayan pencere üretimi
+// generate: BPE + sliding-window generation
 // ============================================================
 
 pub fn generate(
@@ -514,24 +514,24 @@ pub fn generate(
     temperature: f32,
     top_k: usize,
 ) {
-    let bpe = load_bpe(&format!("{corpus}.bpe")).expect("BPE yüklenemedi");
+    let bpe = load_bpe(&format!("{corpus}.bpe")).expect("could not load BPE");
     let state = state_path.to_string();
-    let cfg = read_state_cfg(&state).expect("state okunamadı");
+    let cfg = read_state_cfg(&state).expect("could not read the state");
     let seq = cfg.max_seq_len;
     let mut model = GpuGpt::new_random(cfg, 1, seq, 1);
-    model.load_state(&state).expect("ağırlıklar yüklenemedi");
+    model.load_state(&state).expect("could not load the weights");
 
     let mut ids: Vec<u32> = bpe.encode(prompt);
     if ids.is_empty() {
         ids = bpe.encode(" ");
     }
 
-    // KV-cache: her token için tüm bağlamı yeniden hesaplamak yerine K/V
-    // saklanır. Üretim bu yüzden O(n²) yerine O(n) iş yapar.
+    // KV-cache: instead of recomputing the whole context for every token, K/V
+    // are stored. Generation therefore does O(n) work instead of O(n^2).
     let mut ctx = crate::kv_cache::CachedModel::new(&mut model, seq);
     let t0 = std::time::Instant::now();
 
-    // --- prompt'u işle (cache'i doldur) ---
+    // --- process the prompt (fill the cache) ---
     let mut last_logits = Vec::new();
     for (pos, &t) in ids.iter().enumerate() {
         if pos >= seq {
@@ -591,7 +591,7 @@ pub fn generate(
         let _ = std::io::stdout().flush();
 
         if pos >= seq {
-            // pencere doldu: cache'i sıfırla ve kayan pencereyi yeniden işle
+            // window full: reset the cache and reprocess the sliding window
             ctx.reset();
             let start = ids.len().saturating_sub(seq);
             let window: Vec<u32> = ids[start..].to_vec();

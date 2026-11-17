@@ -1,11 +1,11 @@
-"""Parquet Gutenberg shard'larını düz metne çevirir (veri hazırlığı; proje bağımlılığı değil)."""
+"""Converts Parquet Gutenberg shards to plain text (data prep, not a project dependency)."""
 import sys, glob, os
 import pyarrow.parquet as pq
 
 def main():
     files = sorted(glob.glob("data/gb/*.parquet"))
     if not files:
-        print("parquet yok")
+        print("no parquet files")
         return
     out_path = "data/gb/books.txt"
     total_chars = 0

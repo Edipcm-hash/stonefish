@@ -1,0 +1,119 @@
+./target/release/stonefish_ai gpt-gen "Akşam erken iner" 300 0.8   # prompt, tokens, temperature	./target/release/stonefish_ai gpt-gen "evening falls early" 300 0.8   # prompt, tokens, temperature
+// Akışlı token veri hattı.	// Streaming token data pipeline.
+// Neden: 3-6 milyar token'ı `Vec<usize>` olarak RAM'de tutmak imkânsız	// Why: keeping 3-6 billion tokens in RAM as `Vec<usize>` is impossible
+// (token başına 8 bayt → 24-48 GB). Bu modül:	// (8 bytes per token -> 24-48 GB). This module:
+//   * tokenize edilmiş korpusu **diske** u16 olarak yazar (2 bayt/token),	//   * writes the tokenized corpus **to disk** as u16 (2 bytes/token),
+//   * eğitim sırasında **pencere** okuyarak erişir (tüm dosya yüklenmez),	//   * reads through a **window** during training (the whole file is not loaded),
+//   * sabit boyutlu bir bellek penceresi tutar (varsayılan 64 MB) → ardışık	//   * keeps a fixed-size memory window -> sequential
+/// Token cache dosyası: ham u16 little-endian dizisi.	/// Token cache file: a raw u16 little-endian array.
+/// Pencere boyu: istenen aralığın bu katı (en az 4K token, en çok 1M).	/// Window size: this multiple of the requested range (>= 4K tokens, <= 1M).
+/// Eğitim rastgele konumlardan okur; pencere çok büyük olursa her ıskalama	/// Training reads from random positions; if the window is too large every miss
+/// onlarca MB disk okumasına dönüşür (ölçüldü: adımda ~4 GB trafik, eğitimi	/// becomes tens of MB of disk reads (measured: ~4 GB per step, slowing
+/// 1,8× yavaşlatıyordu).	/// training by 1.8x).
+"token cache boyutu çift olmalı (u16)",	"token cache size must be even (u16)",
+/// [start, start+len) aralığını içeren pencereyi belleğe al.	/// Load the window covering [start, start+len) into memory.
+// Yeni pencere: istenen aralık + biraz ileriye bak (ardışık erişim	// New window: the requested range plus some look-ahead (useful for
+// için faydalı), ama asla gereksiz büyük değil.	// sequential access), but never needlessly large.
+/// [start, start+out.len()) aralığını okur (kaydırma yok).	/// Reads [start, start+out.len()) (no shift).
+"okuma korpusu aşıyor"	"read exceeds the corpus"
+/// `start`'tan itibaren `seq_len` girdi + 1 kaydırılmış hedef yazar.	/// Writes `seq_len` inputs plus 1 shifted target starting at `start`.
+/// `x` ve `y` çağıran tarafından sağlanır (adım başına tahsis yok).	/// `x` and `y` are provided by the caller (no per-step allocation).
+"pencere korpusu aşıyor"	"window exceeds the corpus"
+/// Metni parçalar hâlinde tokenize edip u16 cache dosyasına yazar.	/// Tokenizes text in chunks and writes a u16 cache file.
+/// UTF-8 karakter sınırları korunur (satır sonuna hizalanarak).	/// UTF-8 character boundaries are preserved (aligned to the last newline).
+/// Hız: kelime başına önbellek (HashMap) tutulur — TinyStories gibi küçük	/// Speed: a per-word cache (HashMap) is kept - for corpora with a small
+/// sözlü korpuslarda isabet oranı çok yüksektir ve tokenize ~50× hızlanır.	/// vocabulary like TinyStories the hit rate is very high, ~50x faster.
+/// Aynı cache dosyasına EKLEYEREK tokenize eder (çoklu korpus birleştirme).	/// Tokenizes by APPENDING to the same cache file (merging multiple corpora).
+// Son satır sonundan sonrasını bir sonraki parçaya taşı	// Carry everything after the last newline into the next chunk
+"  [tokenize] {:.0} MB işlendi, {} token, önbellek {} kelime",	"  [tokenize] {:.0} MB processed, {} tokens, cache {} words",
+/// Kelime önbellekli encode: metni kelimelere böl, her kelimeyi bir kez çöz.	/// Word-cached encode: split text into words, solve each word once.
+format!("token id {id} u16'ya sığmıyor")	format!("token id {id} does not fit in u16")
+// 1000 token yaz	// write 1000 tokens
+let content = "the cat sat on the mat.\nthe dog ran.\nşğüöç 🙂 done\n";	let content = "the cat sat on the mat.\nthe dog ran.\nsample unicode 🙂 done\n";
+// Küçük parçalarla tokenize et: UTF-8 sınırları korunmalı.	// Tokenize in small chunks: UTF-8 boundaries must be preserved.
+// Cache'in tamamını oku ve decode et → metin aynen dönmeli	// Read the whole cache and decode it -> the text must round-trip
+// MNIST + metin yükleme.	// MNIST + text loading.
+/// MNIST görüntüleri: N × 784 (0..1 normalize)	/// MNIST images: N x 784 (normalized to 0..1)
+let bytes = fs::read(path).expect("görüntü dosyası okunamadı");	let bytes = fs::read(path).expect("could not read image file");
+assert_eq!(magic, 0x00000803, "yanlış magic (images)");	assert_eq!(magic, 0x00000803, "wrong magic (images)");
+let bytes = fs::read(path).expect("etiket dosyası okunamadı");	let bytes = fs::read(path).expect("could not read label file");
+assert_eq!(magic, 0x00000801, "yanlış magic (labels)");	assert_eq!(magic, 0x00000801, "wrong magic (labels)");
+/// Etiketleri düz olarak oku (accuracy için)	/// Read labels as plain integers (for accuracy)
+/// Bir Matrix'in satır aralığını dilimle (mini-batch için)	/// Slice a row range out of a Matrix (for mini-batches)
+// METİN YÜKLEME (transformer için)	// TEXT LOADING (for the transformer)
+/// Shakespeare metnini yükle.	/// Load a text file.
+fs::read_to_string(path).expect("metin dosyası okunamadı")	fs::read_to_string(path).expect("could not read text file")
+/// Metni sabit uzunlukta parçalara böl (transformer eğitimi için).	/// Split text into fixed-length chunks (for transformer training).
+/// Döner: (girdi, hedef) çiftleri. Her çift `seq_len` uzunluğunda.	/// Returns (input, target) pairs. Every pair is `seq_len` long.
+/// hedef = girdi'nin 1 kaydırılmış hali.	/// target = input shifted by 1.
+// Tek komutluk demo: küçük bir korpustan sıfırdan GPT eğit, metin üret.	// One-command demo: train a GPT from scratch on a small corpus, then generate.
+// Amaç: projeyi klonlayan birinin 90 saniyede çalışan bir şey görmesi.	// Goal: someone who clones the project sees something working in 90 seconds.
+// GPU varsa device-resident eğitici kullanılır (yoksa CPU yolu).	// Uses the device-resident trainer when a GPU is present (CPU path otherwise).
+println!("Sıfırdan eğitim: harici ML kütüphanesi yok, bağımlılık yok.\n");	println!("Training from scratch: no ML libraries, no dependencies.\n");
+println!("❌ Demo korpusu bulunamadı: {path}");	println!("❌ Demo corpus not found: {path}");
+println!("   (depo kökünden çalıştırın: cargo run --release -- demo)");	println!("   (run from the repository root: cargo run --release -- demo)");
+"Model     : d_model={}, {} katman, {} head, ctx={} → {} parametre",	"Model     : d_model={}, {} layers, {} heads, ctx={} -> {} parameters",
+// ---- 3) Eğitim (GPU-native) ----	// ---- 3) Training (GPU-native) ----
+let total_steps = ((seconds * 350_000) / (batch * seq) as u64) as usize; // ~350k tok/s (ölçüldü)	let total_steps = ((seconds * 350_000) / (batch * seq) as u64) as usize; // ~350k tok/s (measured)
+"Eğitim    : {} adım × {} token = {:.1} M token, hedef {} s\n",	"Training  : {} steps x {} tokens = {:.1} M tokens, target {} s\n",
+"  adım {:5}/{}  loss {:.4}  lr {:.2e}  {:6.0} tok/s  [{:.0} s]",	"  step {:5}/{}  loss {:.4}  lr {:.2e}  {:6.0} tok/s  [{:.0} s]",
+"\nEğitim bitti: {:.0} s, {:.0} tok/s\n",	"\nTraining finished: {:.0} s, {:.0} tok/s\n",
+// ---- 4) Üretim ----	// ---- 4) Generation ----
+"Bu metin {} saniyelik eğitimden geliyor — motor çalışıyor.",	"This text comes from {} seconds of training - the engine works.",
+println!("Gerçek model: `stonefish_ai en-gen` (236M parametre, 12 saat eğitim).");	println!("Real model: `stonefish_ai en-gen` (222M parameters, 2 B tokens of training).");
+// İngilizce (BPE tokenizer + disk cache) eğitim hattı.	// English training pipeline (BPE tokenizer + disk cache).
+// Türkçe karakter-seviyesi yoldan (`gpt-train`) ayrıdır çünkü:	// Separate from the Turkish character-level path (`gpt-train`) because:
+//  * veri kaynağı disk cache'ten AKIŞLA okunur (RAM'de tutulmaz),	//  * the data source is STREAMED from a disk cache (not held in RAM),
+//  * tokenizer BPE'dir (checkpoint yerine ayrı `SFBPE` dosyası + config'te	//  * the tokenizer is BPE (a separate `SFBPE` file plus a vocab size in the
+//  * model CPU ikizi olmadan doğrudan cihazda başlatılır,	//  * the model is initialized on the device without a CPU twin,
+//  * gradyan biriktirme ve periyodik resume vardır.	//  * gradient accumulation and periodic resume are supported.
+// Tokenizer dosyası	// Tokenizer file
+"BPE dosyası tanınmadı",	"BPE file not recognized",
+"desteklenmeyen BPE sürümü",	"unsupported BPE version",
+// prepare: BPE öğren + cache üret	// prepare: learn BPE + build the cache
+/// Karma korpus hazırlığı: TinyStories + Gutenberg.	/// Mixed corpus preparation: TinyStories + Gutenberg.
+/// BPE, iki korpustan alınan örneklem üzerinde öğrenilir (Gutenberg'in kelime	/// BPE is learned on a sample from both corpora (Gutenberg's vocabulary is
+/// dağarcığı çok daha geniş; yalnız TinyStories ile eğitilmiş BPE kitapları	/// much larger; a BPE trained on TinyStories alone encodes books badly).
+/// kötü kodlar). Ardından iki korpus TEK cache dosyasına yazılır: önce	/// Both corpora are then written into ONE cache file: TinyStories first,
+/// TinyStories, sonra Gutenberg. Eğitim rastgele pencere örneklediği için bu	/// then Gutenberg. Since training samples random windows, this ordering
+/// sıralama dengeli bir karışım verir.	/// yields a balanced mixture.
+println!("🐟 İngilizce veri hazırlığı (karma korpus)\n");	println!("🐟 English data preparation (mixed corpus)\n");
+println!("Hedef       : vocab={vocab}, çıktı={out_prefix}.{{bpe,train.bin,valid.bin}}\n");	println!("Target      : vocab={vocab}, output={out_prefix}.{{bpe,train.bin,valid.bin}}\n");
+// --- 1) BPE örneklemi: her korpustan 100 MB ---	// --- 1) BPE sample: 100 MB from each corpus ---
+println!("BPE örneklemi: {} MB ← {path}", got >> 20);	println!("BPE sample: {} MB <- {path}", got >> 20);
+Err(e) => println!("⚠️  {path} açılamadı ({e}) — atlanıyor"),	Err(e) => println!("⚠️  could not open {path} ({e}) - skipping"),
+println!("❌ Hiç korpus bulunamadı.");	println!("❌ No corpus found at all.");
+"BPE hazır: vocab={} ({} merge), {:.1} s",	"BPE ready: vocab={} ({} merges), {:.1} s",
+save_bpe(&bpe_path, &bpe).expect("BPE yazılamadı");	save_bpe(&bpe_path, &bpe).expect("could not write BPE");
+"{:12}: {n} token, {:.1} s (kümülatif {})",	"{:12}: {n} tokens, {:.1} s (cumulative {})",
+// --- 3) Valid (yalnız stories) ---	// --- 3) Validation (stories only) ---
+"\nToplam: {} token, sıkıştırma {:.2} karakter/token",	"\nTotal: {} tokens, compression {:.2} chars/token",
+println!("Süre: {:.1} dk", t0.elapsed().as_secs_f64() / 60.0);	println!("Elapsed: {:.1} min", t0.elapsed().as_secs_f64() / 60.0);
+// train: 250M konfigürasyonu	// train: the 250M configuration
+let bpe = load_bpe(&format!("{}.bpe", a.corpus_prefix)).expect("BPE yüklenemedi");	let bpe = load_bpe(&format!("{}.bpe", a.corpus_prefix)).expect("could not load BPE");
+TokenDataset::open(&format!("{}.train.bin", a.corpus_prefix)).expect("cache açılamadı");	TokenDataset::open(&format!("{}.train.bin", a.corpus_prefix)).expect("could not open cache");
+println!("🐟 StonefishAI — İngilizce GPT eğitimi (250M sınıfı)\n");	println!("🐟 StonefishAI - English GPT training (250M class)\n");
+"Batch     : {} × accum {} = {} dizi ({} token/adım)",	"Batch     : {} x accum {} = {} sequences ({} tokens/step)",
+"Plan      : {:.2} B token → {} adım, max_lr={}, clip={}",	"Plan      : {:.2} B tokens -> {} steps, max_lr={}, clip={}",
+"Checkpoint: her {} adım → {}.state\n",	"Checkpoint: every {} steps -> {}.state\n",
+println!("▶ Resume: {ckpt} (adım {start_step})");	println!("▶ Resume: {ckpt} (step {start_step})");
+Err(e) => println!("⚠️  Resume edilemedi ({e}), sıfırdan başlanıyor"),	Err(e) => println!("⚠️  Could not resume ({e}), starting from scratch"),
+// --- Zamanlama sondası (SFISH_TIME=1) ---	// --- Timing probe (SFISH_TIME=1) ---
+let _ = model.forward_loss(&xi, &yi); // ısınma	let _ = model.forward_loss(&xi, &yi); // warm-up
+let _ = model.forward_backward(&xi, &yi); // ısınma	let _ = model.forward_backward(&xi, &yi); // warm-up
+"\n[zaman] ileri {:.3} s | ileri+geri {:.3} s → geri {:.3} s | oran {:.1}x",	"\n[time] forward {:.3} s | forward+backward {:.3} s -> backward {:.3} s | ratio {:.1}x",
+// her mikro-batch için rastgele konum	// a random position for each micro-batch
+Ok(()) => println!("  💾 checkpoint → {ckpt} (adım {})", step + 1),	Ok(()) => println!("  💾 checkpoint -> {ckpt} (step {})", step + 1),
+Err(e) => println!("  ⚠️  checkpoint yazılamadı: {e}"),	Err(e) => println!("  ⚠️  could not write checkpoint: {e}"),
+"\n✅ Eğitim tamam: {} adım, {:.1} dk, ortalama {:.0} tok/s",	"\n✅ Training complete: {} steps, {:.1} min, average {:.0} tok/s",
+// eval: valid korpusu üzerinde kayıp + perplexity + BPC	// eval: loss + perplexity + BPC on the validation corpus
+/// Değerlendirme. Döner: (val loss nat/token, perplexity, BPC, örneklenen token).	/// Evaluation. Returns (val loss in nats/token, perplexity, BPC, sampled tokens).
+let _ = load_bpe(&format!("{corpus}.bpe")).expect("BPE yüklenemedi");	let _ = load_bpe(&format!("{corpus}.bpe")).expect("could not load BPE");
+let mut data = TokenDataset::open(&format!("{corpus}.valid.bin")).expect("valid cache yok");	let mut data = TokenDataset::open(&format!("{corpus}.valid.bin")).expect("no validation cache");
+// Model boyutunu state dosyasından oku (config başlığın içinde)	// Read the model size from the state file (the config sits in the header)
+let cfg = read_state_cfg(&state).expect("state dosyası okunamadı");	let cfg = read_state_cfg(&state).expect("could not read the state file");
+let t = model.load_state(&state).expect("ağırlıklar yüklenemedi");	let t = model.load_state(&state).expect("could not load the weights");
+"Model: d={}, layers={}, heads={}, ctx={}, vocab={} (adım {t})",	"Model: d={}, layers={}, heads={}, ctx={}, vocab={} (step {t})",
+"  {}/{} batch  (ortalama loss {:.4}, {:.0} tok/s)",	"  {}/{} batches (average loss {:.4}, {:.0} tok/s)",
+// BPC: karakter başına bit. chars/token = valid.txt bayt / valid.bin token	// BPC: bits per character. chars/token = valid.txt bytes / valid.bin tokens
+/// State dosyasının başlığından config oku (ağırlıkları yüklemeden).	/// Read the config from a state file header (without loading the weights).

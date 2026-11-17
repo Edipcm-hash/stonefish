@@ -1,20 +1,20 @@
 # 🐟 StonefishAI
 
-Sıfırdan yazılmış autograd motoru + dil modeli altyapısı (Rust).
+From-scratch autograd engine + language-model stack (Rust).
 
-- 🇹🇷 **Türkçe dokümantasyon:** [README-Tr.md](README-Tr.md)
+- 🇹🇷 **Turkish documentation:** [README-Tr.md](README-Tr.md)
 - 🇬🇧 **English documentation:** [README-Eng.md](README-Eng.md)
 
-Hızlı bakış:
+At a glance:
 
 | | |
 |---|---|
-| MNIST MLP | **%98,12** test doğruluğu |
-| Türkçe GPT | 842.632 parametre, val CE **1,6230** |
-| İngilizce GPT | **235.571.200** parametre, 450 M token, ~10.000 tok/s |
-| Eğitim hızı | 842 K modelde **244.698 tok/s** (GPU-native, 46,7× hızlı) |
-| Test | **62** (29 gradyan + 12 CUDA çekirdeği + 2 eşdeğerlik + 5 checkpoint + 14 birim) |
-| Bağımlılık | yalnız `cudarc` (feature flag ile kapatılabilir) |
+| MNIST MLP | **98.12 %** test accuracy |
+| Turkish GPT | 842,632 parameters, val CE **1.6230** |
+| English GPT | **235,571,200** parameters, 450 M tokens, ~10,000 tok/s |
+| Training speed | **244,698 tok/s** on the 842 K model (GPU-native, 46.7x faster) |
+| Tests | **62** (29 gradient + 12 CUDA kernel + 2 equivalence + 5 checkpoint + 14 unit) |
+| Dependencies | none - see below |
 
 ```bash
 cargo build --release
