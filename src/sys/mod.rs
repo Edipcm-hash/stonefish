@@ -181,7 +181,6 @@ fn load_module(names: &'static [&'static str]) -> Option<*mut c_void> {
     h
 }
 
-
 pub const CUDA_MODULES: &[&str] = &["nvcuda.dll", "libcuda.so.1", "libcuda.so"];
 pub const CUBLAS_MODULES: &[&str] = &[
     "cublas64_13.dll",

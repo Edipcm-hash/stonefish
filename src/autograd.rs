@@ -414,7 +414,11 @@ impl Tensor {
         let xd = self.data.borrow();
         let (rows, cols) = (xd.rows, xd.cols);
         assert_eq!(rows, batch * seq, "rope: rows must equal batch*seq");
-        assert_eq!(cols % n_heads, 0, "rope: columns must be divisible by n_heads");
+        assert_eq!(
+            cols % n_heads,
+            0,
+            "rope: columns must be divisible by n_heads"
+        );
         let d_head = cols / n_heads;
         assert!(d_head % 2 == 0, "rope: d_head must be even");
 

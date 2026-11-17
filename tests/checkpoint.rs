@@ -141,7 +141,10 @@ fn tokenizer_sidecar_detects_drift() {
     tok.save(p).expect("vocab yazma");
 
     let loaded = Tokenizer::load(p).expect("vocab okuma");
-    assert!(loaded.same_vocab(&tok), "the sidecar must give the same vocab");
+    assert!(
+        loaded.same_vocab(&tok),
+        "the sidecar must give the same vocab"
+    );
 
     // A different corpus -> a different vocab -> drift must be detected
     let drifted = Tokenizer::from_text("abcdefg");

@@ -74,11 +74,7 @@ impl Matrix {
             }
             return out;
         }
-        assert_eq!(
-            (self.rows, self.cols),
-            (other.rows, other.cols),
-            "add size"
-        );
+        assert_eq!((self.rows, self.cols), (other.rows, other.cols), "add size");
         let data = self
             .data
             .iter()
@@ -100,11 +96,7 @@ impl Matrix {
             }
             return out;
         }
-        assert_eq!(
-            (self.rows, self.cols),
-            (other.rows, other.cols),
-            "sub size"
-        );
+        assert_eq!((self.rows, self.cols), (other.rows, other.cols), "sub size");
         let data = self
             .data
             .iter()

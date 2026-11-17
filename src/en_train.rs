@@ -214,8 +214,8 @@ impl Default for EnTrainArgs {
 
 pub fn train(a: &EnTrainArgs) {
     let bpe = load_bpe(&format!("{}.bpe", a.corpus_prefix)).expect("could not load BPE");
-    let mut data =
-        TokenDataset::open(&format!("{}.train.bin", a.corpus_prefix)).expect("could not open cache");
+    let mut data = TokenDataset::open(&format!("{}.train.bin", a.corpus_prefix))
+        .expect("could not open cache");
     let vocab = bpe.vocab();
     let cfg = GptConfig {
         vocab_size: vocab,
@@ -418,7 +418,9 @@ pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f6
     let batch = 8usize;
     let seq = cfg.max_seq_len;
     let mut model = GpuGpt::new_random(cfg, batch, seq, 1);
-    let t = model.load_state(&state).expect("could not load the weights");
+    let t = model
+        .load_state(&state)
+        .expect("could not load the weights");
     println!(
         "Model: d={}, layers={}, heads={}, ctx={}, vocab={} (step {t})",
         cfg.d_model, cfg.n_layers, cfg.n_heads, cfg.max_seq_len, cfg.vocab_size
@@ -519,7 +521,9 @@ pub fn generate(
     let cfg = read_state_cfg(&state).expect("could not read the state");
     let seq = cfg.max_seq_len;
     let mut model = GpuGpt::new_random(cfg, 1, seq, 1);
-    model.load_state(&state).expect("could not load the weights");
+    model
+        .load_state(&state)
+        .expect("could not load the weights");
 
     let mut ids: Vec<u32> = bpe.encode(prompt);
     if ids.is_empty() {

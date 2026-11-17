@@ -25,8 +25,14 @@ const TEXT_PATH: &str = "data/turkish.txt";
 const MODES: &[(&str, &str)] = &[
     ("train", "train the MNIST MLP (784->128->10, SGD)"),
     ("eval", "measure the saved MNIST model on the test set"),
-    ("predict", "predict with the saved MNIST model (same as eval)"),
-    ("tokenize", "validate the tokenizer and print the sequence count"),
+    (
+        "predict",
+        "predict with the saved MNIST model (same as eval)",
+    ),
+    (
+        "tokenize",
+        "validate the tokenizer and print the sequence count",
+    ),
     (
         "gpt-train",
         "train the mini GPT [epochs] [batch] [max_steps] [max_lr]",
@@ -65,12 +71,18 @@ const MODES: &[(&str, &str)] = &[
         "demo",
         "one-command demo: train from scratch in 90 s + generate [seconds]",
     ),
-    ("test-ffi", "self-test of our own CUDA FFI (driver, cuBLAS, NVRTC)"),
+    (
+        "test-ffi",
+        "self-test of our own CUDA FFI (driver, cuBLAS, NVRTC)",
+    ),
     (
         "en-eval",
         "evaluate the English model on the validation set (loss/perplexity/BPC)",
     ),
-    ("en-gen", "generate English text [prompt] [tokens] [temperature]"),
+    (
+        "en-gen",
+        "generate English text [prompt] [tokens] [temperature]",
+    ),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
@@ -838,6 +850,10 @@ fn test_attn() {
 // GPU TESTS
 // ============================================================
 
+// `needless_return`: with the `cuda` feature off the cfg block below vanishes,
+// which makes the early `return` the last statement of the function. With CUDA
+// on it is a genuine early exit, so the lint is a false positive here.
+#[allow(clippy::needless_return)]
 fn test_cuda() {
     println!("🐟 CUDA testi\n");
     if !gpu::HAS_CUDA {
@@ -1222,8 +1238,14 @@ fn bench(args: &[String]) {
     let (free1, _) = stonefish_ai::sys::dev::mem_info();
     let used = (free0.saturating_sub(free1)) as f64 / 1e9;
     println!("\nstep time: {:.0} ms", dt / steps as f64 * 1000.0);
-    println!("speed      : {:.0} tokens/s", steps as f64 * tps as f64 / dt);
-    println!("peak VRAM  : ~{used:.1} GB (total {:.1} GB)", total as f64 / 1e9);
+    println!(
+        "speed      : {:.0} tokens/s",
+        steps as f64 * tps as f64 / dt
+    );
+    println!(
+        "peak VRAM  : ~{used:.1} GB (total {:.1} GB)",
+        total as f64 / 1e9
+    );
     println!("son loss   : {last_loss:.4}");
 }
 
@@ -1512,7 +1534,9 @@ fn test_gpt_profile(args: &[String]) {
     let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(8);
     let batch: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
-    println!("🐟 Step profile on the real model (d=128, 4 layers, 4 heads, S=128, batch={batch})\n");
+    println!(
+        "🐟 Step profile on the real model (d=128, 4 layers, 4 heads, S=128, batch={batch})\n"
+    );
 
     let text = data::load_text(TEXT_PATH);
     let tok = Tokenizer::from_text(&text);

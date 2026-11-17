@@ -97,10 +97,7 @@ pub fn load_model(path: &str, n_layers: usize) -> std::io::Result<Vec<Linear>> {
 
     let mut magic = [0u8; 8];
     r.read_exact(&mut magic)?;
-    assert_eq!(
-        &magic, MAGIC,
-        "wrong magic - this is not a Stonefish model"
-    );
+    assert_eq!(&magic, MAGIC, "wrong magic - this is not a Stonefish model");
 
     let version = read_u32(&mut r)?;
     assert_eq!(version, VERSION, "desteklenmeyen versiyon: {}", version);

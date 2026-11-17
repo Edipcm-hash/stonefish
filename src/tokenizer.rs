@@ -33,13 +33,13 @@ impl Tokenizer {
         if sorted.len() != chars.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "the vocabulary contains a repeated character"
+                "the vocabulary contains a repeated character",
             ));
         }
         if sorted != chars {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "the vocabulary is not sorted - id mapping would break"
+                "the vocabulary is not sorted - id mapping would break",
             ));
         }
         Ok(Self::from_chars_unchecked(chars))
@@ -71,7 +71,7 @@ impl Tokenizer {
     pub fn encode(&self, text: &str) -> Vec<usize> {
         self.try_encode(text).unwrap_or_else(|c| {
             panic!(
-                "unknown character: {:?} (U+{:04X}) - this character is not in the training corpus"
+                "unknown character: {:?} (U+{:04X}) - this character is not in the training corpus",
                 c, c as u32
             )
         })
@@ -103,7 +103,7 @@ impl Tokenizer {
         if chars.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "the vocabulary file is empty"
+                "the vocabulary file is empty",
             ));
         }
         Ok(Self::from_chars_unchecked(chars))

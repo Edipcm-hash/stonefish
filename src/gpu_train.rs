@@ -25,7 +25,6 @@ use crate::gpu_kernels as k;
 use crate::sys::dev::{DevBuf, DevBufI32, DevPtr};
 use crate::transformer::{swiglu_hidden, GptConfig, GPT, RMS_EPS};
 
-
 fn alloc(n: usize) -> DevBuf {
     DevBuf::zeros(n)
 }
@@ -242,7 +241,6 @@ pub struct GpuGpt {
     scores: DevBuf,
     dscores: DevBuf,
     #[allow(dead_code)]
-
     pub adam_t: usize,
 }
 
@@ -555,7 +553,6 @@ impl GpuGpt {
         );
         self.loss.to_host()[0]
     }
-
 
     /// Returns the logits of the given row. During generation the context is
     /// right-padded (causal attention keeps the positions unchanged), so this

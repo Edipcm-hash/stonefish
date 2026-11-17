@@ -607,7 +607,10 @@ fn tiny_gpt_end_to_end() {
     let total: usize = params.iter().map(|p| p.data.borrow().data.len()).sum();
     println!("  (small GPT: {total} parameters, B=2 S=3, all checked numerically)");
 
-    assert!(total < 2000, "the end-to-end gradient test needs a small model");
+    assert!(
+        total < 2000,
+        "the end-to-end gradient test needs a small model"
+    );
 
     gradient_check("GPT end to end (B=2,S=3)", &params, || {
         model
@@ -772,7 +775,10 @@ fn rope_forward_and_grad() {
         // the norm must be preserved (rotation is an isometry)
         let n_in: f32 = xd.data.iter().map(|v| v * v).sum();
         let n_out: f32 = rd.data.iter().map(|v| v * v).sum();
-        assert!((n_in - n_out).abs() / n_in < 1e-4, "the norm was not preserved");
+        assert!(
+            (n_in - n_out).abs() / n_in < 1e-4,
+            "the norm was not preserved"
+        );
     }
 
     gradient_check("rope", std::slice::from_ref(&x), || {

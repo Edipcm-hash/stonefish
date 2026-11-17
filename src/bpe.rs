@@ -233,11 +233,7 @@ mod tests {
         let corpus = "the cat sat on the mat. ".repeat(200);
         let bpe = train_bpe(&corpus, 320, 10_000);
         let ids = bpe.encode("the cat sat on the mat.");
-        assert!(
-            ids.len() < 10,
-            "BPE did not compress: {} tokens",
-            ids.len()
-        );
+        assert!(ids.len() < 10, "BPE did not compress: {} tokens", ids.len());
     }
 
     #[test]

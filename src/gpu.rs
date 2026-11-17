@@ -152,10 +152,17 @@ mod imp {
     }
 
     /// Multiply two CPU matrices on the GPU (simple path).
+    ///
+    /// Feeds the profiling counters: `matmul` measures the total time and
+    /// `transfer` the H2D/D2H copies inside it. Without these hooks
+    /// `test-gpt-profile` reported 0 ms for the two largest buckets.
     pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
+        let t_start = crate::profile::start();
+        let t_up = std::time::Instant::now();
         let mut c = DevBuf::zeros(a.rows * b.cols);
         let da = DevBuf::from_host(&a.data);
         let db = DevBuf::from_host(&b.data);
+        let mut transfer_ns: u64 = t_up.elapsed().as_nanos() as u64;
         dev_gemm(
             &mut c,
             &da,

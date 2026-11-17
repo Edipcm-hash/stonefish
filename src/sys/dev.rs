@@ -232,7 +232,6 @@ impl DevBuf {
         }
     }
 
-
     /// Slice view (no ownership).
     pub fn slice(&self, range: std::ops::RangeFrom<usize>) -> DevView<'_> {
         let start = range.start.min(self.len);
@@ -260,7 +259,6 @@ impl DevBuf {
             _p: PhantomData,
         }
     }
-
 }
 
 impl DevBufI32 {
