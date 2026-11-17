@@ -24,6 +24,12 @@ mod cuda_impl {
     /// Model içinde şekiller az sayıda olduğundan isabet oranı yüksek.
     static POOL: OnceLock<Mutex<Vec<CudaSlice<f32>>>> = OnceLock::new();
 
+    /// Küresel cuBLAS handle'ı (cihaz GEMM'leri de bunu paylaşır).
+    pub fn blas() -> &'static Mutex<CudaBlas> {
+        let stream = get_ctx().default_stream();
+        BLAS.get_or_init(|| Mutex::new(CudaBlas::new(stream).expect("CudaBlas handle")))
+    }
+
     pub fn get_ctx() -> &'static Arc<CudaContext> {
         CTX.get_or_init(|| CudaContext::new(0).expect("CUDA context açılamadı"))
     }
@@ -263,6 +269,108 @@ mod cuda_impl {
 
 #[cfg(feature = "cuda")]
 pub use cuda_impl::{get_ctx, matmul_bt_gpu, matmul_gpu, matmul_ta_gpu, GpuMatrix};
+
+// ============================================================
+// Cihaz-üstü (transfer yapmayan) GEMM'ler
+// ============================================================
+// Bunlar GPT eğitim döngüsünün omurgası: tüm ara sonuçlar cihazda kalır.
+// Şekiller row-major; "row stride" satırlar arası mesafe (view'lar için
+// genişlikten büyük olabilir), "bstride" batch'ler arası mesafe.
+
+/// Row-major GEMM modu (C = op(A)·op(B)).
+#[cfg(feature = "cuda")]
+#[derive(Clone, Copy, PartialEq)]
+pub enum GemmMode {
+    /// C = A·B     (A: m×k, B: k×n)
+    Nn,
+    /// C = A·Bᵀ    (A: m×k, B: n×k)
+    Nt,
+    /// C = Aᵀ·B    (A: k×m, B: k×n)
+    Tn,
+}
+
+/// Tek (batch'siz) cihaz GEMM'i.
+#[cfg(feature = "cuda")]
+#[allow(clippy::too_many_arguments)]
+pub fn dev_gemm<A, B, C>(
+    c: &mut C,
+    a: &A,
+    b: &B,
+    m: usize,
+    n: usize,
+    k: usize,
+    a_row: usize,
+    b_row: usize,
+    c_row: usize,
+    mode: GemmMode,
+) where
+    A: cudarc::driver::DevicePtr<f32>,
+    B: cudarc::driver::DevicePtr<f32>,
+    C: cudarc::driver::DevicePtrMut<f32>,
+{
+    dev_gemm_batched(c, a, b, m, n, k, a_row, b_row, c_row, 0, 0, 0, 1, 0.0, mode);
+}
+
+/// Strided-batched cihaz GEMM'i: C_i = op(A_i)·op(B_i).
+#[cfg(feature = "cuda")]
+#[allow(clippy::too_many_arguments)]
+pub fn dev_gemm_batched<A, B, C>(
+    c: &mut C,
+    a: &A,
+    b: &B,
+    m: usize,
+    n: usize,
+    k: usize,
+    a_row: usize,
+    b_row: usize,
+    c_row: usize,
+    a_bstride: usize,
+    b_bstride: usize,
+    c_bstride: usize,
+    batch: usize,
+    beta: f32,
+    mode: GemmMode,
+) where
+    A: cudarc::driver::DevicePtr<f32>,
+    B: cudarc::driver::DevicePtr<f32>,
+    C: cudarc::driver::DevicePtrMut<f32>,
+{
+    use cudarc::cublas::{Gemm, GemmConfig, StridedBatchedConfig};
+    use cudarc::cublas::sys::cublasOperation_t as Ops;
+
+    let ctx = get_ctx();
+    let stream = ctx.default_stream();
+    let blas_mutex = cuda_impl::blas();
+    let blas = blas_mutex.lock().unwrap();
+
+    // Kolon-major dünyada C(m,n) = op(A)·op(B) yazımı:
+    //   Cᵀ(n,m) = op(B)ᵀ · op(A)ᵀ  → operandlar yer değiştirir.
+    let (transa, transb) = match mode {
+        GemmMode::Nn => (Ops::CUBLAS_OP_N, Ops::CUBLAS_OP_N),
+        GemmMode::Nt => (Ops::CUBLAS_OP_T, Ops::CUBLAS_OP_N),
+        GemmMode::Tn => (Ops::CUBLAS_OP_N, Ops::CUBLAS_OP_T),
+    };
+    let cfg = StridedBatchedConfig {
+        gemm: GemmConfig {
+            transa,
+            transb,
+            m: n as i32,
+            n: m as i32,
+            k: k as i32,
+            alpha: 1.0,
+            lda: b_row as i32,
+            ldb: a_row as i32,
+            beta,
+            ldc: c_row as i32,
+        },
+        batch_size: batch as i32,
+        stride_a: b_bstride as i64,
+        stride_b: a_bstride as i64,
+        stride_c: c_bstride as i64,
+    };
+    unsafe { blas.gemm_strided_batched(cfg, b, a, c) }.expect("dev_gemm_batched");
+    let _ = stream;
+}
 
 /// CUDA kapalıyken: aynı arayüz, CPU yolu.
 #[cfg(not(feature = "cuda"))]

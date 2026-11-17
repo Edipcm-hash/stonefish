@@ -40,6 +40,7 @@ const MODES: &[(&str, &str)] = &[
     ("test-gpu-train", "küçük MLP'te 10 adım süresi"),
     ("test-gpt-gpu", "küçük GPT'te adım süresi"),
     ("test-gpt-profile", "gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)"),
+    ("test-gpu-native", "GPU-native eğiticiyi ölç (device-resident, çekirdekler)"),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
@@ -89,6 +90,7 @@ fn main() {
         "test-gpu-train" => test_gpu_train(),
         "test-gpt-gpu" => test_gpt_gpu(rest),
         "test-gpt-profile" => test_gpt_profile(rest),
+        "test-gpu-native" => test_gpu_native(rest),
         other => {
             eprintln!("Bilinmeyen mod: {}", other);
             eprintln!(
@@ -140,7 +142,17 @@ fn gpt_train(args: &[String]) {
 
     // Sondaki bir kısmı validasyon için ayır (ezber mi öğrenme mi?).
     let n_val = (seqs.len() / 50).clamp(4, 256).min(seqs.len() / 4);
-    let n_train = seqs.len() - n_val;
+    let mut n_train = seqs.len() - n_val;
+    // GPU eğiticisi sabit (batch, seq) boyutuyla kurulduğu için train ve val
+    // dilimleri tam batch'lere indirilir; artan en fazla batch_size-1 sequence
+    // atlanır (ölçüm etkisi ihmal edilebilir).
+    if n_train % batch_size != 0 {
+        n_train -= n_train % batch_size;
+    }
+    let n_val = {
+        let r = seqs.len() - n_train;
+        r - r % batch_size
+    };
 
     let mut seed = model_seed;
     let config = GptConfig {
@@ -150,8 +162,7 @@ fn gpt_train(args: &[String]) {
         n_layers: N_LAYERS,
         n_heads: N_HEADS,
     };
-    let model = GPT::new(config, &mut seed);
-    let params = model.parameters();
+    let mut model = GPT::new(config, &mut seed);
     let n_params = model.n_params();
 
     let tokens_per_step = batch_size * SEQ_LEN;
@@ -169,7 +180,7 @@ fn gpt_train(args: &[String]) {
     println!("Seed    : model=0x{:X}, shuffle=0x{:X}", model_seed, shuffle_seed);
     println!();
 
-    let mut opt = Adam::new(params, max_lr);
+    let mut trainer = Trainer::new(config, model_seed, batch_size, SEQ_LEN);
     let mut global_step = 0usize;
     let mut addrng = shuffle_seed;
 
@@ -199,7 +210,6 @@ fn gpt_train(args: &[String]) {
 
             // --- LR programı: doğrusal warmup + cosine decay ---
             let lr = lr_at(global_step, total_steps, max_lr, WARMUP_STEPS, MIN_LR_RATIO);
-            opt.lr = lr;
 
             // Batch'i satır paketle: (bs*seq_len, …)
             let mut input_ids = Vec::with_capacity(bs * SEQ_LEN);
@@ -210,22 +220,12 @@ fn gpt_train(args: &[String]) {
                 targets.extend_from_slice(tgt);
             }
 
-            let logits = model.forward_batch(&input_ids, bs, SEQ_LEN);
-            let loss = logits.softmax_cross_entropy_ids(&targets);
-
-            opt.zero_grad();
-            loss.backward();
-
-            // Gradayan kırpma: Adam'ın önünde, global norm üzerinden.
-            let gnorm = optim::clip_grad_norm(&opt.params, CLIP_NORM);
+            // Tek adım: ileri + geri + Adam + gradyan kırpma
+                let (l, gnorm) = trainer.train_step(&input_ids, &targets, bs, SEQ_LEN, lr, CLIP_NORM);
             if gnorm > CLIP_NORM {
                 clipped += 1;
             }
             grad_norm_sum += gnorm as f64;
-
-            opt.step();
-
-            let l = loss.item();
             sum_loss += l as f64;
             n_steps += 1;
             global_step += 1;
@@ -258,8 +258,15 @@ fn gpt_train(args: &[String]) {
 
         let epoch_secs = epoch_t0.elapsed().as_secs_f64();
         let train_loss = sum_loss / n_steps as f64;
-        let val_loss = eval_loss(&model, &seqs[n_train..], batch_size, SEQ_LEN);
-        history.push((epoch, train_loss, val_loss, epoch_secs, opt.lr));
+        let val_loss = trainer.eval_loss(&seqs[n_train..n_train + n_val], batch_size, SEQ_LEN);
+        let last_lr = lr_at(
+            global_step.saturating_sub(1),
+            total_steps,
+            max_lr,
+            WARMUP_STEPS,
+            MIN_LR_RATIO,
+        );
+        history.push((epoch, train_loss, val_loss, epoch_secs, last_lr));
 
         let improved = val_loss < best_val;
         println!(
@@ -276,6 +283,7 @@ fn gpt_train(args: &[String]) {
         if improved {
             best_val = val_loss;
             best_epoch = epoch;
+            trainer.sync_to_cpu(&mut model);
             checkpoint::save_gpt(GPT_PATH, &model, &tok)
                 .expect("en iyi checkpoint kaydedilemedi");
             let _ = tok.save(GPT_VOCAB_PATH);
@@ -283,6 +291,7 @@ fn gpt_train(args: &[String]) {
     }
 
     // Nihai durumu da sakla (en iyi ile karşılaştırmak için).
+    trainer.sync_to_cpu(&mut model);
     let final_path = GPT_PATH.replace(".bin", "_final.bin");
     if let Err(e) = checkpoint::save_gpt(&final_path, &model, &tok) {
         eprintln!("⚠️  nihai checkpoint yazılamadı ({final_path}): {e}");
@@ -409,32 +418,6 @@ fn write_manifest(
     let mut f = std::fs::File::create(&path)?;
     f.write_all(s.as_bytes())?;
     Ok(path)
-}
-
-/// Gradyansız değerlendirme: ortalama cross-entropy.
-fn eval_loss(model: &GPT, seqs: &[(Vec<usize>, Vec<usize>)], batch_size: usize, seq_len: usize) -> f64 {
-    if seqs.is_empty() {
-        return f64::NAN;
-    }
-    let mut sum = 0.0f64;
-    let mut n = 0usize;
-    let mut start = 0;
-    while start < seqs.len() {
-        let end = (start + batch_size).min(seqs.len());
-        let bs = end - start;
-        let mut input_ids = Vec::with_capacity(bs * seq_len);
-        let mut targets = Vec::with_capacity(bs * seq_len);
-        for k in start..end {
-            let (inp, tgt) = &seqs[k];
-            input_ids.extend_from_slice(inp);
-            targets.extend_from_slice(tgt);
-        }
-        let logits = model.forward_batch(&input_ids, bs, seq_len);
-        sum += logits.softmax_cross_entropy_ids(&targets).item() as f64;
-        n += 1;
-        start = end;
-    }
-    sum / n as f64
 }
 
 // ============================================================
@@ -1016,6 +999,201 @@ fn test_gpt_gpu(args: &[String]) {
 // ============================================================
 // Yardımcılar
 // ============================================================
+
+/// GPU-native (device-resident) eğiticinin gerçek konfigdeki hızı.
+#[cfg(feature = "cuda")]
+fn test_gpu_native(args: &[String]) {
+    let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let batch: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
+
+    println!("🐟 GPU-native eğitici (device-resident) — d=128, 4 katman, 4 head, S=128, batch={batch}\n");
+    if !gpu::HAS_CUDA {
+        println!("❌ CUDA kapalı.");
+        return;
+    }
+
+    let text = data::load_text(TEXT_PATH);
+    let tok = Tokenizer::from_text(&text);
+    let all_ids = tok.encode(&text);
+    let seq_len = 128;
+    let seqs = data::make_sequences(&all_ids, seq_len, seq_len);
+
+    let mut seed: u64 = 0xDEADBEEF;
+    let cfg = GptConfig {
+        vocab_size: tok.vocab_size,
+        max_seq_len: seq_len,
+        d_model: 128,
+        n_layers: 4,
+        n_heads: 4,
+    };
+    let cpu_model = GPT::new(cfg, &mut seed);
+
+    let mut g = stonefish_ai::gpu_train::GpuGpt::from_cpu(&cpu_model, batch, seq_len);
+    println!("Model: {} param, {} tensör cihazda", cpu_model.n_params(), g.params_mut().len());
+
+    let batch_ids = |i: usize| -> (Vec<i32>, Vec<i32>) {
+        let mut ids = Vec::with_capacity(batch * seq_len);
+        let mut tgt = Vec::with_capacity(batch * seq_len);
+        for k in 0..batch {
+            let (a, b) = &seqs[(i * batch + k) % seqs.len()];
+            ids.extend(a.iter().map(|&x| x as i32));
+            tgt.extend(b.iter().map(|&x| x as i32));
+        }
+        (ids, tgt)
+    };
+
+    // ısınma
+    for i in 0..3 {
+        let (ids, tgt) = batch_ids(i);
+        g.forward_backward(&ids, &tgt);
+        g.step(1e-3, 1.0);
+    }
+
+    let t0 = std::time::Instant::now();
+    let mut total_loss = 0.0f32;
+    for i in 0..steps {
+        let (ids, tgt) = batch_ids(i + 3);
+        let l = g.forward_backward(&ids, &tgt);
+        g.step(1e-3, 1.0);
+        total_loss += l;
+    }
+    let elapsed = t0.elapsed().as_secs_f64();
+    let per_step = elapsed / steps as f64;
+    let tokens = batch * seq_len;
+
+    println!(
+        "\n{steps} adım → {:.2} ms/adım  ({:.0} tok/s)",
+        per_step * 1e3,
+        tokens as f64 / per_step
+    );
+    println!("Ortalama loss: {:.4}", total_loss / steps as f32);
+    println!("\nKarşılaştırma (CPU+cuBLAS yolu): ~120 ms/adım, ~8.500 tok/s");
+    println!("Hızlanma: {:.1}x", 0.120 / per_step);
+}
+
+// ============================================================
+// Eğitici soyutlaması: GPU-native (hızlı) / CPU+autograd (yedek)
+// ============================================================
+
+/// İki eğitici de aynı arayüzü sunar; eğitim döngüsü tek yazılır.
+/// GPU yolu device-resident'tır (`gpu_train::GpuGpt`), CPU yolu doğrulanmış
+/// autograd motorunu kullanır. Ağırlıklar ayrıca bir "dış" modelde tutulur
+/// çünkü checkpoint formatı CPU modeli üzerinden tanımlı.
+enum Trainer {
+    Cpu { model: Box<GPT>, opt: Box<Adam> },
+    #[cfg(feature = "cuda")]
+    Gpu { g: Box<stonefish_ai::gpu_train::GpuGpt> },
+}
+
+impl Trainer {
+    fn new(config: GptConfig, seed: u64, batch: usize, seq: usize) -> Self {
+        #[cfg(feature = "cuda")]
+        {
+            if gpu::HAS_CUDA {
+                let mut s = seed;
+                let probe = GPT::new(config, &mut s);
+                return Trainer::Gpu {
+                    g: Box::new(stonefish_ai::gpu_train::GpuGpt::from_cpu(&probe, batch, seq)),
+                };
+            }
+        }
+        let mut s = seed;
+        let model = GPT::new(config, &mut s);
+        let opt = Adam::new(model.parameters(), 1e-3);
+        let _ = (batch, seq);
+        Trainer::Cpu { model: Box::new(model), opt: Box::new(opt) }
+    }
+
+
+    /// Tek eğitim adımı. Döner: (loss, kırpma öncesi global gradyan normu).
+    fn train_step(
+        &mut self,
+        ids: &[usize],
+        targets: &[usize],
+        bs: usize,
+        seq: usize,
+        lr: f32,
+        clip: f32,
+    ) -> (f32, f32) {
+        match self {
+            #[cfg(feature = "cuda")]
+            Trainer::Gpu { g } => {
+                let ids_i: Vec<i32> = ids.iter().map(|&x| x as i32).collect();
+                let tgt_i: Vec<i32> = targets.iter().map(|&x| x as i32).collect();
+                let loss = g.forward_backward(&ids_i, &tgt_i);
+                let norm = g.step(lr, clip);
+                (loss, norm)
+            }
+            Trainer::Cpu { model, opt } => {
+                opt.lr = lr;
+                let logits = model.forward_batch(ids, bs, seq);
+                let loss = logits.softmax_cross_entropy_ids(targets);
+                opt.zero_grad();
+                loss.backward();
+                let norm = optim::clip_grad_norm(&opt.params, clip);
+                opt.step();
+                (loss.item(), norm)
+            }
+        }
+    }
+
+    fn eval_loss(
+        &mut self,
+        seqs: &[(Vec<usize>, Vec<usize>)],
+        batch_size: usize,
+        seq_len: usize,
+    ) -> f64 {
+        let mut sum = 0.0f64;
+        let mut n = 0usize;
+        let mut start = 0;
+        while start < seqs.len() {
+            let end = (start + batch_size).min(seqs.len());
+            let bs = end - start;
+            let mut ids = Vec::with_capacity(bs * seq_len);
+            let mut tgt = Vec::with_capacity(bs * seq_len);
+            for k in start..end {
+                let (a, b) = &seqs[k];
+                ids.extend_from_slice(a);
+                tgt.extend_from_slice(b);
+            }
+            let l = match self {
+                #[cfg(feature = "cuda")]
+                Trainer::Gpu { g } => {
+                    let ids_i: Vec<i32> = ids.iter().map(|&x| x as i32).collect();
+                    let tgt_i: Vec<i32> = tgt.iter().map(|&x| x as i32).collect();
+                    g.forward_backward(&ids_i, &tgt_i) as f64
+                }
+                Trainer::Cpu { model, .. } => {
+                    let logits = model.forward_batch(&ids, bs, seq_len);
+                    logits.softmax_cross_entropy_ids(&tgt).item() as f64
+                }
+            };
+            sum += l;
+            n += 1;
+            start = end;
+        }
+        sum / n.max(1) as f64
+    }
+
+    /// Eğitilen ağırlıkları dış (checkpoint) modeline kopyalar.
+    fn sync_to_cpu(&mut self, out: &mut GPT) {
+        match self {
+            #[cfg(feature = "cuda")]
+            Trainer::Gpu { g } => g.copy_to_cpu(out),
+            Trainer::Cpu { model, .. } => {
+                for (src, dst) in model.parameters().iter().zip(out.parameters().iter()) {
+                    let data = src.data.borrow().data.clone();
+                    dst.data.borrow_mut().data.copy_from_slice(&data);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn test_gpu_native(_args: &[String]) {
+    println!("❌ Bu derlemede CUDA kapalı (--no-default-features).");
+}
 
 /// Gerçek model konfigürasyonunda bir eğitim adımının zaman bütçesi.
 /// "Tam GPU" yatırımının ne kazandıracağını tahminle değil ölçümle göstermek için.

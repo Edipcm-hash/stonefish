@@ -29,8 +29,10 @@ cargo build --release
 ./target/release/stonefish_ai gpt-train 6 8
 ./target/release/stonefish_ai gpt-gen "Akşam erken iner" 300 0.8
 
-# Zaman nereye gidiyor?
+# Zaman nereye gidiyor? (CPU+cuBLAS yolu)
 ./target/release/stonefish_ai test-gpt-profile
+# GPU-native eğiticinin hızı (device-resident)
+./target/release/stonefish_ai test-gpu-native
 ```
 
 ### Veri
@@ -79,7 +81,8 @@ birleştirme yapılamaz.
 ### Gradyanlar sayısal olarak doğrulanmış
 
 Elle türetilmiş her backward, merkezi farkla (central difference) sınanır:
-**36 test** — 27 gradyan/op testi, 5 checkpoint testi, 4 tokenizer birim testi.
+**56 test** — 29 gradyan/op testi, 12 CUDA çekirdek testi, 5 checkpoint testi,
+2 GPU eşdeğerlik testi, 8 birim testi.
 
 ```bash
 cargo test --release                      # GPU yolu
@@ -167,12 +170,67 @@ RTX 5070, 10 adım ortalaması, ısınma hariç):
 | **toplam** | **~121** | 100 % |
 
 Adımda **75 matmul çağrısı** var ama gerçek GEMM toplamı 1 ms. Bu ölçüm, "her şeyi
-GPU'ya taşı" içgüdüsünü çürütüyor:
+GPU'ya taşı" içgüdüsünü çürütüyor: yalnız device-resident yapmak (transferi
+sıfırlamak) üst sınır %17 kazandırır, çünkü adımın %82'si CPU'da koşuyor.
 
-* Yalnız **device-resident** yapmak (transferi sıfırlamak) üst sınır **%17** kazandırır.
-* Adımın **%82'si CPU'da** geçiyor (attention + elementwise + tahsis).
-* Gerçek hızlanma için attention/softmax/LN/GELU/Adam'ın CUDA çekirdeklerine
-  taşınması gerekir — bu, bu motora bir *device tensor katmanı* eklemek demek.
+## GPU-native eğitici (`--features cuda`)
+
+Bu yüzden ikinci bir eğitim yolu yazıldı: **`src/gpu_train.rs`** — ağırlıklar, ara
+sonuçlar ve gradyanlar baştan sona GPU'da kalır, adım başına tek CPU trafiği loss
+değerini okumaktır. Autograd grafiği yok; GPT mimarisine özel elle yazılmış bir
+ileri/geri geçiş.
+
+| Bileşen | Nerede |
+|---|---|
+| GEMM'ler (fwd+bwd, transposed varyantlar, strided-batched attention) | cuBLAS |
+| GELU fwd/bwd, LayerNorm fwd/bwd + kolon-indirgeme, masked softmax fwd/bwd, CE fwd/bwd, embedding gather/scatter, Adam, gradyan kırpma | `kernels/stonefish.cu` |
+| Derleme | **NVRTC ile çalışma zamanında** (bu makinede host C++ derleyicisi yok; nvcc `cl.exe` istiyor). PTX `target/gpu-cache/` altında önbelleklenir. |
+
+Attention, cuBLAS'ın **strided-batched GEMM**'iyle hesaplanır: head dilimleri view
+offset'iyle alınır, batch üzerinde stride verilir, maske+ölçek+softmax tek çekirdekte.
+
+### Hız (gerçek konfig, batch=8, S=128)
+
+| Yol | ms/adım | tok/s | 6 epoch |
+|---|---|---|---|
+| CPU + cuBLAS (autograd) | 120.1 | 8.476 | **54.4 dk** |
+| **GPU-native (device-resident)** | **4.2** | **244.698** | **70 s** |
+| | | | **46.7×** |
+
+`test-gpu-native` ile ölçülür; `gpt-train` CUDA varsa bu yolu otomatik kullanır.
+
+### Aynı sonuç mu? (eşdeğerlik)
+
+İki eğitici aynı ağırlıklardan başlar ve aynı eğriyi izler
+(`tests/gpu_train_equiv.rs`): tüm parametre gradyanları ve 5 Adam adımının loss
+eğrisi CPU referansıyla eşleşir (tolerans: fast-math nedeniyle 2e-3).
+
+| Epoch | CPU val CE | GPU val CE |
+|---|---|---|
+| 0 | 1.9060 | 1.8943 |
+| 1 | 1.7729 | 1.7624 |
+| 2 | 1.7069 | 1.6939 |
+| 3 | 1.6632 | 1.6538 |
+| 4 | 1.6388 | 1.6309 |
+| 5 | **1.6337** | **1.6230** |
+
+Küçük farklar beklenen kaynaklardan: `use_fast_math` (tanh/exp yaklaşımları),
+farklı toplama sırası, ve val diliminin tam batch'e indirilmesi.
+
+### Bu iş sırasında bulunan gerçek hatalar
+
+1. **Head adımı**: attention skor buffer'ında head başına blok sayısı `batch`
+   olduğu için offset `h*S²` değil `h*B*S²` olmalı. Yanlıştı → head 0'ın batch 1
+   bloğunu head 1 eziyordu; son blok hiç yazılmıyordu (skorlar 0 → softmax 0.5/0.5).
+2. **Residual birleşim gradyanı**: attention dalının yukarı akışı blok çıkışının
+   gradyanı (`dOut`) değil, `dh[l] = dOut + dx_ln2` olmalı (çünkü `res1 = x + proj`).
+   Yanlıştı → dAttn ve dWo baştan yanlış hesaplanıyordu.
+3. **Sessiz CPU↔GPU sözleşmesi**: `masked_softmax` çekirdeğinin buffer yerleşimi
+   açıkça [head][batch] olarak yazıldı (önceden düz indeks sayesinde "tesadüfen"
+   doğruydu; artık sözleşme kodda görünüyor).
+
+Her üç hata da **eşdeğerlik testi** tarafından yakalandı; nitekim bu testler
+kalıcı hale getirildi.
 
 ### Bu turda ölçülerek yapılan optimizasyonlar
 
@@ -269,6 +327,10 @@ src/
   tokenizer.rs    karakter seviyesi tokenizer (deterministik ID)
   gpu.rs          cuBLAS matmul (+ ᵀ varyantları) + CPU yedeği (feature flag)
   profile.rs      hafif profil sayaçları (test-gpt-profile)
+  gpu_kernels.rs  NVRTC derleme + CUDA çekirdek sarmalayıcıları
+  gpu_train.rs    device-resident GPT eğiticisi (hızlı yol)
+kernels/
+  stonefish.cu    CUDA çekirdekleri (GELU, LayerNorm, softmax, CE, embedding, Adam)
 tests/
   gradcheck.rs    27 sayısal gradyan testi + nedensellik/batch tutarlılığı
 examples/

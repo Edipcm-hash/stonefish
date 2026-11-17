@@ -9,7 +9,7 @@ default = ["cuda"]
 cuda = ["dep:cudarc"]
 
 [dependencies]
-cudarc = { version = "0.19", features = ["cuda-13040"], optional = true }
+cudarc = { version = "0.19", features = ["cuda-13040", "nvrtc"], optional = true }
 
 [profile.release]
 opt-level = 3

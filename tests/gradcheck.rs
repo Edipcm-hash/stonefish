@@ -199,6 +199,20 @@ fn matmul() {
 }
 
 #[test]
+fn matmul_square() {
+    // Kare matmul: transpose'lu geri yayılım yolları (matmul_ta/bt) burada
+    // lda/ldb karışması en zor yakalanır — ayrıca sınanıyor.
+    let mut s = 19_000u64;
+    let n = 8;
+    let a = leaf(n, n, &mut s);
+    let b = leaf(n, n, &mut s);
+    let w = frozen(n, n, &mut s);
+    gradient_check("matmul (kare 8x8)", &[a.clone(), b.clone()], || {
+        a.matmul(&b).mul_elem(&w).sum()
+    });
+}
+
+#[test]
 fn matmul_then_transpose() {
     let mut s = 20u64;
     let a = leaf(4, 3, &mut s); // (4,3)

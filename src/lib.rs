@@ -18,6 +18,10 @@ pub mod autograd;
 pub mod checkpoint;
 pub mod data;
 pub mod gpu;
+#[cfg(feature = "cuda")]
+pub mod gpu_kernels;
+#[cfg(feature = "cuda")]
+pub mod gpu_train;
 pub mod loss;
 pub mod nn;
 pub mod optim;
