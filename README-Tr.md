@@ -13,6 +13,8 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 
 > English version: [README-Eng.md](README-Eng.md)
 
+> **Durum:** v1 yayınlandı ve ölçüldü (val loss 2,3700 · BPC 0,6913). v2 (222 M parametre, 2,05 B token, yeni mimari) eğitiliyor — 19 Kasım 2026'da bitecek.
+
 ---
 
 ## İçindekiler
@@ -263,22 +265,27 @@ Eğitim eğrisi (GPU-native, 70 saniye):
 
 Tekrar üretilebilirlik: hiperparametreler + seed'ler + epoch metrikleri `runs/<ts>.json` manifestine yazılır.
 
-### 6.2 İngilizce (BPE-16k) — **aktif geliştirme**
+### 6.2 İngilizce (BPE-16k)
+
+İki İngilizce model var: **yayınlanmış v1** (aşağıda ölçülmüş) ve **eğitimi süren v2**.
+
+| | **v1 — yayınlanmış** | **v2 — eğitimi sürüyor** |
+|---|---|---|
+| Mimari | LayerNorm + GELU + mutlak konum | **RMSNorm + SwiGLU + RoPE + weight tying + dropout** |
+| Parametre | 235.571.200 | **222.331.904** |
+| Korpus | TinyStories, 450,9 M token | **TinyStories + Gutenberg, 2.047.457.313 token** |
+| Token/parametre | 1,9 | **9,2** |
+| Eğitim | 13.732 adım, 745 dk | 62.483 adım, ~56 saat |
+| Durum | **tamamlandı, ölçüldü** | 2026-11-19'da bitecek |
+
+#### v1 (yayınlanmış) — ölçülen
 
 | | |
 |---|---|
 | Model | `d_model=1024`, 16 katman, 8 head (`d_head=128`), ctx=512 |
 | Vocab | **16.384** (BPE, byte-level) |
-| Parametre | **235.571.200** |
-| Korpus | TinyStories v2: **450.873.533** train + 3.931.894 valid token |
-| Sıkıştırma | 4,7 karakter/token |
-| Batch | 4 × gradyan biriktirme 16 = efektif 64 dizi (32.768 token/adım) |
-| Plan | 13.732 adım, max_lr=6e-4, 500 adım warmup + cosine, clip=1,0 |
-| VRAM | 8,4 GB / 12 GB |
-| Hız | ~10.000 tok/s → **~12,5 saat** |
 | Checkpoint | `stonefish_en.state` (`SFEN001`, her 500 adım) |
-
-**Eğitim tamamlandı (2026-11-17):** 13.732 adım, **745 dakika**, ortalama 10.061 tok/s.
+| VRAM | 8,4 GB / 12 GB · ~10.000 tok/s |
 
 **Ölçülen kalite (valid.bin, 3.928.064 token):**
 
