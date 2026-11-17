@@ -1,8 +1,15 @@
 # 🐟 StonefishAI
 
-**Sıfırdan yazılmış bir autograd motoru ve dil modeli altyapısı — Rust, harici ML kütüphanesi yok.**
+**Sıfırdan yazılmış bir autograd motoru ve dil modeli altyapısı — Rust, SIFIR bağımlılık.**
 
-`Tensor`'dan topolojik backward'a, optimizer'lardan CUDA çekirdeklerine kadar her şey bu repoda elle yazılmıştır. Tek harici bağımlılık, GPU yolunu açan `cudarc`'tır (feature flag ile kapatılabilir; kapalıyken her şey CPU'da çalışır).
+```console
+$ cargo tree
+stonefish_ai v1.0.0
+```
+
+`Tensor`'dan topolojik backward'a, optimizer'lardan CUDA çekirdeklerine kadar her şey bu repoda elle yazılmıştır. **`[dependencies]` boştur.** CUDA sürücüsü, cuBLAS ve NVRTC çalışma zamanında dinamik olarak yüklenir (`LoadLibraryW` / `dlopen`) — `cudarc` bile yok, yalnızca işletim sisteminin kütüphane yükleyicisi kullanılır.
+
+CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalışır.
 
 > English version: [README-Eng.md](README-Eng.md)
 
@@ -23,6 +30,7 @@
 11. [Bilinen sınırlar](#11-bilinen-sınırlar)
 12. [Yol haritası — yapılacaklar](#12-yol-haritası--yapılacaklar)
 13. [Dizin yapısı](#13-dizin-yapısı)
+14. [Sıfır bağımlılık nasıl çalışıyor](#14-sıfır-bağımlılık-nasıl-çalışıyor)
 
 ---
 
@@ -125,6 +133,12 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | Dosya | Satır | Sorumluluk |
 |---|---|---|
 | [src/lib.rs](src/lib.rs) | 35 | Kütüphane kökü, `VERSION`, clippy gerekçeli allow'lar |
+| [src/sys/mod.rs](src/sys/mod.rs) | 190 | Dinamik kütüphane yükleyici (LoadLibraryW / dlopen) |
+| [src/sys/cuda.rs](src/sys/cuda.rs) | 200 | CUDA sürücü API'si (bellek, bağlam, modül, çekirdek) |
+| [src/sys/cublas.rs](src/sys/cublas.rs) | 80 | cuBLAS SGEMM + strided-batched |
+| [src/sys/nvrtc.rs](src/sys/nvrtc.rs) | 130 | NVRTC — çalışma zamanında CUDA C derleme |
+| [src/sys/dev.rs](src/sys/dev.rs) | 520 | `DevBuf`/görünümler, modül, çekirdek başlatma |
+| [src/sys/selftest.rs](src/sys/selftest.rs) | 250 | FFI öz-testi (`test-ffi` modu) |
 | [src/tensor.rs](src/tensor.rs) | 142 | `Matrix` (row-major 2D): matmul, transpose, broadcast add/sub |
 | [src/autograd.rs](src/autograd.rs) | 845 | `Tensor`, `Op` (17 varyant), topolojik backward, tüm op'lar |
 | [src/nn.rs](src/nn.rs) | 99 | `Linear`, MNIST model (de)serializasyonu |
@@ -144,7 +158,7 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | [src/main.rs](src/main.rs) | 1252 | CLI (20 mod) + eğitim döngüleri + `Trainer` soyutlaması |
 | [kernels/stonefish.cu](kernels/stonefish.cu) | 389 | CUDA çekirdekleri |
 
-Toplam: **~6.300 satır Rust** + 389 satır CUDA.
+Toplam: **~7.500 satır Rust** + 389 satır CUDA, **0 bağımlılık**.
 
 ---
 
@@ -475,3 +489,28 @@ StonefishAI/
 ```
 
 **Motor ilkeleri:** sıfırdan yazılmış · gradyanları sayısal doğrulanmış · ölçümle karar verilmiş · her hata testle kilitlenmiş · CUDA'sız da çalışır.
+
+---
+
+## 14. Sıfır bağımlılık nasıl çalışıyor
+
+`[dependencies]` boş. GPU'ya erişim tamamen kendi FFI katmanımızla yapılır:
+
+```
+src/sys/mod.rs    LoadLibraryW (Windows) / dlopen (Linux) + GetProcAddress
+                  → fonksiyon işaretçileri tembel (OnceLock) yüklenir
+src/sys/cuda.rs   cuInit, cuCtxCreate, cuMemAlloc/HtoD/DtoH/Memset,
+                  cuModuleLoadData, cuModuleGetFunction, cuLaunchKernel
+src/sys/cublas.rs cublasCreate, cublasSetStream, cublasSgemm,
+                  cublasSgemmStridedBatched
+src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
+```
+
+**Faydaları:**
+
+1. **Derleme zamanında CUDA SDK gerekmez** — import kütüphanesi (`.lib`) yok, `build.rs` yok
+2. **CUDA yoksa zarif düşüş** — `LoadLibraryW` `None` döner, her şey CPU'da çalışır
+3. **Denetlenebilir** — 1.100 satır FFI, 400 satırlık bir crate'in soyutlaması yerine doğrudan API
+4. **Doğrulanmış** — `stonefish_ai test-ffi` alloc + kopyalama + PTX yükleme + çekirdek başlatma + cuBLAS SGEMM'i CPU referansına karşı sınar (ölçülen fark: **0.0**)
+
+Çekirdek argümanları `Kargs` ile hazırlanır: her argüman bir `u64` slota yazılır (cihaz işaretçisi 8 bayt, i32/f32 ilk 4 bayt) ve `cuLaunchKernel`'e o slotların adresleri verilir — tahsis yok, sıfır kopya.

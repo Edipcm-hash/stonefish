@@ -1,15 +1,25 @@
 [package]
 name = "stonefish_ai"
-version = "0.7.0"
+version = "1.0.0"
 edition = "2021"
+description = "From-scratch autograd engine and language-model stack in Rust — zero dependencies"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourname/stonefish"
+keywords = ["llm", "transformer", "autograd", "cuda", "from-scratch"]
+categories = ["science", "algorithms"]
 
 [features]
 # CUDA'sı olmayan makinelerde: cargo test --no-default-features
 default = ["cuda"]
-cuda = ["dep:cudarc"]
+# CUDA erişimi kendi FFI'mizle (src/sys) yapılır — harici crate YOK.
+cuda = []
 
+# ============================================================
+# BAĞIMLILIK YOK.
+# CUDA sürücüsü / cuBLAS / NVRTC çalışma zamanında dinamik yüklenir
+# (src/sys/mod.rs: LoadLibraryW / dlopen).
+# ============================================================
 [dependencies]
-cudarc = { version = "0.19", features = ["cuda-13040", "nvrtc"], optional = true }
 
 [profile.release]
 opt-level = 3

@@ -138,8 +138,8 @@ pub fn run() -> bool {
         // Row-major C(2,3) = A(2,4)·B(4,3); cuBLAS kolon-major olduğu için
         // operandlar yer değiştirir: gemm(m=3, n=2, k=4, lda=3, ldb=4, ldc=3)
         let (m, k, nn) = (2usize, 4usize, 3usize);
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]; // 2x4
-        let b = vec![1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]; // 4x3
+        let a = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]; // 2x4
+        let b = [1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]; // 4x3
         let mut c_cpu = vec![0f32; m * nn];
         for i in 0..m {
             for j in 0..nn {

@@ -1,387 +1,301 @@
 // src/gpu.rs
-// GPU matmul (cuBLAS) + CPU yedeği.
+// GPU matmul — cuBLAS üzerinden, HARİCİ CRATE YOK (kendi FFI'miz, src/sys).
 //
-// `cuda` feature'ı kapalıyken (--no-default-features) her şey CPU'da çalışır;
-// bu, CUDA'sı olmayan makinelerde projenin derlenip test edilebilmesini sağlar.
+// `cuda` feature'ı kapalıyken her şey CPU'da çalışır; bu, CUDA'sı olmayan
+// makinelerde projenin derlenip test edilebilmesini sağlar.
 //
-// Performans notu: bu motor CPU'yu "gerçeğin kaynağı" olarak tutar ve her matmul
-// için CPU→GPU→CPU turu yapar. Bu ancak GEMM büyüdükçe kârlı olur; satır
-// paketleme sayesinde tipik şekil (batch*seq × d_model) olduğundan (ör. 1024×128)
-// transfer maliyeti hesaplamaya göre küçülür. Ölçüm: `test-matmul-bench`.
+// Row-major ↔ kolon-major köprüsü: cuBLAS kolon-major olduğu için
+//   C(m,n) = A·B  ⇒  Cᵀ = Bᵀ·Aᵀ  (operandlar yer değişir)
+// ve transa/transb ile ifade edilir. Böylece transpose malzemeleştirilmez.
 
 use crate::tensor::Matrix;
 
+/// Bu derlemede GPU yolu var mı?
+pub const HAS_CUDA: bool = cfg!(feature = "cuda");
+
 #[cfg(feature = "cuda")]
-mod cuda_impl {
+mod imp {
     use super::Matrix;
-    use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
-    use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use crate::sys::cublas;
+    use crate::sys::dev::{self, DevBuf, DevPtr, Function, Kargs, Module};
+    use std::sync::OnceLock;
 
-    static CTX: OnceLock<Arc<CudaContext>> = OnceLock::new();
-    static BLAS: OnceLock<Mutex<CudaBlas>> = OnceLock::new();
-    /// Aynı boyutlu GEMM çıktıları için geri dönüşüm havuzu.
-    /// Model içinde şekiller az sayıda olduğundan isabet oranı yüksek.
-    static POOL: OnceLock<Mutex<Vec<CudaSlice<f32>>>> = OnceLock::new();
-
-    /// Küresel cuBLAS handle'ı (cihaz GEMM'leri de bunu paylaşır).
-    pub fn blas() -> &'static Mutex<CudaBlas> {
-        let stream = get_ctx().default_stream();
-        BLAS.get_or_init(|| Mutex::new(CudaBlas::new(stream).expect("CudaBlas handle")))
+    /// Row-major GEMM modu (C = op(A)·op(B)).
+    #[derive(Clone, Copy, PartialEq)]
+    pub enum GemmMode {
+        /// C = A·B     (A: m×k, B: k×n)
+        Nn,
+        /// C = A·Bᵀ    (A: m×k, B: n×k)
+        Nt,
+        /// C = Aᵀ·B    (A: k×m, B: k×n)
+        Tn,
     }
 
-    pub fn get_ctx() -> &'static Arc<CudaContext> {
-        CTX.get_or_init(|| CudaContext::new(0).expect("CUDA context açılamadı"))
+    // ---- cuBLAS tutamacı ----
+    struct Blas(cublas::cublasHandle_t);
+    unsafe impl Send for Blas {}
+    unsafe impl Sync for Blas {}
+    static BLAS: OnceLock<Blas> = OnceLock::new();
+
+    fn blas() -> cublas::cublasHandle_t {
+        BLAS.get_or_init(|| unsafe {
+            let mut h: cublas::cublasHandle_t = std::ptr::null_mut();
+            cublas::check(
+                cublas::cublasCreate_v2().expect("cublasCreate")(&mut h),
+                "cublasCreate",
+            );
+            Blas(h)
+        })
+        .0
     }
 
-    fn alloc_pooled(stream: &Arc<CudaStream>, len: usize) -> CudaSlice<f32> {
-        let pool = POOL.get_or_init(|| Mutex::new(Vec::new()));
-        {
-            let mut p = pool.lock().unwrap();
-            if let Some(i) = p.iter().position(|b| b.len() == len) {
-                return p.swap_remove(i);
-            }
-        }
-        stream.alloc_zeros::<f32>(len).expect("GPU alloc")
+    /// Tek (batch'siz) cihaz GEMM'i.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dev_gemm<A, B, C>(
+        c: &mut C,
+        a: &A,
+        b: &B,
+        m: usize,
+        n: usize,
+        k: usize,
+        a_row: usize,
+        b_row: usize,
+        c_row: usize,
+        mode: GemmMode,
+    ) where
+        A: DevPtr,
+        B: DevPtr,
+        C: DevPtr,
+    {
+        dev_gemm_batched(c, a, b, m, n, k, a_row, b_row, c_row, 0, 0, 0, 1, 0.0, mode);
     }
 
-    fn recycle(buf: CudaSlice<f32>) {
-        let pool = POOL.get_or_init(|| Mutex::new(Vec::new()));
-        let mut p = pool.lock().unwrap();
-        // Üst sınır: model başına birkaç farklı şekil var; 16 tampon fazlasıyla
-        // yeter ve belleği (en büyük tampon × 16) ile sınırlar.
-        if p.len() < 16 {
-            p.push(buf);
+    /// Strided-batched cihaz GEMM'i: C_i = op(A_i)·op(B_i).
+    #[allow(clippy::too_many_arguments)]
+    pub fn dev_gemm_batched<A, B, C>(
+        c: &mut C,
+        a: &A,
+        b: &B,
+        m: usize,
+        n: usize,
+        k: usize,
+        a_row: usize,
+        b_row: usize,
+        c_row: usize,
+        a_bstride: usize,
+        b_bstride: usize,
+        c_bstride: usize,
+        batch: usize,
+        beta: f32,
+        mode: GemmMode,
+    ) where
+        A: DevPtr,
+        B: DevPtr,
+        C: DevPtr,
+    {
+        // Kolon-major dünyada operandlar yer değiştirir.
+        let (transa, transb) = match mode {
+            GemmMode::Nn => (cublas::CUBLAS_OP_N, cublas::CUBLAS_OP_N),
+            GemmMode::Nt => (cublas::CUBLAS_OP_T, cublas::CUBLAS_OP_N),
+            GemmMode::Tn => (cublas::CUBLAS_OP_N, cublas::CUBLAS_OP_T),
+        };
+        let alpha = 1.0f32;
+        let h = blas();
+
+        unsafe {
+            if batch <= 1 {
+                cublas::check(
+                    cublas::cublasSgemm_v2().expect("cublasSgemm")(
+                        h,
+                        transa,
+                        transb,
+                        n as i32,
+                        m as i32,
+                        k as i32,
+                        &alpha,
+                        b.dptr() as *const f32,
+                        b_row as i32,
+                        a.dptr() as *const f32,
+                        a_row as i32,
+                        &beta,
+                        c.dptr() as *mut f32,
+                        c_row as i32,
+                    ),
+                    "cublasSgemm",
+                );
+            } else {
+                cublas::check(
+                    cublas::cublasSgemmStridedBatched().expect("cublasSgemmStridedBatched")(
+                        h,
+                        transa,
+                        transb,
+                        n as i32,
+                        m as i32,
+                        k as i32,
+                        &alpha,
+                        b.dptr() as *const f32,
+                        b_row as i32,
+                        b_bstride as i64,
+                        a.dptr() as *const f32,
+                        a_row as i32,
+                        a_bstride as i64,
+                        &beta,
+                        c.dptr() as *mut f32,
+                        c_row as i32,
+                        c_bstride as i64,
+                        batch as i32,
+                    ),
+                    "cublasSgemmStridedBatched",
+                );
+            }
         }
     }
 
-    pub struct GpuMatrix {
-        pub rows: usize,
-        pub cols: usize,
-        pub data: CudaSlice<f32>,
-        pub ctx: Arc<CudaContext>,
-    }
-
-    impl GpuMatrix {
-        pub fn from_cpu(ctx: &Arc<CudaContext>, m: &Matrix) -> Self {
-            let stream = ctx.default_stream();
-            let data = stream.clone_htod(&m.data).expect("CPU->GPU transfer");
-            Self {
-                rows: m.rows,
-                cols: m.cols,
-                data,
-                ctx: ctx.clone(),
-            }
-        }
-
-        pub fn to_cpu(&self) -> Matrix {
-            let stream = self.ctx.default_stream();
-            let data = stream.clone_dtoh(&self.data).expect("GPU->CPU transfer");
-            Matrix::from_vec(self.rows, self.cols, data)
-        }
-
-        /// C = A·B. Row-major girdiler için cuBLAS'ın kolon-major dünyasında
-        /// C^T = B^T·A^T yazımı kullanılır (operandlar yer değiştirir).
-        pub fn matmul(a: &GpuMatrix, b: &GpuMatrix) -> GpuMatrix {
-            assert_eq!(a.cols, b.rows, "matmul boyut");
-            let (m, n, k) = (a.rows, b.cols, a.cols);
-
-            let stream = a.ctx.default_stream();
-            let blas_mutex = BLAS.get_or_init(|| {
-                Mutex::new(CudaBlas::new(stream.clone()).expect("CudaBlas handle"))
-            });
-            let blas = blas_mutex.lock().unwrap();
-
-            let mut c_dev = alloc_pooled(&stream, m * n);
-
-            let cfg = GemmConfig {
-                transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
-                transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
-                m: n as i32,
-                n: m as i32,
-                k: k as i32,
-                alpha: 1.0,
-                beta: 0.0,
-                lda: n as i32,
-                ldb: k as i32,
-                ldc: n as i32,
-            };
-
-            unsafe {
-                blas.gemm(cfg, &b.data, &a.data, &mut c_dev).expect("gemm");
-            }
-
-            GpuMatrix {
-                rows: m,
-                cols: n,
-                data: c_dev,
-                ctx: a.ctx.clone(),
-            }
-        }
-        /// C = A·Bᵀ  (A: m×k, B: n×k → C: m×n)
-        /// Transpose'u malzemeleştirmeden yapar: autograd'ın `dA = dOut·Bᵀ` yolu.
-        pub fn matmul_bt(a: &GpuMatrix, b: &GpuMatrix) -> GpuMatrix {
-            assert_eq!(a.cols, b.cols, "matmul_bt boyut");
-            // a: m×k, b: n×k → C: m×n
-            let (m, n, k) = (a.rows, b.rows, a.cols);
-            let stream = a.ctx.default_stream();
-            let blas_mutex = BLAS.get_or_init(|| {
-                Mutex::new(CudaBlas::new(stream.clone()).expect("CudaBlas handle"))
-            });
-            let blas = blas_mutex.lock().unwrap();
-            let mut c_dev = alloc_pooled(&stream, m * n);
-
-            // Row-major C(m,n) = A(m,k)·B(n,k)ᵀ; kolon-major dünyada
-            // C_c(n,m) = B(n,k)·A(k,m)ᵀ → op(A_c)=Bᵀ (stored k×n), op(B_c)=A (stored k×m).
-            let cfg = GemmConfig {
-                transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
-                transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
-                m: n as i32,
-                n: m as i32,
-                k: k as i32,
-                alpha: 1.0,
-                beta: 0.0,
-                lda: k as i32,
-                ldb: k as i32,
-                ldc: n as i32,
-            };
-            unsafe {
-                blas.gemm(cfg, &b.data, &a.data, &mut c_dev).expect("gemm_bt");
-            }
-            GpuMatrix { rows: m, cols: n, data: c_dev, ctx: a.ctx.clone() }
-        }
-
-        /// C = Aᵀ·B  (A: k×m, B: k×n → C: m×n)
-        /// autograd'ın `dB = Aᵀ·dOut` yolu.
-        pub fn matmul_ta(a: &GpuMatrix, b: &GpuMatrix) -> GpuMatrix {
-            assert_eq!(a.rows, b.rows, "matmul_ta boyut");
-            let (m, n, k) = (a.cols, b.cols, a.rows);
-            let stream = a.ctx.default_stream();
-            let blas_mutex = BLAS.get_or_init(|| {
-                Mutex::new(CudaBlas::new(stream.clone()).expect("CudaBlas handle"))
-            });
-            let blas = blas_mutex.lock().unwrap();
-            let mut c_dev = alloc_pooled(&stream, m * n);
-
-            // Row-major C(m,n) = A(k,m)ᵀ·B(k,n); kolon-major dünyada
-            // C_c(n,m) = B(n,k)ᵀ·A(k,m) → op(A_c)=B (stored n×k), op(B_c)=Aᵀ.
-            let cfg = GemmConfig {
-                transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
-                transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
-                m: n as i32,
-                n: m as i32,
-                k: k as i32,
-                alpha: 1.0,
-                beta: 0.0,
-                lda: n as i32,
-                ldb: m as i32,
-                ldc: n as i32,
-            };
-            unsafe {
-                blas.gemm(cfg, &b.data, &a.data, &mut c_dev).expect("gemm_ta");
-            }
-            GpuMatrix { rows: m, cols: n, data: c_dev, ctx: a.ctx.clone() }
-        }
-    }
+    /// CPU'daki iki matrisi GPU'da çarp (basit yol).
     pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
-        let prof = crate::profile::enabled();
-        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
-        let mut transfer = 0u64;
-
-        let ctx = get_ctx();
-        let t_up0 = std::time::Instant::now();
-        let a_gpu = GpuMatrix::from_cpu(ctx, a);
-        let b_gpu = GpuMatrix::from_cpu(ctx, b);
-        if prof {
-            transfer += t_up0.elapsed().as_nanos() as u64;
-        }
-
-        let c_gpu = GpuMatrix::matmul(&a_gpu, &b_gpu);
-
-        let stream = ctx.default_stream();
-        let t_down0 = std::time::Instant::now();
-        let out = stream
-            .clone_dtoh(&c_gpu.data)
-            .expect("GPU->CPU transfer");
-        if prof {
-            transfer += t_down0.elapsed().as_nanos() as u64;
-        }
-
-        let (rows, cols) = (c_gpu.rows, c_gpu.cols);
-        let GpuMatrix { data, .. } = c_gpu;
-        recycle(data);
-
-        if let Some(t0) = t0 {
-            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer);
-        }
-        Matrix::from_vec(rows, cols, out)
+        let mut c = DevBuf::zeros(a.rows * b.cols);
+        let da = DevBuf::from_host(&a.data);
+        let db = DevBuf::from_host(&b.data);
+        dev_gemm(
+            &mut c,
+            &da,
+            &db,
+            a.rows,
+            b.cols,
+            a.cols,
+            a.cols,
+            b.cols,
+            b.cols,
+            GemmMode::Nn,
+        );
+        let out = c.to_host();
+        Matrix::from_vec(a.rows, b.cols, out)
     }
-    /// C = A·Bᵀ. Transpose malzemeleştirmeden (cuBLAS `transa`).
+
+    /// C = A·Bᵀ (transpose malzemeleştirmeden).
     pub fn matmul_bt_gpu(a: &Matrix, b: &Matrix) -> Matrix {
-        let prof = crate::profile::enabled();
-        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
-        let ctx = get_ctx();
-        let t_up = std::time::Instant::now();
-        let a_gpu = GpuMatrix::from_cpu(ctx, a);
-        let b_gpu = GpuMatrix::from_cpu(ctx, b);
-        let up_ns = t_up.elapsed().as_nanos() as u64;
-        let c_gpu = GpuMatrix::matmul_bt(&a_gpu, &b_gpu);
-        let t_down = std::time::Instant::now();
-        let out = ctx
-            .default_stream()
-            .clone_dtoh(&c_gpu.data)
-            .expect("GPU->CPU transfer");
-        let transfer = up_ns + t_down.elapsed().as_nanos() as u64;
-        let (rows, cols) = (c_gpu.rows, c_gpu.cols);
-        let GpuMatrix { data, .. } = c_gpu;
-        recycle(data);
-        if let Some(t0) = t0 {
-            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer);
-        }
-        Matrix::from_vec(rows, cols, out)
+        let mut c = DevBuf::zeros(a.rows * b.rows);
+        let da = DevBuf::from_host(&a.data);
+        let db = DevBuf::from_host(&b.data);
+        dev_gemm(
+            &mut c,
+            &da,
+            &db,
+            a.rows,
+            b.rows,
+            a.cols,
+            a.cols,
+            b.cols,
+            b.rows,
+            GemmMode::Nt,
+        );
+        Matrix::from_vec(a.rows, b.rows, c.to_host())
     }
 
-    /// C = Aᵀ·B. Transpose malzemeleştirmeden (cuBLAS `transb`).
+    /// C = Aᵀ·B (transpose malzemeleştirmeden).
     pub fn matmul_ta_gpu(a: &Matrix, b: &Matrix) -> Matrix {
-        let prof = crate::profile::enabled();
-        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
-        let ctx = get_ctx();
-        let t_up = std::time::Instant::now();
-        let a_gpu = GpuMatrix::from_cpu(ctx, a);
-        let b_gpu = GpuMatrix::from_cpu(ctx, b);
-        let up_ns = t_up.elapsed().as_nanos() as u64;
-        let c_gpu = GpuMatrix::matmul_ta(&a_gpu, &b_gpu);
-        let t_down = std::time::Instant::now();
-        let out = ctx
-            .default_stream()
-            .clone_dtoh(&c_gpu.data)
-            .expect("GPU->CPU transfer");
-        let transfer = up_ns + t_down.elapsed().as_nanos() as u64;
-        let (rows, cols) = (c_gpu.rows, c_gpu.cols);
-        let GpuMatrix { data, .. } = c_gpu;
-        recycle(data);
-        if let Some(t0) = t0 {
-            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer);
+        let mut c = DevBuf::zeros(a.cols * b.cols);
+        let da = DevBuf::from_host(&a.data);
+        let db = DevBuf::from_host(&b.data);
+        // Tn: A (k×m) gibi davranır → m = a.cols, n = b.cols, k = a.rows
+        dev_gemm(
+            &mut c,
+            &da,
+            &db,
+            a.cols,
+            b.cols,
+            a.rows,
+            a.cols,
+            b.cols,
+            b.cols,
+            GemmMode::Tn,
+        );
+        Matrix::from_vec(a.cols, b.cols, c.to_host())
+    }
+
+    // ---- CUDA çekirdek modülü (NVRTC ile çalışma zamanında) ----
+
+    static MODULE: OnceLock<Module> = OnceLock::new();
+
+    fn module() -> &'static Module {
+        MODULE.get_or_init(|| {
+            let src = crate::gpu_kernels::SRC;
+            let ptx = compile_cached(src);
+            Module::from_ptx(&ptx).unwrap_or_else(|e| panic!("GPU modülü yüklenemedi: {e}"))
+        })
+    }
+
+    /// Çekirdek fonksiyonunu al (paniklersiz).
+    pub fn kernel(name: &str) -> Function {
+        module()
+            .func(name)
+            .unwrap_or_else(|e| panic!("çekirdek yüklenemedi: {name}: {e}"))
+    }
+
+    fn compile_cached(src: &str) -> String {
+        use crate::sys::nvrtc;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let (maj, min) = dev::compute_capability();
+        let arch: &'static str = match (maj, min) {
+            (12, _) => "compute_120",
+            (10, _) => "compute_100",
+            (9, _) => "compute_90",
+            (8, 9) => "compute_89",
+            (8, 6) => "compute_86",
+            (8, 0) => "compute_80",
+            _ => "compute_90",
+        };
+
+        let mut h = DefaultHasher::new();
+        src.hash(&mut h);
+        arch.hash(&mut h);
+        crate::VERSION.hash(&mut h);
+        let key = format!("{:016x}", h.finish());
+
+        let dir = std::path::Path::new("target").join("gpu-cache");
+        let path = dir.join(format!("kernels-{key}.ptx"));
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            return s;
         }
-        Matrix::from_vec(rows, cols, out)
+
+        let opt = format!("--gpu-architecture={arch}");
+        let ptx = nvrtc::compile(src, &[&opt, "--fmad=true", "--use_fast_math"])
+            .unwrap_or_else(|e| panic!("CUDA çekirdekleri derlenemedi (NVRTC): {e}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&path, &ptx);
+        ptx
+    }
+
+    /// 1D grid: 256 thread/blok.
+    pub fn cfg_1d(n: usize) -> ((u32, u32, u32), (u32, u32, u32)) {
+        let threads = 256u32;
+        let blocks = ((n as u64).div_ceil(threads as u64)).max(1) as u32;
+        ((blocks, 1, 1), (threads, 1, 1))
+    }
+
+    /// Satır başına bir blok.
+    pub fn cfg_rows(rows: usize, threads: u32) -> ((u32, u32, u32), (u32, u32, u32)) {
+        ((rows as u32, 1, 1), (threads, 1, 1))
+    }
+
+    /// Çekirdek başlatma kısayolu.
+    pub fn launch(name: &str, grid: ((u32, u32, u32), (u32, u32, u32)), shared: u32, args: &mut Kargs) {
+        dev::launch(kernel(name), grid.0, grid.1, shared, args);
     }
 }
 
 #[cfg(feature = "cuda")]
-pub use cuda_impl::{get_ctx, matmul_bt_gpu, matmul_gpu, matmul_ta_gpu, GpuMatrix};
-
-// ============================================================
-// Cihaz-üstü (transfer yapmayan) GEMM'ler
-// ============================================================
-// Bunlar GPT eğitim döngüsünün omurgası: tüm ara sonuçlar cihazda kalır.
-// Şekiller row-major; "row stride" satırlar arası mesafe (view'lar için
-// genişlikten büyük olabilir), "bstride" batch'ler arası mesafe.
-
-/// Row-major GEMM modu (C = op(A)·op(B)).
-#[cfg(feature = "cuda")]
-#[derive(Clone, Copy, PartialEq)]
-pub enum GemmMode {
-    /// C = A·B     (A: m×k, B: k×n)
-    Nn,
-    /// C = A·Bᵀ    (A: m×k, B: n×k)
-    Nt,
-    /// C = Aᵀ·B    (A: k×m, B: k×n)
-    Tn,
-}
-
-/// Tek (batch'siz) cihaz GEMM'i.
-#[cfg(feature = "cuda")]
-#[allow(clippy::too_many_arguments)]
-pub fn dev_gemm<A, B, C>(
-    c: &mut C,
-    a: &A,
-    b: &B,
-    m: usize,
-    n: usize,
-    k: usize,
-    a_row: usize,
-    b_row: usize,
-    c_row: usize,
-    mode: GemmMode,
-) where
-    A: cudarc::driver::DevicePtr<f32>,
-    B: cudarc::driver::DevicePtr<f32>,
-    C: cudarc::driver::DevicePtrMut<f32>,
-{
-    dev_gemm_batched(c, a, b, m, n, k, a_row, b_row, c_row, 0, 0, 0, 1, 0.0, mode);
-}
-
-/// Strided-batched cihaz GEMM'i: C_i = op(A_i)·op(B_i).
-#[cfg(feature = "cuda")]
-#[allow(clippy::too_many_arguments)]
-pub fn dev_gemm_batched<A, B, C>(
-    c: &mut C,
-    a: &A,
-    b: &B,
-    m: usize,
-    n: usize,
-    k: usize,
-    a_row: usize,
-    b_row: usize,
-    c_row: usize,
-    a_bstride: usize,
-    b_bstride: usize,
-    c_bstride: usize,
-    batch: usize,
-    beta: f32,
-    mode: GemmMode,
-) where
-    A: cudarc::driver::DevicePtr<f32>,
-    B: cudarc::driver::DevicePtr<f32>,
-    C: cudarc::driver::DevicePtrMut<f32>,
-{
-    use cudarc::cublas::{Gemm, GemmConfig, StridedBatchedConfig};
-    use cudarc::cublas::sys::cublasOperation_t as Ops;
-
-    let ctx = get_ctx();
-    let stream = ctx.default_stream();
-    let blas_mutex = cuda_impl::blas();
-    let blas = blas_mutex.lock().unwrap();
-
-    // Kolon-major dünyada C(m,n) = op(A)·op(B) yazımı:
-    //   Cᵀ(n,m) = op(B)ᵀ · op(A)ᵀ  → operandlar yer değiştirir.
-    let (transa, transb) = match mode {
-        GemmMode::Nn => (Ops::CUBLAS_OP_N, Ops::CUBLAS_OP_N),
-        GemmMode::Nt => (Ops::CUBLAS_OP_T, Ops::CUBLAS_OP_N),
-        GemmMode::Tn => (Ops::CUBLAS_OP_N, Ops::CUBLAS_OP_T),
-    };
-    let cfg = StridedBatchedConfig {
-        gemm: GemmConfig {
-            transa,
-            transb,
-            m: n as i32,
-            n: m as i32,
-            k: k as i32,
-            alpha: 1.0,
-            lda: b_row as i32,
-            ldb: a_row as i32,
-            beta,
-            ldc: c_row as i32,
-        },
-        batch_size: batch as i32,
-        stride_a: b_bstride as i64,
-        stride_b: a_bstride as i64,
-        stride_c: c_bstride as i64,
-    };
-    unsafe { blas.gemm_strided_batched(cfg, b, a, c) }.expect("dev_gemm_batched");
-    let _ = stream;
-}
+pub use imp::{
+    cfg_1d, cfg_rows, dev_gemm, dev_gemm_batched, kernel, launch, matmul_bt_gpu, matmul_gpu,
+    matmul_ta_gpu, GemmMode,
+};
 
 /// CUDA kapalıyken: aynı arayüz, CPU yolu.
 #[cfg(not(feature = "cuda"))]
 pub fn matmul_gpu(a: &Matrix, b: &Matrix) -> Matrix {
-    let prof = crate::profile::enabled();
-    let t0 = if prof { Some(std::time::Instant::now()) } else { None };
-    let out = a.matmul(b);
-    if let Some(t0) = t0 {
-        crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, 0);
-    }
-    out
+    a.matmul(b)
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -393,6 +307,3 @@ pub fn matmul_bt_gpu(a: &Matrix, b: &Matrix) -> Matrix {
 pub fn matmul_ta_gpu(a: &Matrix, b: &Matrix) -> Matrix {
     a.transpose().matmul(b)
 }
-
-/// Bu derlemede GPU yolu var mı?
-pub const HAS_CUDA: bool = cfg!(feature = "cuda");

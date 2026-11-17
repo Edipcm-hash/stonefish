@@ -112,12 +112,17 @@ pub fn library(names: &[&str]) -> Option<*mut c_void> {
 /// Kütüphaneden fonksiyon işaretçisi al.
 ///
 /// # Safety
-/// Dönen işaretçi çağıranın bildirdiği imzayla uyumlu olmalıdır.
+/// Dönen işaretçi çağıranın bildirdiği imzayla uyumlu olmalıdır; yanlış
+/// imzayla çağırmak tanımsız davranışa yol açar.
 pub unsafe fn symbol(module: *mut c_void, name: &str) -> Option<*mut c_void> {
     loader::sym(module, name)
 }
 
 /// Fonksiyon işaretçisini tipli bir `fn`'e dönüştür.
+///
+/// # Safety
+/// `T`, `p`'nin gerçekte işaret ettiği fonksiyon imzasıyla birebir aynı
+/// olmalıdır. Aksi hâlde çağrı tanımsız davranışa yol açar.
 pub unsafe fn cast<T: Copy>(p: *mut c_void) -> T {
     debug_assert_eq!(
         std::mem::size_of::<T>(),
@@ -187,5 +192,6 @@ pub const NVRTC_MODULES: &[&str] = &["nvrtc64_130_0.dll", "nvrtc64_120_0.dll", "
 
 pub mod cublas;
 pub mod cuda;
+pub mod dev;
 pub mod nvrtc;
 pub mod selftest;

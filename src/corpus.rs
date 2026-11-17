@@ -70,7 +70,7 @@ impl TokenDataset {
         self.file.seek(SeekFrom::Start(start * 2))?;
         let mut bytes = vec![0u8; take * 2];
         self.file.read_exact(&mut bytes)?;
-        for (i, c) in bytes.chunks_exact(2).enumerate() {
+        for (i, c) in bytes.chunks(2).enumerate() {
             self.buf[i] = u16::from_le_bytes([c[0], c[1]]);
         }
         self.buf_start = start;
@@ -100,7 +100,7 @@ impl TokenDataset {
         assert_eq!(x.len(), seq_len);
         assert_eq!(y.len(), seq_len);
         assert!(
-            start + seq_len as u64 + 1 <= self.n_tokens,
+            start + (seq_len as u64 + 1) <= self.n_tokens,
             "pencere korpusu aşıyor"
         );
         self.read(start, x)?;

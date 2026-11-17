@@ -50,6 +50,7 @@ cuda_fn!(
 cuda_fn!(cuCtxCreate_v2, unsafe extern "system" fn(*mut CUcontext, u32, CUdevice) -> CUresult);
 cuda_fn!(cuCtxDestroy_v2, unsafe extern "system" fn(CUcontext) -> CUresult);
 cuda_fn!(cuCtxSynchronize, unsafe extern "system" fn() -> CUresult);
+cuda_fn!(cuCtxSetCurrent, unsafe extern "system" fn(CUcontext) -> CUresult);
 
 // ---- Bellek ----
 cuda_fn!(

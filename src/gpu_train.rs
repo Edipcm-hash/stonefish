@@ -23,34 +23,28 @@
 use crate::gpu::{self, GemmMode};
 use crate::gpu_kernels as k;
 use crate::transformer::{GptConfig, GPT};
-use cudarc::driver::{CudaSlice, CudaStream};
-use std::sync::Arc;
+use crate::sys::dev::{DevBuf, DevBufI32, DevPtr};
 
 const LN_EPS: f32 = 1e-5;
 
-fn stream() -> Arc<CudaStream> {
-    gpu::get_ctx().default_stream()
+
+
+fn alloc(n: usize) -> DevBuf {
+    DevBuf::zeros(n)
 }
 
-fn alloc(n: usize) -> CudaSlice<f32> {
-    stream().alloc_zeros::<f32>(n.max(1)).unwrap()
+
+
+fn upload(v: &[f32]) -> DevBuf {
+    DevBuf::from_host(v)
 }
 
-#[allow(dead_code)]
-fn alloc_i32(n: usize) -> CudaSlice<i32> {
-    stream().alloc_zeros::<i32>(n.max(1)).unwrap()
+fn upload_i32(v: &[i32]) -> DevBufI32 {
+    DevBufI32::from_host(v)
 }
 
-fn upload(v: &[f32]) -> CudaSlice<f32> {
-    stream().clone_htod(v).unwrap()
-}
-
-fn upload_i32(v: &[i32]) -> CudaSlice<i32> {
-    stream().clone_htod(v).unwrap()
-}
-
-fn dtod(dst: &mut CudaSlice<f32>, src: &CudaSlice<f32>) {
-    stream().memcpy_dtod(src, dst).unwrap();
+fn dtod(dst: &mut DevBuf, src: &impl DevPtr) {
+    dst.copy_from_ptr(src);
 }
 
 // ============================================================
@@ -58,10 +52,10 @@ fn dtod(dst: &mut CudaSlice<f32>, src: &CudaSlice<f32>) {
 // ============================================================
 
 pub struct Param {
-    pub data: CudaSlice<f32>,
-    pub grad: CudaSlice<f32>,
-    m: CudaSlice<f32>,
-    v: CudaSlice<f32>,
+    pub data: DevBuf,
+    pub grad: DevBuf,
+    m: DevBuf,
+    v: DevBuf,
     pub rows: usize,
     pub cols: usize,
     pub name: &'static str,
@@ -88,7 +82,7 @@ impl Param {
 
     fn zero_grad(&mut self) {
         let n = self.n();
-        k::zero_fill(&mut self.grad, n);
+        k::zero_fill(&self.grad, n);
     }
 
     fn adam(&mut self, lr: f32, t: usize) {
@@ -97,10 +91,10 @@ impl Param {
         let bc1 = 1.0 - b1.powi(t as i32);
         let bc2 = 1.0 - b2.powi(t as i32);
         k::adam_step(
-            &mut self.data,
+            &self.data,
             &self.grad,
-            &mut self.m,
-            &mut self.v,
+            &self.m,
+            &self.v,
             lr,
             b1,
             b2,
@@ -112,11 +106,11 @@ impl Param {
     }
 
     pub fn download(&self) -> Vec<f32> {
-        stream().clone_dtoh(&self.data).unwrap()
+        self.data.to_host()
     }
 
     pub fn download_grad(&self) -> Vec<f32> {
-        stream().clone_dtoh(&self.grad).unwrap()
+        self.grad.to_host()
     }
 }
 
@@ -141,23 +135,23 @@ struct GpuBlock {
 
 /// Katman başına geri yayılım için saklanan ara sonuçlar.
 struct Acts {
-    ln1: CudaSlice<f32>,
-    xhat1: CudaSlice<f32>,
-    inv1: CudaSlice<f32>,
-    q: CudaSlice<f32>,
-    k: CudaSlice<f32>,
-    v: CudaSlice<f32>,
-    w: CudaSlice<f32>,
-    attn: CudaSlice<f32>,
-    res1: CudaSlice<f32>,
-    ln2: CudaSlice<f32>,
-    xhat2: CudaSlice<f32>,
-    inv2: CudaSlice<f32>,
-    ff1: CudaSlice<f32>,
-    gelu: CudaSlice<f32>,
-    dq: CudaSlice<f32>,
-    dk: CudaSlice<f32>,
-    dv: CudaSlice<f32>,
+    ln1: DevBuf,
+    xhat1: DevBuf,
+    inv1: DevBuf,
+    q: DevBuf,
+    k: DevBuf,
+    v: DevBuf,
+    w: DevBuf,
+    attn: DevBuf,
+    res1: DevBuf,
+    ln2: DevBuf,
+    xhat2: DevBuf,
+    inv2: DevBuf,
+    ff1: DevBuf,
+    gelu: DevBuf,
+    dq: DevBuf,
+    dk: DevBuf,
+    dv: DevBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -203,27 +197,27 @@ pub struct GpuGpt {
     head_b: Param,
 
     acts: Vec<Acts>,
-    h: Vec<CudaSlice<f32>>,
-    dh: Vec<CudaSlice<f32>>,
+    h: Vec<DevBuf>,
+    dh: Vec<DevBuf>,
 
-    lnf_out: CudaSlice<f32>,
-    xhat_f: CudaSlice<f32>,
-    inv_f: CudaSlice<f32>,
-    logits: CudaSlice<f32>,
-    probs: CudaSlice<f32>,
-    dlogits: CudaSlice<f32>,
-    dlnf: CudaSlice<f32>,
-    loss: CudaSlice<f32>,
+    lnf_out: DevBuf,
+    xhat_f: DevBuf,
+    inv_f: DevBuf,
+    logits: DevBuf,
+    probs: DevBuf,
+    dlogits: DevBuf,
+    dlnf: DevBuf,
+    loss: DevBuf,
 
-    tmp_a: CudaSlice<f32>,
-    tmp_b: CudaSlice<f32>,
-    tmp_c: CudaSlice<f32>,
-    tmp_fa: CudaSlice<f32>,
-    tmp_fb: CudaSlice<f32>,
+    tmp_a: DevBuf,
+    tmp_b: DevBuf,
+    tmp_c: DevBuf,
+    tmp_fa: DevBuf,
+    tmp_fb: DevBuf,
     /// İleri geçişte attention skorları, geri geçişte dW için yeniden kullanılır.
-    scores: CudaSlice<f32>,
-    dscores: CudaSlice<f32>,
-    ones: CudaSlice<f32>,
+    scores: DevBuf,
+    dscores: DevBuf,
+    ones: DevBuf,
 
     pub adam_t: usize,
 }
@@ -286,8 +280,8 @@ impl GpuGpt {
             })
             .collect();
 
-        let h: Vec<CudaSlice<f32>> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
-        let dh: Vec<CudaSlice<f32>> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
+        let h: Vec<DevBuf> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
+        let dh: Vec<DevBuf> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
         let acts: Vec<Acts> = (0..cfg.n_layers)
             .map(|_| Acts {
                 ln1: alloc(bs * d),
@@ -371,8 +365,8 @@ impl GpuGpt {
             })
             .collect();
 
-        let h: Vec<CudaSlice<f32>> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
-        let dh: Vec<CudaSlice<f32>> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
+        let h: Vec<DevBuf> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
+        let dh: Vec<DevBuf> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
         let acts: Vec<Acts> = (0..cfg.n_layers)
             .map(|_| Acts {
                 ln1: alloc(bs * d),
@@ -474,17 +468,17 @@ impl GpuGpt {
         self.adam_t += 1;
         let t = self.adam_t;
 
-        let mut acc = alloc(1);
+        let acc = alloc(1);
         for p in self.params_mut() {
             let n = p.n();
-            k::sum_squares(&mut acc, &p.grad, n);
+            k::sum_squares(&acc, &p.grad, n);
         }
-        let norm = stream().clone_dtoh(&acc).unwrap()[0].sqrt();
+        let norm = acc.to_host()[0].sqrt();
         if clip > 0.0 && norm > clip {
             let s = clip / norm;
             for p in self.params_mut() {
                 let n = p.n();
-                k::scale_inplace(&mut p.grad, n, s);
+                k::scale_inplace(&p.grad, n, s);
             }
         }
         for p in self.params_mut() {
@@ -502,7 +496,7 @@ impl GpuGpt {
         let tgt_dev = upload_i32(targets);
 
         k::embedding_forward(
-            &mut self.h[0],
+            &self.h[0],
             &ids_dev,
             &self.tok_emb.data,
             &self.pos_emb.data,
@@ -514,9 +508,9 @@ impl GpuGpt {
             self.block_forward(l, &dm);
         }
         k::layernorm_forward(
-            &mut self.lnf_out,
-            &mut self.xhat_f,
-            &mut self.inv_f,
+            &self.lnf_out,
+            &self.xhat_f,
+            &self.inv_f,
             &self.h[self.cfg.n_layers],
             &self.lnf_g.data,
             &self.lnf_b.data,
@@ -536,17 +530,17 @@ impl GpuGpt {
             dm.v,
             GemmMode::Nn,
         );
-        k::add_bias_inplace(&mut self.logits, &self.head_b.data, dm.bs(), dm.v);
-        k::zero_fill(&mut self.loss, 1);
+        k::add_bias_inplace(&self.logits, &self.head_b.data, dm.bs(), dm.v);
+        k::zero_fill(&self.loss, 1);
         k::ce_forward(
-            &mut self.loss,
-            &mut self.probs,
+            &self.loss,
+            &self.probs,
             &self.logits,
             &tgt_dev,
             dm.bs(),
             dm.v,
         );
-        stream().clone_dtoh(&self.loss).unwrap()[0]
+        self.loss.to_host()[0]
     }
 
     /// Yalnız ileri geçiş: son satırın logitlerini döndürür (üretim yolu).
@@ -564,7 +558,7 @@ impl GpuGpt {
         let ids_dev = upload_i32(ids);
 
         k::embedding_forward(
-            &mut self.h[0],
+            &self.h[0],
             &ids_dev,
             &self.tok_emb.data,
             &self.pos_emb.data,
@@ -576,9 +570,9 @@ impl GpuGpt {
             self.block_forward(l, &dm);
         }
         k::layernorm_forward(
-            &mut self.lnf_out,
-            &mut self.xhat_f,
-            &mut self.inv_f,
+            &self.lnf_out,
+            &self.xhat_f,
+            &self.inv_f,
             &self.h[self.cfg.n_layers],
             &self.lnf_g.data,
             &self.lnf_b.data,
@@ -598,10 +592,10 @@ impl GpuGpt {
             dm.v,
             GemmMode::Nn,
         );
-        k::add_bias_inplace(&mut self.logits, &self.head_b.data, dm.bs(), dm.v);
+        k::add_bias_inplace(&self.logits, &self.head_b.data, dm.bs(), dm.v);
 
         // istenen satırın logitleri
-        let all = stream().clone_dtoh(&self.logits).unwrap();
+        let all = self.logits.to_host();
         let last = row * dm.v;
         all[last..last + dm.v].to_vec()
     }
@@ -718,12 +712,12 @@ impl GpuGpt {
             let mut bytes = vec![0u8; rows * cols * 4];
             r.read_exact(&mut bytes)?;
             let host: Vec<f32> = bytes
-                .chunks_exact(4)
+                .chunks(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             p.data = upload(&host);
             let n = p.n();
-            k::zero_fill(&mut p.grad, n);
+            k::zero_fill(&p.grad, n);
         }
         self.adam_t = adam_t;
         Ok(adam_t)
@@ -759,7 +753,7 @@ impl GpuGpt {
 
         // ---- ileri ----
         k::embedding_forward(
-            &mut self.h[0],
+            &self.h[0],
             &ids_dev,
             &self.tok_emb.data,
             &self.pos_emb.data,
@@ -772,9 +766,9 @@ impl GpuGpt {
         }
 
         k::layernorm_forward(
-            &mut self.lnf_out,
-            &mut self.xhat_f,
-            &mut self.inv_f,
+            &self.lnf_out,
+            &self.xhat_f,
+            &self.inv_f,
             &self.h[self.cfg.n_layers],
             &self.lnf_g.data,
             &self.lnf_b.data,
@@ -794,20 +788,20 @@ impl GpuGpt {
             dm.v,
             GemmMode::Nn,
         );
-        k::add_bias_inplace(&mut self.logits, &self.head_b.data, dm.bs(), dm.v);
-        k::zero_fill(&mut self.loss, 1);
+        k::add_bias_inplace(&self.logits, &self.head_b.data, dm.bs(), dm.v);
+        k::zero_fill(&self.loss, 1);
         k::ce_forward(
-            &mut self.loss,
-            &mut self.probs,
+            &self.loss,
+            &self.probs,
             &self.logits,
             &tgt_dev,
             dm.bs(),
             dm.v,
         );
-        let loss = stream().clone_dtoh(&self.loss).unwrap()[0];
+        let loss = self.loss.to_host()[0];
 
         // ---- geri ----
-        k::ce_backward(&mut self.dlogits, &self.probs, &tgt_dev, dm.bs(), dm.v, loss_scale);
+        k::ce_backward(&self.dlogits, &self.probs, &tgt_dev, dm.bs(), dm.v, loss_scale);
 
         gpu::dev_gemm(
             &mut self.head_w.grad,
@@ -848,10 +842,10 @@ impl GpuGpt {
         );
 
         {
-            let mut g = alloc(dm.d);
-            let mut b = alloc(dm.d);
+            let g = alloc(dm.d);
+            let b = alloc(dm.d);
             k::layernorm_backward(
-                &mut self.dh[self.cfg.n_layers],
+                &self.dh[self.cfg.n_layers],
                 &self.dlnf,
                 &self.xhat_f,
                 &self.inv_f,
@@ -859,9 +853,9 @@ impl GpuGpt {
                 dm.bs(),
                 dm.d,
             );
-            k::layernorm_param_grad(&mut g, &mut b, &self.dlnf, &self.xhat_f, dm.bs(), dm.d);
-            k::add_inplace(&mut self.lnf_g.grad, &g, dm.d);
-            k::add_inplace(&mut self.lnf_b.grad, &b, dm.d);
+            k::layernorm_param_grad(&g, &b, &self.dlnf, &self.xhat_f, dm.bs(), dm.d);
+            k::add_inplace(&self.lnf_g.grad, &g, dm.d);
+            k::add_inplace(&self.lnf_b.grad, &b, dm.d);
         }
 
         for l in (0..self.cfg.n_layers).rev() {
@@ -869,8 +863,8 @@ impl GpuGpt {
         }
 
         k::embedding_backward(
-            &mut self.tok_emb.grad,
-            &mut self.pos_emb.grad,
+            &self.tok_emb.grad,
+            &self.pos_emb.grad,
             &self.dh[0],
             &ids_dev,
             dm.bs(),
@@ -910,9 +904,9 @@ impl GpuGpt {
 
         // LN1
         k::layernorm_forward(
-            &mut a.ln1,
-            &mut a.xhat1,
-            &mut a.inv1,
+            &a.ln1,
+            &a.xhat1,
+            &a.inv1,
             x_in,
             &blk.ln1_g.data,
             &blk.ln1_b.data,
@@ -950,7 +944,7 @@ impl GpuGpt {
                 GemmMode::Nt,
             );
         }
-        k::masked_softmax_forward(&mut a.w, scores, dm.b, nh, s, scale);
+        k::masked_softmax_forward(&a.w, scores, dm.b, nh, s, scale);
 
         // attn = W·V
         for hh in 0..nh {
@@ -982,13 +976,13 @@ impl GpuGpt {
 
         // res1 = x + proj
         dtod(&mut a.res1, x_in);
-        k::add_inplace(&mut a.res1, tmp_a, bs * d);
+        k::add_inplace(&a.res1, tmp_a, bs * d);
 
         // LN2
         k::layernorm_forward(
-            &mut a.ln2,
-            &mut a.xhat2,
-            &mut a.inv2,
+            &a.ln2,
+            &a.xhat2,
+            &a.inv2,
             &a.res1,
             &blk.ln2_g.data,
             &blk.ln2_b.data,
@@ -1001,7 +995,7 @@ impl GpuGpt {
         gpu::dev_gemm(&mut *tmp_fa, &a.ln2, &blk.ff1_w.data, bs, f, d, d, f, f, GemmMode::Nn);
         k::add_bias_inplace(tmp_fa, &blk.ff1_b.data, bs, f);
         dtod(&mut a.ff1, tmp_fa);
-        k::gelu_forward(&mut a.gelu, &a.ff1, bs * f);
+        k::gelu_forward(&a.gelu, &a.ff1, bs * f);
 
         gpu::dev_gemm(&mut *tmp_fb, &a.gelu, &blk.ff2_w.data, bs, d, f, f, d, d, GemmMode::Nn);
         k::add_bias_inplace(tmp_fb, &blk.ff2_b.data, bs, d);
@@ -1038,7 +1032,7 @@ impl GpuGpt {
         let a = &mut acts[l];
         let blk = &mut blocks[l];
         let (dh_lo, dh_hi) = dh_vec.split_at_mut(l + 1);
-        let dout = dh_hi[0].clone();
+        let dout = dh_hi[0].full();
 
         // --- ff2 ---
         // dgelu = dOut·ff2_wᵀ  (BS,F)
@@ -1128,24 +1122,16 @@ impl GpuGpt {
         // --- LN2 geri ---
         k::layernorm_backward(tmp_c, tmp_b, &a.xhat2, &a.inv2, &blk.ln2_g.data, bs, d);
         {
-            let mut g = alloc(d);
-            let mut b = alloc(d);
-            k::layernorm_param_grad(&mut g, &mut b, tmp_b, &a.xhat2, bs, d);
-            k::add_inplace(&mut blk.ln2_g.grad, &g, d);
-            k::add_inplace(&mut blk.ln2_b.grad, &b, d);
+            let g = alloc(d);
+            let b = alloc(d);
+            k::layernorm_param_grad(&g, &b, tmp_b, &a.xhat2, bs, d);
+            k::add_inplace(&blk.ln2_g.grad, &g, d);
+            k::add_inplace(&blk.ln2_b.grad, &b, d);
         }
 
         // dh[l] = dOut (residual) + dx_ln2
         dtod(&mut dh_lo[l], &dout);
-        k::add_inplace(&mut dh_lo[l], tmp_c, bs * d);
-
-        // TEŞHİS
-        if std::env::var("SFISH_DBG").is_ok() && l == 1 {
-            let da = stream().clone_dtoh(&dout).unwrap();
-            let at = stream().clone_dtoh(&a.attn).unwrap();
-            println!("  [dbg] dOut[0..4]={:?}", &da[0..4]);
-            println!("  [dbg] attn[0..4]={:?}", &at[0..4]);
-        }
+        k::add_inplace(&dh_lo[l], tmp_c, bs * d);
 
         // --- attention çıkış projeksiyonu ---
         // ÖNEMLİ: bu noktada dh[l] = dOut + dx_ln2'dir; attention dalının
@@ -1178,11 +1164,6 @@ impl GpuGpt {
             GemmMode::Tn,
         );
 
-        // TEŞHİS
-        if std::env::var("SFISH_DBG").is_ok() && l == 1 {
-            let g = stream().clone_dtoh(&blk.wo.grad).unwrap();
-            println!("  [dbg] dWo[0..4]={:?}", &g[0..4]);
-        }
 
         // --- attention geri ---
         // dV = Wᵀ·dAttn
@@ -1373,13 +1354,13 @@ impl GpuGpt {
         // --- LN1 geri ---
         k::layernorm_backward(tmp_c, tmp_b, &a.xhat1, &a.inv1, &blk.ln1_g.data, bs, d);
         {
-            let mut g = alloc(d);
-            let mut b = alloc(d);
-            k::layernorm_param_grad(&mut g, &mut b, tmp_b, &a.xhat1, bs, d);
-            k::add_inplace(&mut blk.ln1_g.grad, &g, d);
-            k::add_inplace(&mut blk.ln1_b.grad, &b, d);
+            let g = alloc(d);
+            let b = alloc(d);
+            k::layernorm_param_grad(&g, &b, tmp_b, &a.xhat1, bs, d);
+            k::add_inplace(&blk.ln1_g.grad, &g, d);
+            k::add_inplace(&blk.ln1_b.grad, &b, d);
         }
-        k::add_inplace(&mut dh_lo[l], tmp_c, bs * d);
+        k::add_inplace(&dh_lo[l], tmp_c, bs * d);
     }
 }
 

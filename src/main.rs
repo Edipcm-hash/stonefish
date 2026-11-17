@@ -766,9 +766,11 @@ fn test_cuda() {
     }
     #[cfg(feature = "cuda")]
     {
-        let ctx = gpu::get_ctx();
-        println!("GPU: {:?}", ctx.name());
-        println!("✅ CUDA çalışıyor!");
+        let (name, total) = stonefish_ai::sys::dev::device_info();
+        let (maj, min) = stonefish_ai::sys::dev::compute_capability();
+        println!("GPU: {} (sm_{}{})", name, maj, min);
+        println!("Bellek: {:.1} GB", total as f64 / (1u64 << 30) as f64);
+        println!("✅ CUDA çalışıyor! (kendi FFI, harici crate yok)");
     }
 }
 
@@ -1049,13 +1051,7 @@ fn en_train(args: &[String]) {
     }
     if let Some(d) = args.get(1).and_then(|s| s.parse::<usize>().ok()) {
         a.d_model = d;
-        a.n_layers = if d >= 1024 {
-            16
-        } else if d >= 768 {
-            16
-        } else {
-            12
-        };
+        a.n_layers = if d >= 768 { 16 } else { 12 };
         a.n_heads = (d / 128).max(4);
     }
     stonefish_ai::en_train::train(&a);

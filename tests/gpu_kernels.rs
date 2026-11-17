@@ -6,28 +6,33 @@
 
 #![cfg(feature = "cuda")]
 
-use cudarc::driver::CudaSlice;
+use stonefish_ai::sys::dev::{DevBuf, DevBufI32};
 use stonefish_ai::autograd::Tensor;
-use stonefish_ai::gpu;
+use stonefish_ai::sys::dev::device_info;
 use stonefish_ai::gpu_kernels as k;
 use stonefish_ai::tensor::Matrix;
 
 const TOL: f32 = 2e-4;
 
-fn up(v: &[f32]) -> CudaSlice<f32> {
-    gpu::get_ctx().default_stream().clone_htod(v).unwrap()
+fn up(v: &[f32]) -> DevBuf {
+    DevBuf::from_host(v)
 }
 
-fn up_i32(v: &[i32]) -> CudaSlice<i32> {
-    gpu::get_ctx().default_stream().clone_htod(v).unwrap()
+fn up_i32(v: &[i32]) -> DevBufI32 {
+    DevBufI32::from_host(v)
 }
 
-fn zeros(n: usize) -> CudaSlice<f32> {
-    gpu::get_ctx().default_stream().alloc_zeros::<f32>(n).unwrap()
+fn zeros(n: usize) -> DevBuf {
+    DevBuf::zeros(n)
 }
 
-fn down(s: &CudaSlice<f32>) -> Vec<f32> {
-    gpu::get_ctx().default_stream().clone_dtoh(s).unwrap()
+fn down(s: &DevBuf) -> Vec<f32> {
+    s.to_host()
+}
+
+#[allow(dead_code)]
+fn _touch_device_info() {
+    let _ = device_info();
 }
 
 fn max_diff(a: &[f32], b: &[f32]) -> f32 {
@@ -68,14 +73,14 @@ fn gelu_kernels_match_cpu() {
 
     // GPU ileri
     let x_dev = up(&x_host);
-    let mut y_dev = zeros(n);
-    k::gelu_forward(&mut y_dev, &x_dev, n);
+    let y_dev = zeros(n);
+    k::gelu_forward(&y_dev, &x_dev, n);
     let d_fwd = max_diff(&down(&y_dev), &y_cpu);
 
     // GPU geri
     let dy_dev = up(&vec![1.0f32; n]);
-    let mut dx_dev = zeros(n);
-    k::gelu_backward(&mut dx_dev, &dy_dev, &x_dev, n);
+    let dx_dev = zeros(n);
+    k::gelu_backward(&dx_dev, &dy_dev, &x_dev, n);
     let d_bwd = max_diff(&down(&dx_dev), &dx_cpu);
 
     assert!(d_fwd < TOL, "gelu ileri farkı {d_fwd}");
@@ -115,13 +120,13 @@ fn layernorm_kernels_match_cpu() {
     let g_dev = up(&g_host);
     let b_dev = up(&b_host);
     let dy_dev = up(&dy_host);
-    let mut y_dev = zeros(n);
-    let mut xhat_dev = zeros(n);
-    let mut inv_dev = zeros(rows);
+    let y_dev = zeros(n);
+    let xhat_dev = zeros(n);
+    let inv_dev = zeros(rows);
     k::layernorm_forward(
-        &mut y_dev,
-        &mut xhat_dev,
-        &mut inv_dev,
+        &y_dev,
+        &xhat_dev,
+        &inv_dev,
         &x_dev,
         &g_dev,
         &b_dev,
@@ -131,13 +136,13 @@ fn layernorm_kernels_match_cpu() {
     );
     let d_fwd = max_diff(&down(&y_dev), &y_cpu);
 
-    let mut dx_dev = zeros(n);
-    k::layernorm_backward(&mut dx_dev, &dy_dev, &xhat_dev, &inv_dev, &g_dev, rows, cols);
+    let dx_dev = zeros(n);
+    k::layernorm_backward(&dx_dev, &dy_dev, &xhat_dev, &inv_dev, &g_dev, rows, cols);
     let d_bwd = max_diff(&down(&dx_dev), &dx_cpu);
 
-    let mut dg_dev = zeros(cols);
-    let mut db_dev = zeros(cols);
-    k::layernorm_param_grad(&mut dg_dev, &mut db_dev, &dy_dev, &xhat_dev, rows, cols);
+    let dg_dev = zeros(cols);
+    let db_dev = zeros(cols);
+    k::layernorm_param_grad(&dg_dev, &db_dev, &dy_dev, &xhat_dev, rows, cols);
     let d_dg = max_diff(&down(&dg_dev), &dg_cpu);
     let d_db = max_diff(&down(&db_dev), &db_cpu);
 
@@ -184,8 +189,8 @@ fn masked_softmax_kernels_match_cpu() {
     }
 
     let scores_dev = up(&scores_host);
-    let mut w_dev = zeros(bh * seq * seq);
-    k::masked_softmax_forward(&mut w_dev, &scores_dev, batch, heads, seq, scale);
+    let w_dev = zeros(bh * seq * seq);
+    k::masked_softmax_forward(&w_dev, &scores_dev, batch, heads, seq, scale);
     let d_fwd = max_diff(&down(&w_dev), &w_cpu);
     assert!(d_fwd < TOL, "masked softmax ileri farkı {d_fwd}");
 
@@ -210,8 +215,8 @@ fn masked_softmax_kernels_match_cpu() {
     }
 
     let dw_dev = up(&dw_host);
-    let mut ds_dev = zeros(bh * seq * seq);
-    k::masked_softmax_backward(&mut ds_dev, &w_dev, &dw_dev, batch, heads, seq, scale);
+    let ds_dev = zeros(bh * seq * seq);
+    k::masked_softmax_backward(&ds_dev, &w_dev, &dw_dev, batch, heads, seq, scale);
     let d_bwd = max_diff(&down(&ds_dev), &ds_cpu);
     assert!(d_bwd < TOL, "masked softmax geri farkı {d_bwd}");
     println!("  ✅ masked softmax: fwd {d_fwd:.2e}, bwd {d_bwd:.2e}");
@@ -240,11 +245,11 @@ fn ce_kernels_match_cpu() {
     // GPU
     let logits_dev = up(&logits_host);
     let targets_dev = up_i32(&targets_i32);
-    let mut loss_dev = zeros(1);
-    let mut probs_dev = zeros(rows * classes);
+    let loss_dev = zeros(1);
+    let probs_dev = zeros(rows * classes);
     k::ce_forward(
-        &mut loss_dev,
-        &mut probs_dev,
+        &loss_dev,
+        &probs_dev,
         &logits_dev,
         &targets_dev,
         rows,
@@ -254,9 +259,9 @@ fn ce_kernels_match_cpu() {
     let d_loss = (loss_gpu - loss_cpu).abs();
     let d_probs = max_diff(&down(&probs_dev), &probs_cpu);
 
-    let mut dlogits_dev = zeros(rows * classes);
+    let dlogits_dev = zeros(rows * classes);
     k::ce_backward(
-        &mut dlogits_dev,
+        &dlogits_dev,
         &probs_dev,
         &targets_dev,
         rows,
@@ -303,16 +308,16 @@ fn embedding_kernels_match_cpu() {
     let tok_dev = up(&tok_host);
     let pos_dev = up(&pos_host);
     let ids_dev = up_i32(&ids_i32);
-    let mut y_dev = zeros(rows * d);
-    k::embedding_forward(&mut y_dev, &ids_dev, &tok_dev, &pos_dev, rows, d, seq_len);
+    let y_dev = zeros(rows * d);
+    k::embedding_forward(&y_dev, &ids_dev, &tok_dev, &pos_dev, rows, d, seq_len);
     let d_fwd = max_diff(&down(&y_dev), &y_cpu);
 
     let dy_dev = up(&dy_host);
-    let mut dtok_dev = zeros(vocab * d);
-    let mut dpos_dev = zeros(max_seq * d);
+    let dtok_dev = zeros(vocab * d);
+    let dpos_dev = zeros(max_seq * d);
     k::embedding_backward(
-        &mut dtok_dev,
-        &mut dpos_dev,
+        &dtok_dev,
+        &dpos_dev,
         &dy_dev,
         &ids_dev,
         rows,
@@ -352,16 +357,16 @@ fn adam_kernel_matches_cpu() {
     let p_cpu = p.data.borrow().data.clone();
 
     // GPU
-    let mut p_dev = up(&p_host);
+    let p_dev = up(&p_host);
     let g_dev = up(&g_host);
-    let mut m_dev = zeros(n);
-    let mut v_dev = zeros(n);
+    let m_dev = zeros(n);
+    let v_dev = zeros(n);
     let (b1, b2, eps) = (0.9f32, 0.999f32, 1e-6f32);
     for t in 1..=3usize {
         let bc1 = 1.0 - b1.powi(t as i32);
         let bc2 = 1.0 - b2.powi(t as i32);
         k::adam_step(
-            &mut p_dev, &g_dev, &mut m_dev, &mut v_dev, lr, b1, b2, eps, bc1, bc2, n,
+            &p_dev, &g_dev, &m_dev, &v_dev, lr, b1, b2, eps, bc1, bc2, n,
         );
     }
     let d = max_diff(&down(&p_dev), &p_cpu);
@@ -594,7 +599,7 @@ fn attention_backward_composition_matches_cpu() {
     let v_dev = up(&v_host);
     let da_dev = up(&da_host);
     let mut scores = zeros(nh * b * seq * seq);
-    let mut w = zeros(nh * b * seq * seq);
+    let w = zeros(nh * b * seq * seq);
     let mut dscores = zeros(nh * b * seq * seq);
     let mut dq = zeros(bs * d);
     let mut dk = zeros(bs * d);
@@ -611,7 +616,7 @@ fn attention_backward_composition_matches_cpu() {
             seq * seq, b, 0.0, GemmMode::Nt,
         );
     }
-    k::masked_softmax_forward(&mut w, &scores, b, nh, seq, scale);
+    k::masked_softmax_forward(&w, &scores, b, nh, seq, scale);
 
     // attention çıktısı: attn = W·V
     let mut attn = zeros(bs * d);
@@ -649,8 +654,8 @@ fn attention_backward_composition_matches_cpu() {
         );
     }
     // softmax geri (dscores yerinde değil: ayrı tampon)
-    let mut ds = zeros(nh * b * seq * seq);
-    k::masked_softmax_backward(&mut ds, &w, &dscores, b, nh, seq, scale);
+    let ds = zeros(nh * b * seq * seq);
+    k::masked_softmax_backward(&ds, &w, &dscores, b, nh, seq, scale);
 
     // dQ, dK
     for h in 0..nh {
@@ -767,8 +772,8 @@ fn elementwise_and_reduction_kernels() {
     // add_bias
     let a_dev = up(&a);
     let bias_dev = up(&bias);
-    let mut out_dev = zeros(n);
-    k::add_bias(&mut out_dev, &a_dev, &bias_dev, rows, cols);
+    let out_dev = zeros(n);
+    k::add_bias(&out_dev, &a_dev, &bias_dev, rows, cols);
     let mut ref_out = vec![0.0f32; n];
     for r in 0..rows {
         for c in 0..cols {
@@ -779,27 +784,27 @@ fn elementwise_and_reduction_kernels() {
     assert!(d1 < 1e-6, "add_bias farkı {d1}");
 
     // add_inplace
-    let mut acc_dev = up(&a);
-    k::add_inplace(&mut acc_dev, &a_dev, n);
+    let acc_dev = up(&a);
+    k::add_inplace(&acc_dev, &a_dev, n);
     let ref2: Vec<f32> = a.iter().map(|v| v * 2.0).collect();
     let d2 = max_diff(&down(&acc_dev), &ref2);
     assert!(d2 < 1e-6, "add_inplace farkı {d2}");
 
     // zero_fill
-    let mut z_dev = up(&a);
-    k::zero_fill(&mut z_dev, n);
+    let z_dev = up(&a);
+    k::zero_fill(&z_dev, n);
     let d3 = down(&z_dev).iter().map(|v| v.abs()).fold(0.0f32, f32::max);
     assert!(d3 == 0.0, "zero_fill farkı {d3}");
 
     // sum_squares + scale_inplace
-    let mut acc = zeros(1);
-    k::sum_squares(&mut acc, &a_dev, n);
+    let acc = zeros(1);
+    k::sum_squares(&acc, &a_dev, n);
     let ref_sq: f32 = a.iter().map(|v| v * v).sum();
     let d4 = (down(&acc)[0] - ref_sq).abs();
     assert!(d4 < 1e-2, "sum_squares farkı {d4} (ref {ref_sq})");
 
-    let mut sc_dev = up(&a);
-    k::scale_inplace(&mut sc_dev, n, 0.5);
+    let sc_dev = up(&a);
+    k::scale_inplace(&sc_dev, n, 0.5);
     let ref3: Vec<f32> = a.iter().map(|v| v * 0.5).collect();
     let d5 = max_diff(&down(&sc_dev), &ref3);
     assert!(d5 < 1e-6, "scale_inplace farkı {d5}");

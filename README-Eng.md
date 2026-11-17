@@ -1,8 +1,15 @@
 # 🐟 StonefishAI
 
-**A from-scratch autograd engine and language-model stack in Rust — no ML libraries.**
+**A from-scratch autograd engine and language-model stack in Rust — ZERO dependencies.**
 
-Everything from `Tensor` and topological backprop to optimizers and CUDA kernels is written by hand in this repository. The only external dependency is `cudarc`, which enables the GPU path (feature-gated; with it off, everything runs on CPU).
+```console
+$ cargo tree
+stonefish_ai v1.0.0
+```
+
+Everything from `Tensor` and topological backprop to optimizers and CUDA kernels is written by hand in this repository. **`[dependencies]` is empty.** The CUDA driver, cuBLAS and NVRTC are loaded dynamically at runtime (`LoadLibraryW` / `dlopen`) — not even `cudarc`, only the operating system's library loader.
+
+On machines without CUDA, `--no-default-features` runs everything on the CPU.
 
 > Türkçe sürüm: [README-Tr.md](README-Tr.md)
 
@@ -23,6 +30,7 @@ Everything from `Tensor` and topological backprop to optimizers and CUDA kernels
 11. [Known limitations](#11-known-limitations)
 12. [Roadmap — what comes next](#12-roadmap--what-comes-next)
 13. [Directory layout](#13-directory-layout)
+14. [How zero dependencies works](#14-how-zero-dependencies-works)
 
 ---
 
@@ -125,6 +133,12 @@ Measured training throughput:
 | File | Lines | Responsibility |
 |---|---|---|
 | [src/lib.rs](src/lib.rs) | 35 | Library root, `VERSION`, justified clippy allows |
+| [src/sys/mod.rs](src/sys/mod.rs) | 190 | Dynamic library loader (LoadLibraryW / dlopen) |
+| [src/sys/cuda.rs](src/sys/cuda.rs) | 200 | CUDA driver API (memory, context, module, kernel) |
+| [src/sys/cublas.rs](src/sys/cublas.rs) | 80 | cuBLAS SGEMM + strided-batched |
+| [src/sys/nvrtc.rs](src/sys/nvrtc.rs) | 130 | NVRTC — runtime CUDA C compilation |
+| [src/sys/dev.rs](src/sys/dev.rs) | 520 | `DevBuf`/views, module, kernel launch |
+| [src/sys/selftest.rs](src/sys/selftest.rs) | 250 | FFI self-test (`test-ffi` mode) |
 | [src/tensor.rs](src/tensor.rs) | 142 | `Matrix` (row-major 2D): matmul, transpose, broadcast add/sub |
 | [src/autograd.rs](src/autograd.rs) | 845 | `Tensor`, `Op` (17 variants), topological backward, all ops |
 | [src/nn.rs](src/nn.rs) | 99 | `Linear`, MNIST model (de)serialization |
@@ -342,7 +356,7 @@ Loss curve: 9.70 (random) → **~1.97** (at 90 %, still falling).
 
 ## 9. Tests
 
-**62 tests**, green in both feature configurations:
+**62 tests** (with CUDA), **48 tests** (CPU-only) — all green, **0 clippy warnings**:
 
 | Group | Count | What it verifies |
 |---|---|---|
@@ -475,3 +489,28 @@ StonefishAI/
 ```
 
 **Engine principles:** written from scratch · gradients numerically verified · decisions driven by measurement · every bug locked down by a test · runs without CUDA.
+
+---
+
+## 14. How zero dependencies works
+
+`[dependencies]` is empty. GPU access is entirely through our own FFI layer:
+
+```
+src/sys/mod.rs    LoadLibraryW (Windows) / dlopen (Linux) + GetProcAddress
+                  → function pointers resolved lazily (OnceLock)
+src/sys/cuda.rs   cuInit, cuCtxCreate, cuMemAlloc/HtoD/DtoH/Memset,
+                  cuModuleLoadData, cuModuleGetFunction, cuLaunchKernel
+src/sys/cublas.rs cublasCreate, cublasSetStream, cublasSgemm,
+                  cublasSgemmStridedBatched
+src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
+```
+
+**Why it matters:**
+
+1. **No CUDA SDK at build time** — no import `.lib`, no `build.rs`
+2. **Graceful degradation** — `LoadLibraryW` returns `None`, everything runs on CPU
+3. **Auditable** — 1,100 lines of FFI instead of a 400-line crate's abstractions over the same API
+4. **Verified** — `stonefish_ai test-ffi` checks alloc + copy + PTX load + kernel launch + cuBLAS SGEMM against CPU references (measured diff: **0.0**)
+
+Kernel arguments are prepared by `Kargs`: each argument is written into one `u64` slot (device pointer = 8 bytes, i32/f32 = low 4 bytes) and `cuLaunchKernel` receives the addresses of those slots — zero allocation, zero copy.
