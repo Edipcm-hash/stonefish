@@ -31,6 +31,7 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 12. [Yol haritası — yapılacaklar](#12-yol-haritası--yapılacaklar)
 13. [Dizin yapısı](#13-dizin-yapısı)
 14. [Sıfır bağımlılık nasıl çalışıyor](#14-sıfır-bağımlılık-nasıl-çalışıyor)
+15. [**Kronoloji — 15 Haziran'dan bugüne**](#15-kronoloji--15-hazirandan-bugüne)
 
 ---
 
@@ -517,3 +518,98 @@ src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
 4. **Doğrulanmış** — `stonefish_ai test-ffi` alloc + kopyalama + PTX yükleme + çekirdek başlatma + cuBLAS SGEMM'i CPU referansına karşı sınar (ölçülen fark: **0.0**)
 
 Çekirdek argümanları `Kargs` ile hazırlanır: her argüman bir `u64` slota yazılır (cihaz işaretçisi 8 bayt, i32/f32 ilk 4 bayt) ve `cuLaunchKernel`'e o slotların adresleri verilir — tahsis yok, sıfır kopya.
+
+---
+
+## 15. Kronoloji — 15 Haziran'dan bugüne
+
+Proje **15 Haziran 2026**'da başladı. Aşağıdaki tablo, o günden bugüne atılan her adımı **ölçümleriyle** birlikte kronolojik sırada verir.
+
+> **Kaynak notu:** 15 Haziran – 15 Kasım arası sürüm kontrolü altında değildi; o dönem yalnızca sonuçlarıyla belgelenebilir. 16 Kasım'dan itibaren her adımın commit'i, ölçümü ve testi vardır.
+
+### 15 Haziran – 15 Kasım 2026 · v0.1 → v0.6 (sürüm kontrolü yok)
+
+Elle, kütüphanesiz yazılan ilk beş ay. Geriye kalan v0.6 anlık görüntüsü şunları içeriyordu:
+
+| Sürüm | Ne eklendi |
+|---|---|
+| v0.1 | `Matrix` (row-major 2D), temel aritmetik, `transpose` |
+| v0.2 | `Tensor` + ters-mod autograd: `Op` enum, topolojik `backward()` |
+| v0.3 | MNIST MLP (784→128→10, SGD) + idx okuyucu |
+| v0.4 | Karakter tokenizer'ı, mini GPT (embedding + attention + FFN) |
+| v0.5 | cuBLAS ile GPU matmul, CPU yedeği, profil sayaçları |
+| v0.6 | Türkçe korpusla eğitilmiş 842 K parametreli GPT |
+
+**Bu dönemin ölçülen sonuçları (16 Kasım'da doğrulandı):**
+- MNIST test doğruluğu: **%98,12**
+- Türkçe GPT: 842.632 parametre, 2,87 M karakter korpus, vocab 136
+- GPU matmul (gerçek model şekilleri): CPU'ya göre **2,4–18,7×** hızlı
+- 1024³ matmul: CPU 2,16 s · GPU-sadece 67,5 µs
+
+**Ama görünmeyen sorunlar vardı** (sonraki gün ortaya çıktı): batch desteği sahteydi, GPU eğitimin yalnız yarısında kullanılıyordu, `Tensor3D` tamamen ölü koddu, checkpoint kelime dağarcığını saklamıyordu, 0 test vardı.
+
+### 16 Kasım 2026 · 1. gün — denetim ve sağlamlaştırma (8 commit)
+
+| Saat | Adım | Ölçüm / sonuç |
+|---|---|---|
+| 14:22 | **Git kuruldu**, `.gitignore`, v0.6 baseline commit'i | 11 kaynak dosya, 0 test |
+| 14:24 | Kütüphane/program ayrımı + **ilk gradyan testleri** | 0 → **21 test**; `mask_causal` testi kırmızı çıktı (testin kendisi hatalıydı: `-1e9` maskesi `f32` çözünürlüğünü aşıyordu) |
+| 14:33 | **Gerçek batch** (satır paketleme) + fused attention + **checkpoint v2** + ölü kod silme | `Tensor3D` (−250 satır) silindi; checkpoint'e magic+config+vocab gömüldü |
+| 14:59 | README (tasarım kararları + ölçümler) | — |
+| 15:01 | clippy temiz + LF satır sonları | 9 → **0 uyarı** |
+| 16:00 | **Usulüne uygun eğitim döngüsü**: warmup + cosine, gradyan kırpma, en iyi val'de checkpoint, manifest | 6 epoch, 16.626 adım, **54,4 dk**, val CE **1,6337** |
+| 16:08 | **Profil → 3 optimizasyon** | Adım **177 → 120 ms** (+%47 tok/s): upstream klonunu kaldır, `matmul_bt/ta`, attention backward'ı vektörleştir |
+| 16:32 | **GPU-native eğitici** (device-resident, 15 CUDA çekirdeği, NVRTC) | 6 epoch **54 dk → 70 s** = **46,7×**; 244.698 tok/s; val CE **1,6230** |
+| 17:14 | **İngilizce hat**: BPE-16k + u16 disk cache + 236 M model | TinyStories 2,1 GB → 450,9 M token, 4,7 karakter/token |
+
+**1. günün sonunda:** 40 test, ölü kod yok, eğitim 46,7× hızlı, ilk İngilizce model eğitiliyor.
+
+### 17 Kasım 2026 · 2. gün — sıfır bağımlılık, v2 mimarisi, ölçüm (15 commit)
+
+| Saat | Adım | Ölçüm / sonuç |
+|---|---|---|
+| 04:36 | README-Tr + README-Eng (13 bölüm, yol haritası) | 2 × 380 satır |
+| 05:41 | `en-eval` + `en-gen` + ilk gerçek ölçüm | val loss **2,3700** · perplexity **10,70** · **BPC 0,6913** |
+| 05:48 | **SIFIR BAĞIMLILIK** — `cudarc` söküldü, kendi CUDA/cuBLAS/NVRTC FFI'miz | `cargo tree` → **tek satır**; `test-ffi` fark **0.0** |
+| 05:56 | v2 çekirdekleri: RMSNorm, SwiGLU, RoPE, dropout | her biri CPU referansına karşı doğrulandı |
+| 05:59 | **Tek komut demo** | 51 s'de 1,8 M model, **352.494 tok/s**, Shakespeare üretiyor |
+| 06:09 | **v2 mimarisi** (CPU + GPU birlikte) | 235,6 M → **222,3 M** parametre (weight tying −16,8 M); gradyan eşdeğerliği korundu |
+| 06:22 | **Veri penceresi hatası** bulundu ve düzeltildi | 5.679 → **9.966 tok/s** (adımda ~4 GB disk trafiği vardı) |
+| 06:30 | **KV-cache** | Üretim O(n²) → O(n); tam ileri geçişle fark **5e-8** (eksik attention ölçeği yakalandı) |
+| 11:37 | `cargo fmt` + CI (3 iş) + **atomik checkpoint** | Elektrik kesintisi artık checkpoint'i bozamaz |
+| 11:46 | **PyTorch karşılaştırması** | **20.487 tok/s** vs PyTorch 11.456 (naive) / 10.810 (SDPA) = **1,79–1,90×** |
+| 13:59 | **Tüm kod İngilizceye çevrildi** | 1.082 satır, 22 commit; README-Tr dışında Türkçe **0** |
+| 14:04 | Ölü kod denetimi | 6 öğe silindi; profiler'ın kayıp hook'u geri kondu; 855 MB ölü artifact silindi |
+
+### 17 – 19 Kasım 2026 · 2 milyar token'lık eğitim
+
+Karma korpus: **TinyStories 462 M + Gutenberg 1.585 M = 2.047.457.313 token** (2 dakikada tokenize edildi).
+
+```
+Model  : d=1024, 16 katman, 8 head (d_head=128), ctx=512, BPE-16.384
+         → 222.331.904 parametre
+Batch  : 4 × gradyan biriktirme 16 = 32.768 token/adım
+Plan   : 62.483 adım · max_lr 4e-4 · 1000 adım warmup + cosine · clip 1,0
+Süre   : ~56 saat · 10.100 token/s · 8,2 GB VRAM · 76 °C · 210 W
+```
+
+Kayıp eğrisi (canlı):
+
+| Adım | Loss | Not |
+|---|---|---|
+| 20 | 9,54 | rastgele taban ln(16384) = 9,70 |
+| 1.440 | 5,20 | warmup bitti |
+| 5.640 | 4,22 | |
+| 8.380 | 4,01 | %13,4 |
+
+### Rakamlarla 5 ay → bugün
+
+| | 15 Haziran (v0.6) | Bugün |
+|---|---|---|
+| Test | 0 | **71** |
+| Bağımlılık | 4 crate | **0** |
+| En büyük model | 842 bin parametre | **222 milyon** |
+| Eğitim hızı | 5.714 tok/s | **244.698 tok/s** (43×) |
+| Veri | 2,87 M karakter | **2,05 milyar token** |
+| Bulunan gerçek hata | — | **17** (hepsi testle yakalandı) |
+| Türkçe satır (README-Tr hariç) | — | **0** |

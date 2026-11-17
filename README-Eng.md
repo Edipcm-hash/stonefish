@@ -31,6 +31,7 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 12. [Roadmap — what comes next](#12-roadmap--what-comes-next)
 13. [Directory layout](#13-directory-layout)
 14. [How zero dependencies works](#14-how-zero-dependencies-works)
+15. [**Timeline — from 15 June to today**](#15-timeline--from-15-june-to-today)
 
 ---
 
@@ -517,3 +518,98 @@ src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
 4. **Verified** — `stonefish_ai test-ffi` checks alloc + copy + PTX load + kernel launch + cuBLAS SGEMM against CPU references (measured diff: **0.0**)
 
 Kernel arguments are prepared by `Kargs`: each argument is written into one `u64` slot (device pointer = 8 bytes, i32/f32 = low 4 bytes) and `cuLaunchKernel` receives the addresses of those slots — zero allocation, zero copy.
+
+---
+
+## 15. Timeline — from 15 June to today
+
+The project started on **15 June 2026**. The table below lists every step since then, in order, with its measurements.
+
+> **Source note:** 15 June – 15 November was not under version control; that period can only be documented through its results. From 16 November onwards every step has a commit, a measurement and a test.
+
+### 15 June – 15 November 2026 · v0.1 → v0.6 (no version control)
+
+Five months written by hand, without libraries. The surviving v0.6 snapshot contained:
+
+| Version | What was added |
+|---|---|
+| v0.1 | `Matrix` (row-major 2D), basic arithmetic, `transpose` |
+| v0.2 | `Tensor` + reverse-mode autograd: `Op` enum, topological `backward()` |
+| v0.3 | MNIST MLP (784→128→10, SGD) + idx reader |
+| v0.4 | Character tokenizer, mini GPT (embedding + attention + FFN) |
+| v0.5 | GPU matmul via cuBLAS, CPU fallback, profiling counters |
+| v0.6 | 842 K parameter GPT trained on a Turkish corpus |
+
+**Measured results from that period (verified on 16 November):**
+- MNIST test accuracy: **98.12 %**
+- Turkish GPT: 842,632 parameters, 2.87 M character corpus, vocab 136
+- GPU matmul (real model shapes): **2.4–18.7×** faster than the CPU
+- 1024³ matmul: CPU 2.16 s · GPU-only 67.5 µs
+
+**But there were invisible problems** (found the next day): batching was fake, the GPU was used for only half of training, `Tensor3D` was entirely dead code, the checkpoint did not store the vocabulary, and there were 0 tests.
+
+### 16 November 2026 · day 1 — audit and hardening (8 commits)
+
+| Time | Step | Measurement / result |
+|---|---|---|
+| 14:22 | **Git initialised**, `.gitignore`, v0.6 baseline commit | 11 source files, 0 tests |
+| 14:24 | Library/binary split + **first gradient tests** | 0 → **21 tests**; `mask_causal` failed (the *test* was wrong: the `-1e9` mask exceeded `f32` resolution) |
+| 14:33 | **Real batching** (row packing) + fused attention + **checkpoint v2** + dead-code removal | `Tensor3D` (−250 lines) deleted; magic + config + vocab embedded |
+| 14:59 | README (design decisions + measurements) | — |
+| 15:01 | Clean clippy + LF line endings | 9 → **0 warnings** |
+| 16:00 | **A proper training loop**: warmup + cosine, gradient clipping, best-val checkpoint, manifest | 6 epochs, 16,626 steps, **54.4 min**, val CE **1.6337** |
+| 16:08 | **Profile → 3 optimizations** | Step **177 → 120 ms** (+47 % tok/s) |
+| 16:32 | **GPU-native trainer** (device-resident, 15 CUDA kernels, NVRTC) | 6 epochs **54 min → 70 s** = **46.7×**; 244,698 tok/s; val CE **1.6230** |
+| 17:14 | **English pipeline**: BPE-16k + u16 disk cache + 236 M model | TinyStories 2.1 GB → 450.9 M tokens, 4.7 chars/token |
+
+**End of day 1:** 40 tests, no dead code, training 46.7× faster, the first English model training.
+
+### 17 November 2026 · day 2 — zero dependencies, v2 architecture, measurement (15 commits)
+
+| Time | Step | Measurement / result |
+|---|---|---|
+| 04:36 | README-Tr + README-Eng (13 sections, roadmap) | 2 × 380 lines |
+| 05:41 | `en-eval` + `en-gen` + first real measurement | val loss **2.3700** · perplexity **10.70** · **BPC 0.6913** |
+| 05:48 | **ZERO DEPENDENCIES** — `cudarc` removed, our own CUDA/cuBLAS/NVRTC FFI | `cargo tree` → **a single line**; `test-ffi` diff **0.0** |
+| 05:56 | v2 kernels: RMSNorm, SwiGLU, RoPE, dropout | each verified against a CPU reference |
+| 05:59 | **One-command demo** | 1.8 M model in 51 s, **352,494 tok/s**, writes Shakespeare |
+| 06:09 | **v2 architecture** (CPU + GPU together) | 235.6 M → **222.3 M** parameters (weight tying −16.8 M); gradient equivalence kept |
+| 06:22 | **Data window bug** found and fixed | 5,679 → **9,966 tok/s** (~4 GB of disk traffic per step) |
+| 06:30 | **KV-cache** | Generation O(n²) → O(n); **5e-8** from the full forward pass |
+| 11:37 | `cargo fmt` + CI (3 jobs) + **atomic checkpoints** | A power cut can no longer corrupt a checkpoint |
+| 11:46 | **PyTorch comparison** | **20,487 tok/s** vs PyTorch 11,456 (naive) / 10,810 (SDPA) = **1.79–1.90×** |
+| 13:59 | **Entire codebase translated to English** | 1,082 lines, 22 commits; **0** Turkish outside README-Tr |
+| 14:04 | Dead-code audit | 6 items removed; the profiler's lost hook restored; 855 MB of dead artifacts deleted |
+
+### 17 – 19 November 2026 · the 2-billion-token run
+
+Mixed corpus: **TinyStories 462 M + Gutenberg 1,585 M = 2,047,457,313 tokens** (tokenized in 2 minutes).
+
+```
+Model  : d=1024, 16 layers, 8 heads (d_head=128), ctx=512, BPE-16,384
+         -> 222,331,904 parameters
+Batch  : 4 x gradient accumulation 16 = 32,768 tokens/step
+Plan   : 62,483 steps - max_lr 4e-4 - 1000-step warmup + cosine - clip 1.0
+Time   : ~56 hours - 10,100 tokens/s - 8.2 GB VRAM - 76 C - 210 W
+```
+
+Loss curve (live):
+
+| Step | Loss | Note |
+|---|---|---|
+| 20 | 9.54 | random baseline ln(16384) = 9.70 |
+| 1,440 | 5.20 | warmup finished |
+| 5,640 | 4.22 | |
+| 8,380 | 4.01 | 13.4 % |
+
+### In numbers: 5 months → today
+
+| | 15 June (v0.6) | Today |
+|---|---|---|
+| Tests | 0 | **71** |
+| Dependencies | 4 crates | **0** |
+| Largest model | 842 K parameters | **222 M** |
+| Training speed | 5,714 tok/s | **244,698 tok/s** (43×) |
+| Data | 2.87 M characters | **2.05 billion tokens** |
+| Real bugs found | — | **17** (every one caught by a test) |
+| Turkish lines (excl. README-Tr) | — | **0** |
