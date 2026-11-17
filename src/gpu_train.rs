@@ -201,6 +201,9 @@ pub struct GpuGpt {
     drop_seed: u32,
     /// true ise dropout uygulanır.
     pub training: bool,
+    /// RoPE cos/sin tablosu: (seq × d_head/2)
+    rope_cos: DevBuf,
+    rope_sin: DevBuf,
 
     acts: Vec<Acts>,
     h: Vec<DevBuf>,
@@ -321,6 +324,14 @@ impl GpuGpt {
             dropout_p: 0.0,
             drop_seed: 1,
             training: false,
+            rope_cos: {
+                let (cc, _) = crate::gpu_kernels::rope_tables(seq, cfg.d_model / cfg.n_heads);
+                upload(&cc)
+            },
+            rope_sin: {
+                let (_, ss) = crate::gpu_kernels::rope_tables(seq, cfg.d_model / cfg.n_heads);
+                upload(&ss)
+            },
             acts,
             h,
             dh,
@@ -405,6 +416,14 @@ impl GpuGpt {
             dropout_p: 0.0,
             drop_seed: 1,
             training: false,
+            rope_cos: {
+                let (cc, _) = crate::gpu_kernels::rope_tables(seq, cfg.d_model / cfg.n_heads);
+                upload(&cc)
+            },
+            rope_sin: {
+                let (_, ss) = crate::gpu_kernels::rope_tables(seq, cfg.d_model / cfg.n_heads);
+                upload(&ss)
+            },
             acts,
             h,
             dh,
@@ -489,6 +508,7 @@ impl GpuGpt {
 
     /// Sadece ileri + cross-entropy: gradyan hesaplamaz (değerlendirme yolu).
     pub fn forward_loss(&mut self, ids: &[i32], targets: &[i32]) -> f32 {
+        self.training = false; // değerlendirme: dropout yok
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs());
         assert_eq!(targets.len(), dm.bs());
@@ -518,6 +538,7 @@ impl GpuGpt {
     /// doldurulduğunda (nedensel attention sayesinde konumlar kaymaz) son
     /// gerçek tokenin satırını okumak için kullanılır.
     pub fn forward_logits_at(&mut self, ids: &[i32], row: usize) -> Vec<f32> {
+        self.training = false; // üretim: dropout yok
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs(), "ids.len() = batch*seq olmalı");
         let ids_dev = upload_i32(ids);
@@ -705,6 +726,9 @@ impl GpuGpt {
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs());
         assert_eq!(targets.len(), dm.bs());
+        // her adımda yeni dropout maskeleri
+        self.drop_seed = self.drop_seed.wrapping_add(0x9E37_79B9);
+        self.training = true;
 
         let ids_dev = upload_i32(ids);
         let tgt_dev = upload_i32(targets);
@@ -791,6 +815,8 @@ impl GpuGpt {
             dropout_p,
             drop_seed,
             training,
+            rope_cos,
+            rope_sin,
             ..
         } = self;
         let (bs, d, f, s, nh, dhh, scale) = (
@@ -826,8 +852,8 @@ impl GpuGpt {
         gpu::dev_gemm(&mut a.v, &a.x1, &blk.wv.data, bs, d, d, d, d, d, GemmMode::Nn);
 
         // --- RoPE: yalnız Q ve K döndürülür (yerinde güvenli) ---
-        k::rope_forward(&a.q, &a.q, dm.b, s, nh, dhh);
-        k::rope_forward(&a.k, &a.k, dm.b, s, nh, dhh);
+        k::rope_forward(&a.q, &a.q, rope_cos, rope_sin, dm.b, s, nh, dhh);
+        k::rope_forward(&a.k, &a.k, rope_cos, rope_sin, dm.b, s, nh, dhh);
 
         // --- skorlar (her head, batch üzerinde strided) ---
         for hh in 0..nh {
@@ -924,6 +950,8 @@ impl GpuGpt {
             dropout_p,
             drop_seed,
             training,
+            rope_cos,
+            rope_sin,
             ..
         } = self;
         let (bs, d, f, s, nh, dhh, scale) = (
@@ -1149,8 +1177,8 @@ impl GpuGpt {
         }
 
         // RoPE geri: dQ/dK ters döndürülür (Q, K ileri geçişte döndürülmüştü)
-        k::rope_backward(&a.dq, &a.dq, dm.b, s, nh, dhh);
-        k::rope_backward(&a.dk, &a.dk, dm.b, s, nh, dhh);
+        k::rope_backward(&a.dq, &a.dq, rope_cos, rope_sin, dm.b, s, nh, dhh);
+        k::rope_backward(&a.dk, &a.dk, rope_cos, rope_sin, dm.b, s, nh, dhh);
 
         // dln1 = dQ·wqᵀ + dK·wkᵀ + dV·wvᵀ (beta ile biriktir) → tmp_b
         gpu::dev_gemm(tmp_b, &a.dq, &blk.wq.data, bs, d, d, d, d, d, GemmMode::Nt);

@@ -942,7 +942,10 @@ fn rope_forward_and_inverse() {
 
     let xd = up(&x);
     let rot = zeros(n);
-    k::rope_forward(&rot, &xd, batch, seq, n_heads, d_head);
+    let (cos_h, sin_h) = k::rope_tables(seq, d_head);
+    let cos_d = up(&cos_h);
+    let sin_d = up(&sin_h);
+    k::rope_forward(&rot, &xd, &cos_d, &sin_d, batch, seq, n_heads, d_head);
     let fwd = down(&rot);
 
     // pozitif norm korunmalı (dönme izometridir) ve 0. konumda değişim olmamalı
@@ -958,7 +961,7 @@ fn rope_forward_and_inverse() {
 
     // geri yayılım dönmeyi tersine çevirir → orijinali geri vermeli
     let back = zeros(n);
-    k::rope_backward(&back, &rot, batch, seq, n_heads, d_head);
+    k::rope_backward(&back, &rot, &cos_d, &sin_d, batch, seq, n_heads, d_head);
     let b = down(&back);
     let d = max_diff(&b, &x);
     assert!(d < 1e-4, "rope ters dönüş farkı {d}");

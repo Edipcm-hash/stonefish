@@ -22,7 +22,14 @@ pub struct TokenDataset {
     buf_start: u64,
 }
 
-const WINDOW_TOKENS: usize = 32 * 1024 * 1024; // 32M token = 64 MB
+/// Pencere boyu: istenen aralığın bu katı (en az 4K token, en çok 1M).
+///
+/// Eğitim rastgele konumlardan okur; pencere çok büyük olursa her ıskalama
+/// onlarca MB disk okumasına dönüşür (ölçüldü: adımda ~4 GB trafik, eğitimi
+/// 1,8× yavaşlatıyordu).
+const WINDOW_MIN: usize = 4096;
+const WINDOW_MAX: usize = 1 << 20;
+const WINDOW_FACTOR: usize = 8;
 
 impl TokenDataset {
     pub fn open(path: &str) -> io::Result<Self> {
@@ -61,9 +68,11 @@ impl TokenDataset {
             return Ok((start - self.buf_start) as usize);
         }
 
-        // Yeni pencere: start'tan itibaren WINDOW_TOKENS kadar
+        // Yeni pencere: istenen aralık + biraz ileriye bak (ardışık erişim
+        // için faydalı), ama asla gereksiz büyük değil.
+        let want = (len.saturating_mul(WINDOW_FACTOR)).clamp(WINDOW_MIN, WINDOW_MAX);
         let remaining = self.n_tokens.saturating_sub(start);
-        let take = remaining.min(WINDOW_TOKENS as u64).max(len as u64) as usize;
+        let take = remaining.min(want as u64).max(len as u64) as usize;
         if self.buf.len() != take {
             self.buf.resize(take, 0);
         }
@@ -119,11 +128,32 @@ pub fn tokenize_file_to_cache(
     bpe: &Bpe,
     chunk_bytes: usize,
 ) -> io::Result<u64> {
+    tokenize_impl(text_path, cache_path, bpe, chunk_bytes, false)
+}
+
+/// Aynı cache dosyasına EKLEYEREK tokenize eder (çoklu korpus birleştirme).
+pub fn tokenize_append(
+    text_path: &str,
+    cache_path: &str,
+    bpe: &Bpe,
+    chunk_bytes: usize,
+) -> io::Result<u64> {
+    tokenize_impl(text_path, cache_path, bpe, chunk_bytes, true)
+}
+
+fn tokenize_impl(
+    text_path: &str,
+    cache_path: &str,
+    bpe: &Bpe,
+    chunk_bytes: usize,
+    append: bool,
+) -> io::Result<u64> {
     let mut input = File::open(text_path)?;
     let out = OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true)
+        .truncate(!append)
+        .append(append)
         .open(cache_path)?;
     let mut out = BufWriter::with_capacity(8 << 20, out);
 

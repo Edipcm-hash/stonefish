@@ -371,9 +371,11 @@ pub fn rmsnorm_param_grad(
 ) {
     let mut k = Kargs::new();
     k.buf(dgamma).buf(dy).buf(xhat).i32(rows as i32).i32(cols as i32);
+    // Satır parçalama: yeterli paralellik için ~8192 blok hedefle.
+    let chunks = (8192 / cols.max(1)).clamp(1, 32) as u32;
     gpu::launch(
         "rmsnorm_param_grad",
-        ((cols as u32, 1, 1), (1, 1, 1)),
+        ((cols as u32, chunks, 1), (1, 1, 1)),
         0,
         &mut k,
     );
@@ -398,9 +400,28 @@ pub fn silu_mul_backward(
     gpu::launch("silu_mul_backward", cfg_1d(n), 0, &mut k);
 }
 
+/// RoPE cos/sin tablosunu host'ta üret: (seq × d_head/2).
+pub fn rope_tables(seq: usize, d_head: usize) -> (Vec<f32>, Vec<f32>) {
+    let half = d_head / 2;
+    let mut cos_t = Vec::with_capacity(seq * half);
+    let mut sin_t = Vec::with_capacity(seq * half);
+    for s in 0..seq {
+        for j in 0..half {
+            let freq = 10000f32.powf(-2.0 * j as f32 / d_head as f32);
+            let ang = s as f32 * freq;
+            cos_t.push(ang.cos());
+            sin_t.push(ang.sin());
+        }
+    }
+    (cos_t, sin_t)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn rope_forward(
     out: &impl DevPtr,
     x: &impl DevPtr,
+    cos_t: &impl DevPtr,
+    sin_t: &impl DevPtr,
     batch: usize,
     seq: usize,
     n_heads: usize,
@@ -411,6 +432,8 @@ pub fn rope_forward(
     let mut k = Kargs::new();
     k.buf(out)
         .buf(x)
+        .buf(cos_t)
+        .buf(sin_t)
         .i32(batch as i32)
         .i32(seq as i32)
         .i32(n_heads as i32)
@@ -418,9 +441,12 @@ pub fn rope_forward(
     gpu::launch("rope_forward", cfg_1d(total), 0, &mut k);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn rope_backward(
     dx: &impl DevPtr,
     dy: &impl DevPtr,
+    cos_t: &impl DevPtr,
+    sin_t: &impl DevPtr,
     batch: usize,
     seq: usize,
     n_heads: usize,
@@ -431,6 +457,8 @@ pub fn rope_backward(
     let mut k = Kargs::new();
     k.buf(dx)
         .buf(dy)
+        .buf(cos_t)
+        .buf(sin_t)
         .i32(batch as i32)
         .i32(seq as i32)
         .i32(n_heads as i32)

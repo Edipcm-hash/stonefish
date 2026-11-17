@@ -1017,6 +1017,7 @@ fn test_gpt_gpu(args: &[String]) {
 fn en_prepare() {
     stonefish_ai::en_train::prepare(
         "data/en/train.txt",
+        "data/gb/books.txt",
         "data/en/valid.txt",
         16_384,
         "data/en/tiny",

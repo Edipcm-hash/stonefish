@@ -11,7 +11,7 @@
 #![cfg(feature = "cuda")]
 
 use crate::bpe::{train_bpe, Bpe};
-use crate::corpus::{tokenize_file_to_cache, TokenDataset};
+use crate::corpus::{tokenize_append, tokenize_file_to_cache, TokenDataset};
 use crate::gpu_train::GpuGpt;
 use crate::transformer::GptConfig;
 use std::io::{Read, Write};
@@ -71,44 +71,102 @@ pub fn load_bpe(path: &str) -> std::io::Result<Bpe> {
 // prepare: BPE öğren + cache üret
 // ============================================================
 
-pub fn prepare(train_txt: &str, valid_txt: &str, vocab: usize, out_prefix: &str) {
+/// Karma korpus hazırlığı: TinyStories + Gutenberg.
+///
+/// BPE, iki korpustan alınan örneklem üzerinde öğrenilir (Gutenberg'in kelime
+/// dağarcığı çok daha geniş; yalnız TinyStories ile eğitilmiş BPE kitapları
+/// kötü kodlar). Ardından iki korpus TEK cache dosyasına yazılır: önce
+/// TinyStories, sonra Gutenberg. Eğitim rastgele pencere örneklediği için bu
+/// sıralama dengeli bir karışım verir.
+pub fn prepare(
+    stories_txt: &str,
+    books_txt: &str,
+    valid_txt: &str,
+    vocab: usize,
+    out_prefix: &str,
+) {
     let t0 = std::time::Instant::now();
-    println!("🐟 İngilizce veri hazırlığı\n");
-    println!("Korpus : {train_txt}");
-    println!("Hedef  : vocab={vocab}, çıktı={out_prefix}.{{bpe,train.bin,valid.bin}}\n");
+    println!("🐟 İngilizce veri hazırlığı (karma korpus)\n");
+    println!("TinyStories : {stories_txt}");
+    println!("Gutenberg   : {books_txt}");
+    println!("Valid       : {valid_txt}");
+    println!("Hedef       : vocab={vocab}, çıktı={out_prefix}.{{bpe,train.bin,valid.bin}}\n");
 
-    // BPE öğrenimi için korpusun başından örneklem al (tüm 2 GB gerekmez;
-    // 200 MB, 16k merge için fazlasıyla temsilî).
-    let mut f = std::fs::File::open(train_txt).expect("korpus açılamadı");
-    let mut buf = vec![0u8; 200 << 20];
-    let got = f.read(&mut buf).expect("okuma hatası");
-    buf.truncate(got);
-    let sample = String::from_utf8_lossy(&buf).into_owned();
-    println!("BPE örneklemi: {} MB", got >> 20);
-
+    // --- 1) BPE örneklemi: her korpustan 100 MB ---
+    let mut sample = String::new();
+    for path in [stories_txt, books_txt] {
+        match std::fs::File::open(path) {
+            Ok(mut f) => {
+                let mut buf = vec![0u8; 100 << 20];
+                let got = f.read(&mut buf).unwrap_or(0);
+                buf.truncate(got);
+                sample.push_str(&String::from_utf8_lossy(&buf));
+                println!("BPE örneklemi: {} MB ← {path}", got >> 20);
+            }
+            Err(e) => println!("⚠️  {path} açılamadı ({e}) — atlanıyor"),
+        }
+    }
+    if sample.is_empty() {
+        println!("❌ Hiç korpus bulunamadı.");
+        return;
+    }
     let bpe = train_bpe(&sample, vocab, 300_000);
-    println!("BPE hazır: vocab={} ({} merge), {:.1} s", bpe.vocab(), bpe.merges.len(), t0.elapsed().as_secs_f64());
-
+    println!(
+        "BPE hazır: vocab={} ({} merge), {:.1} s",
+        bpe.vocab(),
+        bpe.merges.len(),
+        t0.elapsed().as_secs_f64()
+    );
     let bpe_path = format!("{out_prefix}.bpe");
     save_bpe(&bpe_path, &bpe).expect("BPE yazılamadı");
+    drop(sample);
 
-    // Tokenize (akışlı)
+    // --- 2) Tokenize: TinyStories (truncate) + Gutenberg (append) ---
     let tr_bin = format!("{out_prefix}.train.bin");
-    let va_bin = format!("{out_prefix}.valid.bin");
-    let t1 = std::time::Instant::now();
-    let n_tr = tokenize_file_to_cache(train_txt, &tr_bin, &bpe, 64 << 20).expect("train tokenize");
-    println!("train tokenize: {n_tr} token, {:.1} s", t1.elapsed().as_secs_f64());
-    let t2 = std::time::Instant::now();
-    let n_va = tokenize_file_to_cache(valid_txt, &va_bin, &bpe, 64 << 20).expect("valid tokenize");
-    println!("valid tokenize: {n_va} token, {:.1} s", t2.elapsed().as_secs_f64());
-    let corpus_bytes = std::fs::metadata(train_txt).map(|m| m.len()).unwrap_or(0);
-    println!(
-        "\nSıkıştırma: {:.2} karakter/token",
-        corpus_bytes as f64 / n_tr.max(1) as f64
-    );
-    println!("Toplam {:.1} dk", t0.elapsed().as_secs_f64() / 60.0);
-}
+    let mut total: u64 = 0;
+    for (i, path) in [stories_txt, books_txt].iter().enumerate() {
+        if !std::path::Path::new(path).exists() {
+            continue;
+        }
+        let t = std::time::Instant::now();
+        let r = if i == 0 {
+            tokenize_file_to_cache(path, &tr_bin, &bpe, 64 << 20)
+        } else {
+            tokenize_append(path, &tr_bin, &bpe, 64 << 20)
+        };
+        match r {
+            Ok(n) => {
+                total += n;
+                println!(
+                    "{:12}: {n} token, {:.1} s (kümülatif {})",
+                    if i == 0 { "TinyStories" } else { "Gutenberg" },
+                    t.elapsed().as_secs_f64(),
+                    total
+                );
+            }
+            Err(e) => println!("⚠️  {path} tokenize edilemedi: {e}"),
+        }
+    }
 
+    // --- 3) Valid (yalnız stories) ---
+    let va_bin = format!("{out_prefix}.valid.bin");
+    let t = std::time::Instant::now();
+    match tokenize_file_to_cache(valid_txt, &va_bin, &bpe, 64 << 20) {
+        Ok(n) => println!("valid       : {n} token, {:.1} s", t.elapsed().as_secs_f64()),
+        Err(e) => println!("⚠️  valid tokenize edilemedi: {e}"),
+    }
+
+    let corpus_bytes: u64 = [stories_txt, books_txt]
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+        .sum();
+    println!(
+        "\nToplam: {} token, sıkıştırma {:.2} karakter/token",
+        total,
+        corpus_bytes as f64 / total.max(1) as f64
+    );
+    println!("Süre: {:.1} dk", t0.elapsed().as_secs_f64() / 60.0);
+}
 // ============================================================
 // train: 250M konfigürasyonu
 // ============================================================
@@ -141,9 +199,9 @@ impl Default for EnTrainArgs {
             seq_len: 512,
             batch: 4,
             accum: 16,
-            total_tokens: 470_000_000,
-            max_lr: 6e-4,
-            warmup: 500,
+            total_tokens: 2_000_000_000,
+            max_lr: 4e-4,
+            warmup: 1000,
             clip: 1.0,
             ckpt_every: 500,
             log_every: 20,
@@ -191,6 +249,10 @@ pub fn train(a: &EnTrainArgs) {
     println!("Checkpoint: her {} adım → {}.state\n", a.ckpt_every, a.out_prefix);
 
     let mut model = GpuGpt::new_random(cfg, a.batch, a.seq_len, 0xDEADBEEF);
+    model.dropout_p = std::env::var("SFISH_DROP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.1);
     let n_params: usize = model.params_mut().iter().map(|p| p.n()).sum();
     println!("Parametre : {n_params} ({:.0} M)", n_params as f64 / 1e6);
 
@@ -205,6 +267,43 @@ pub fn train(a: &EnTrainArgs) {
             }
             Err(e) => println!("⚠️  Resume edilemedi ({e}), sıfırdan başlanıyor"),
         }
+    }
+
+    // --- Zamanlama sondası (SFISH_TIME=1) ---
+    if std::env::var("SFISH_TIME").is_ok() {
+        use std::time::Instant;
+        let bs = a.batch;
+        let mut xi = vec![0i32; bs * a.seq_len];
+        let mut yi = vec![0i32; bs * a.seq_len];
+        for (i, v) in xi.iter_mut().enumerate() {
+            *v = (i % 1000) as i32;
+        }
+        for (i, v) in yi.iter_mut().enumerate() {
+            *v = ((i + 1) % 1000) as i32;
+        }
+        model.training = false;
+        let _ = model.forward_loss(&xi, &yi); // ısınma
+        let t = Instant::now();
+        for _ in 0..3 {
+            let _ = model.forward_loss(&xi, &yi);
+        }
+        let fwd = t.elapsed().as_secs_f64() / 3.0;
+
+        model.dropout_p = 0.0;
+        let _ = model.forward_backward(&xi, &yi); // ısınma
+        let t = Instant::now();
+        for _ in 0..3 {
+            let _ = model.forward_backward(&xi, &yi);
+        }
+        let tot = t.elapsed().as_secs_f64() / 3.0;
+        println!(
+            "\n[zaman] ileri {:.3} s | ileri+geri {:.3} s → geri {:.3} s | oran {:.1}x",
+            fwd,
+            tot,
+            tot - fwd,
+            tot / fwd
+        );
+        return;
     }
 
     let mut rng = 0x1234_5678_9ABC_DEF0u64;
