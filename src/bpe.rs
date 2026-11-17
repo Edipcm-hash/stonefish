@@ -20,9 +20,8 @@ use std::collections::HashMap;
 pub struct Bpe {
     /// merge id → (sol, sağ) sembol çifti. Sembol id'leri: < 256 byte, >= 256 merge.
     pub merges: Vec<(u32, u32)>,
-        /// encode sırasında arama için: (sol, sağ) → yeni id
+    /// encode sırasında arama için: (sol, sağ) → yeni id
     lookup: HashMap<(u32, u32), u32>,
-
 }
 
 impl Bpe {

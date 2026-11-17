@@ -206,7 +206,6 @@ fn tokenize_impl(
     Ok(total)
 }
 
-
 /// Kelime önbellekli encode: metni kelimelere böl, her kelimeyi bir kez çöz.
 fn encode_into(
     bpe: &Bpe,
@@ -300,7 +299,8 @@ mod tests {
         assert_eq!(ds.len(), n);
         let mut raw = vec![0u16; n as usize];
         ds.read(0, &mut raw).unwrap();
-        let all: Vec<u32> = raw.iter().map(|&v| v as u32).collect();        assert_eq!(bpe.decode(&all), content);
+        let all: Vec<u32> = raw.iter().map(|&v| v as u32).collect();
+        assert_eq!(bpe.decode(&all), content);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

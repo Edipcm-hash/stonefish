@@ -43,7 +43,10 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
     let l = model
         .forward_batch(&ids, batch, seq)
         .softmax_cross_entropy_ids(&tgt);
-    println!("\n=== {label} (B={batch}, S={seq}) loss={:.6} ===", l.item());
+    println!(
+        "\n=== {label} (B={batch}, S={seq}) loss={:.6} ===",
+        l.item()
+    );
     l.backward();
 
     // v2 parametre sırası: gömme → her blok (norm1, wq/wk/wv/wo, norm2,

@@ -53,7 +53,10 @@ nvrtc_fn!(
     nvrtcGetProgramLog,
     unsafe extern "system" fn(nvrtcProgram, *mut i8) -> nvrtcResult
 );
-nvrtc_fn!(nvrtcDestroyProgram, unsafe extern "system" fn(*mut nvrtcProgram) -> nvrtcResult);
+nvrtc_fn!(
+    nvrtcDestroyProgram,
+    unsafe extern "system" fn(*mut nvrtcProgram) -> nvrtcResult
+);
 
 /// CUDA C kaynağını PTX'e derle.
 pub fn compile(src: &str, opts: &[&str]) -> Result<String, String> {
@@ -69,8 +72,14 @@ pub fn compile(src: &str, opts: &[&str]) -> Result<String, String> {
         let cs = std::ffi::CString::new(src).map_err(|e| e.to_string())?;
         let cname = std::ffi::CString::new("stonefish").unwrap();
         let mut prog: nvrtcProgram = std::ptr::null_mut();
-        if create(&mut prog, cs.as_ptr(), cname.as_ptr(), 0, std::ptr::null(), std::ptr::null())
-            != NVRTC_SUCCESS
+        if create(
+            &mut prog,
+            cs.as_ptr(),
+            cname.as_ptr(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        ) != NVRTC_SUCCESS
         {
             return Err("nvrtcCreateProgram başarısız".into());
         }
@@ -88,7 +97,9 @@ pub fn compile(src: &str, opts: &[&str]) -> Result<String, String> {
             if log_size(prog, &mut n) == NVRTC_SUCCESS && n > 1 {
                 let mut buf = vec![0i8; n];
                 if get_log(prog, buf.as_mut_ptr()) == NVRTC_SUCCESS {
-                    log = std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
+                    log = std::ffi::CStr::from_ptr(buf.as_ptr())
+                        .to_string_lossy()
+                        .into_owned();
                 }
             }
             destroy(&mut prog);

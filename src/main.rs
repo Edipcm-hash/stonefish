@@ -27,8 +27,14 @@ const MODES: &[(&str, &str)] = &[
     ("eval", "kayıtlı MNIST modelini test setinde ölç"),
     ("predict", "kayıtlı MNIST modeliyle tahmin (eval ile aynı)"),
     ("tokenize", "tokenizer'ı doğrula + sequence sayısını bas"),
-    ("gpt-train", "mini GPT eğit [epoch] [batch] [max_steps] [max_lr]"),
-    ("gpt-gen", "kayıtlı GPT ile metin üret  [prompt] [token] [sıcaklık]"),
+    (
+        "gpt-train",
+        "mini GPT eğit [epoch] [batch] [max_steps] [max_lr]",
+    ),
+    (
+        "gpt-gen",
+        "kayıtlı GPT ile metin üret  [prompt] [token] [sıcaklık]",
+    ),
     ("test-ops", "op duman testi"),
     ("test-embed", "embedding duman testi"),
     ("test-attn", "attention duman testi"),
@@ -36,16 +42,34 @@ const MODES: &[(&str, &str)] = &[
     ("test-gpu-matmul", "GPU matmul == CPU matmul"),
     ("test-gpu-bench", "256² matmul: CPU vs GPU"),
     ("test-gpu-bench-big", "256/512/1024² matmul: CPU vs GPU"),
-    ("test-matmul-bench", "gerçek model şeklinde CPU vs GPU matmul"),
+    (
+        "test-matmul-bench",
+        "gerçek model şeklinde CPU vs GPU matmul",
+    ),
     ("test-gpu-train", "küçük MLP'te 10 adım süresi"),
     ("test-gpt-gpu", "küçük GPT'te adım süresi"),
-    ("test-gpt-profile", "gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)"),
-    ("test-gpu-native", "GPU-native eğiticiyi ölç (device-resident, çekirdekler)"),
-    ("en-prepare", "İngilizce korpus: BPE öğren + u16 token cache üret"),
+    (
+        "test-gpt-profile",
+        "gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)",
+    ),
+    (
+        "test-gpu-native",
+        "GPU-native eğiticiyi ölç (device-resident, çekirdekler)",
+    ),
+    (
+        "en-prepare",
+        "İngilizce korpus: BPE öğren + u16 token cache üret",
+    ),
     ("en-train", "İngilizce GPT eğit [token_sayısı] [d_model]"),
-    ("demo", "Tek komut demo: 90 saniyede sıfırdan eğit + metin üret [saniye]"),
+    (
+        "demo",
+        "Tek komut demo: 90 saniyede sıfırdan eğit + metin üret [saniye]",
+    ),
     ("test-ffi", "Kendi CUDA FFI öz-testi (kendi sürücü FFI'si)"),
-    ("en-eval", "İngilizce modeli valid sette ölç (loss/perplexity/BPC)"),
+    (
+        "en-eval",
+        "İngilizce modeli valid sette ölç (loss/perplexity/BPC)",
+    ),
     ("en-gen", "İngilizce metin üret [prompt] [token] [sıcaklık]"),
 ];
 
@@ -57,11 +81,14 @@ fn arg_f32(args: &[String], i: usize, default: f32) -> f32 {
     args.get(i).and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rest: &[String] = if args.len() > 2 { &args[2..] } else { &[] };
-    let mode = if args.len() < 2 { "train" } else { args[1].as_str() };
+    let mode = if args.len() < 2 {
+        "train"
+    } else {
+        args[1].as_str()
+    };
 
     match mode {
         "help" | "-h" | "--help" => {
@@ -107,7 +134,11 @@ fn main() {
             eprintln!("Bilinmeyen mod: {}", other);
             eprintln!(
                 "Geçerli modlar: {}",
-                MODES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(" | ")
+                MODES
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             );
             eprintln!("Ayrıntı için: stonefish_ai help");
             std::process::exit(1);
@@ -137,10 +168,7 @@ fn gpt_train(args: &[String]) {
     let shuffle_seed = 0xA5A5_1234u64;
 
     let run_t0 = std::time::Instant::now();
-    println!(
-        "🐟 StonefishAI v{} — GPT eğitimi\n",
-        stonefish_ai::VERSION
-    );
+    println!("🐟 StonefishAI v{} — GPT eğitimi\n", stonefish_ai::VERSION);
     println!(
         "Donanım : GPU={} ({})\n",
         gpu::HAS_CUDA,
@@ -181,15 +209,34 @@ fn gpt_train(args: &[String]) {
     let steps_per_epoch = n_train.div_ceil(batch_size);
     let total_steps = steps_per_epoch * epochs;
 
-    println!("Veri    : {} karakter → {} sequence (train {}, val {}), seq_len {}",
-             all_ids.len(), seqs.len(), n_train, n_val, SEQ_LEN);
-    println!("Model   : d_model={}, layers={}, heads={} (d_head={}), params={}",
-             config.d_model, config.n_layers, config.n_heads, config.d_head(), n_params);
-    println!("Optim   : Adam β=(0.9,0.999), max_lr={}, warmup={} adım, cosine → {}x, clip_norm={}",
-             max_lr, WARMUP_STEPS, MIN_LR_RATIO, CLIP_NORM);
-    println!("Plan    : {} epoch × {} adım = {} adım, batch={} ({} token/adım)",
-             epochs, steps_per_epoch, total_steps, batch_size, tokens_per_step);
-    println!("Seed    : model=0x{:X}, shuffle=0x{:X}", model_seed, shuffle_seed);
+    println!(
+        "Veri    : {} karakter → {} sequence (train {}, val {}), seq_len {}",
+        all_ids.len(),
+        seqs.len(),
+        n_train,
+        n_val,
+        SEQ_LEN
+    );
+    println!(
+        "Model   : d_model={}, layers={}, heads={} (d_head={}), params={}",
+        config.d_model,
+        config.n_layers,
+        config.n_heads,
+        config.d_head(),
+        n_params
+    );
+    println!(
+        "Optim   : Adam β=(0.9,0.999), max_lr={}, warmup={} adım, cosine → {}x, clip_norm={}",
+        max_lr, WARMUP_STEPS, MIN_LR_RATIO, CLIP_NORM
+    );
+    println!(
+        "Plan    : {} epoch × {} adım = {} adım, batch={} ({} token/adım)",
+        epochs, steps_per_epoch, total_steps, batch_size, tokens_per_step
+    );
+    println!(
+        "Seed    : model=0x{:X}, shuffle=0x{:X}",
+        model_seed, shuffle_seed
+    );
     println!();
 
     let mut trainer = Trainer::new(config, model_seed, batch_size, SEQ_LEN);
@@ -233,7 +280,7 @@ fn gpt_train(args: &[String]) {
             }
 
             // Tek adım: ileri + geri + Adam + gradyan kırpma
-                let (l, gnorm) = trainer.train_step(&input_ids, &targets, bs, SEQ_LEN, lr, CLIP_NORM);
+            let (l, gnorm) = trainer.train_step(&input_ids, &targets, bs, SEQ_LEN, lr, CLIP_NORM);
             if gnorm > CLIP_NORM {
                 clipped += 1;
             }
@@ -249,13 +296,7 @@ fn gpt_train(args: &[String]) {
                 let tps = (n_steps * tokens_per_step) as f64 / elapsed;
                 println!(
                     "epoch {} step {:5}/{}  loss {:.4}  lr {:.2e}  gnorm {:.2}  ({:.0} tok/s)",
-                    epoch,
-                    n_steps,
-                    steps_per_epoch,
-                    avg,
-                    lr,
-                    gnorm,
-                    tps
+                    epoch, n_steps, steps_per_epoch, avg, lr, gnorm, tps
                 );
             }
 
@@ -296,8 +337,7 @@ fn gpt_train(args: &[String]) {
             best_val = val_loss;
             best_epoch = epoch;
             trainer.sync_to_cpu(&mut model);
-            checkpoint::save_gpt(GPT_PATH, &model, &tok)
-                .expect("en iyi checkpoint kaydedilemedi");
+            checkpoint::save_gpt(GPT_PATH, &model, &tok).expect("en iyi checkpoint kaydedilemedi");
             let _ = tok.save(GPT_VOCAB_PATH);
         }
     }
@@ -329,7 +369,10 @@ fn gpt_train(args: &[String]) {
         total_secs,
     );
 
-    println!("En iyi model : epoch {} (val CE = {:.4}) → {}", best_epoch, best_val, GPT_PATH);
+    println!(
+        "En iyi model : epoch {} (val CE = {:.4}) → {}",
+        best_epoch, best_val, GPT_PATH
+    );
     println!("Nihai model  : {}", final_path);
     match manifest {
         Ok(path) => println!("Manifest     : {}", path),
@@ -386,7 +429,10 @@ fn write_manifest(
 
     let mut s = String::new();
     s.push_str("{\n");
-    s.push_str(&format!("  \"stonefish_version\": \"{}\",\n", stonefish_ai::VERSION));
+    s.push_str(&format!(
+        "  \"stonefish_version\": \"{}\",\n",
+        stonefish_ai::VERSION
+    ));
     s.push_str(&format!("  \"gpu\": {},\n", gpu::HAS_CUDA));
     s.push_str("  \"config\": {\n");
     s.push_str(&format!("    \"vocab_size\": {},\n", config.vocab_size));
@@ -437,7 +483,10 @@ fn write_manifest(
 // ============================================================
 
 fn gpt_generate(args: &[String]) {
-    println!("🐟 StonefishAI v{} — GPT metin üretimi\n", stonefish_ai::VERSION);
+    println!(
+        "🐟 StonefishAI v{} — GPT metin üretimi\n",
+        stonefish_ai::VERSION
+    );
 
     let (model, tok) = match checkpoint::load_gpt(GPT_PATH) {
         Ok(v) => v,
@@ -456,7 +505,9 @@ fn gpt_generate(args: &[String]) {
     // Korpus drift kontrolü: yan dosyadaki vocab checkpoint'le aynı mı?
     match Tokenizer::load(GPT_VOCAB_PATH) {
         Ok(disc) if !disc.same_vocab(&tok) => {
-            eprintln!("⚠️  {GPT_VOCAB_PATH} checkpoint vocab'ı ile uyuşmuyor — dosya eski olabilir.");
+            eprintln!(
+                "⚠️  {GPT_VOCAB_PATH} checkpoint vocab'ı ile uyuşmuyor — dosya eski olabilir."
+            );
         }
         Ok(_) => {}
         Err(_) => {}
@@ -472,12 +523,18 @@ fn gpt_generate(args: &[String]) {
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(0.8f32);
 
-    println!("Prompt: {:?}  ({} token, sıcaklık {})\n", prompt, n_generate, temperature);
+    println!(
+        "Prompt: {:?}  ({} token, sıcaklık {})\n",
+        prompt, n_generate, temperature
+    );
 
     let mut generated: Vec<usize> = match tok.try_encode(&prompt) {
         Ok(v) => v,
         Err(c) => {
-            eprintln!("❌ Prompt'taki {:?} karakteri bu modelin vocab'ında yok.", c);
+            eprintln!(
+                "❌ Prompt'taki {:?} karakteri bu modelin vocab'ında yok.",
+                c
+            );
             std::process::exit(1);
         }
     };
@@ -549,7 +606,10 @@ fn gpt_generate(args: &[String]) {
 // ============================================================
 
 fn train() {
-    println!("🐟 StonefishAI v{} — MNIST eğitimi\n", stonefish_ai::VERSION);
+    println!(
+        "🐟 StonefishAI v{} — MNIST eğitimi\n",
+        stonefish_ai::VERSION
+    );
     let x_train = load_images("data/train-images-idx3-ubyte");
     let y_train = load_labels_onehot("data/train-labels-idx1-ubyte");
     let x_test = load_images("data/t10k-images-idx3-ubyte");
@@ -679,7 +739,10 @@ fn tokenize() {
     match tok.try_encode(sample) {
         Ok(ids) => {
             let decoded = tok.decode(&ids);
-            println!("Round-trip: {}", if sample == decoded { "✅" } else { "❌" });
+            println!(
+                "Round-trip: {}",
+                if sample == decoded { "✅" } else { "❌" }
+            );
         }
         Err(c) => println!("❌ Örnek metinde bilinmeyen karakter: {:?}", c),
     }
@@ -729,7 +792,10 @@ fn test_embed() {
     for d in 0..d_model {
         s1 += tg.get(1, d);
     }
-    assert!((s1 - d_model as f32).abs() < 1e-4, "token_emb grad toplamı yanlış");
+    assert!(
+        (s1 - d_model as f32).abs() < 1e-4,
+        "token_emb grad toplamı yanlış"
+    );
     println!("✅ Embedding OK (RoPE: pozisyon gömme yok)");
 }
 
@@ -748,10 +814,22 @@ fn test_attn() {
     out.sum().backward();
     let sum_abs = |g: &Matrix| -> f32 { g.data.iter().map(|x| x.abs()).sum() };
     assert!(sum_abs(&x.grad.borrow()) > 1e-6, "x gradyanı sıfır");
-    assert!(sum_abs(&attn.w_q.grad.borrow()) > 1e-6, "w_q gradyanı sıfır");
-    assert!(sum_abs(&attn.w_k.grad.borrow()) > 1e-6, "w_k gradyanı sıfır");
-    assert!(sum_abs(&attn.w_v.grad.borrow()) > 1e-6, "w_v gradyanı sıfır");
-    assert!(sum_abs(&attn.w_o.grad.borrow()) > 1e-6, "w_o gradyanı sıfır");
+    assert!(
+        sum_abs(&attn.w_q.grad.borrow()) > 1e-6,
+        "w_q gradyanı sıfır"
+    );
+    assert!(
+        sum_abs(&attn.w_k.grad.borrow()) > 1e-6,
+        "w_k gradyanı sıfır"
+    );
+    assert!(
+        sum_abs(&attn.w_v.grad.borrow()) > 1e-6,
+        "w_v gradyanı sıfır"
+    );
+    assert!(
+        sum_abs(&attn.w_o.grad.borrow()) > 1e-6,
+        "w_o gradyanı sıfır"
+    );
     println!("✅ Tüm gradyanlar sıfır değil\n🎉 Attention testi geçti!");
 }
 
@@ -811,12 +889,12 @@ fn test_gpu_matmul() {
 fn test_gpu_bench() {
     println!("🐟 GPU matmul hız testi (256²)\n");
     let (cpu, gpu_t, diff) = compare_matmul(256);
-    println!("CPU: {:?}\nGPU (transfer+matmul+transfer): {:?}", cpu, gpu_t);
-    println!("Max fark: {:.3e}", diff);
     println!(
-        "Hızlanma: {:.2}x",
-        cpu.as_secs_f64() / gpu_t.as_secs_f64()
+        "CPU: {:?}\nGPU (transfer+matmul+transfer): {:?}",
+        cpu, gpu_t
     );
+    println!("Max fark: {:.3e}", diff);
+    println!("Hızlanma: {:.2}x", cpu.as_secs_f64() / gpu_t.as_secs_f64());
 }
 
 fn test_gpu_bench_big() {
@@ -959,7 +1037,9 @@ fn test_gpt_gpu(args: &[String]) {
     // Isınma (CUDA context + cuBLAS handle)
     {
         let (ids, tgt) = make_batch(0);
-        let l = model.forward_batch(&ids, batch, seq_len).softmax_cross_entropy_ids(&tgt);
+        let l = model
+            .forward_batch(&ids, batch, seq_len)
+            .softmax_cross_entropy_ids(&tgt);
         opt.zero_grad();
         l.backward();
     }
@@ -969,7 +1049,9 @@ fn test_gpt_gpu(args: &[String]) {
     for i in 0..steps {
         let (ids, tgt) = make_batch(i);
         std::hint::black_box(
-            model.forward_batch(&ids, batch, seq_len).softmax_cross_entropy_ids(&tgt),
+            model
+                .forward_batch(&ids, batch, seq_len)
+                .softmax_cross_entropy_ids(&tgt),
         );
     }
     let fwd = t0.elapsed().as_secs_f64() / steps as f64;
@@ -979,7 +1061,9 @@ fn test_gpt_gpu(args: &[String]) {
     let mut total = 0.0f32;
     for i in 0..steps {
         let (ids, tgt) = make_batch(i);
-        let loss = model.forward_batch(&ids, batch, seq_len).softmax_cross_entropy_ids(&tgt);
+        let loss = model
+            .forward_batch(&ids, batch, seq_len)
+            .softmax_cross_entropy_ids(&tgt);
         opt.zero_grad();
         loss.backward();
         opt.step();
@@ -1089,13 +1173,18 @@ fn test_ffi() {
 fn en_eval(args: &[String]) {
     let max_batches: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(500);
     println!("🐟 İngilizce model değerlendirmesi\n");
-    let (loss, ppl, bpc, tokens) = stonefish_ai::en_train::eval("data/en/tiny", "stonefish_en.state", max_batches);
+    let (loss, ppl, bpc, tokens) =
+        stonefish_ai::en_train::eval("data/en/tiny", "stonefish_en.state", max_batches);
     println!("\n--- SONUÇ ---");
     println!("Örneklenen     : {tokens} token");
     println!("val loss       : {loss:.4} nat/token");
     println!("perplexity     : {ppl:.2}");
     println!("BPC            : {bpc:.4} bit/karakter");
-    println!("\nReferans: rastgele tahmin = ln({}) = {:.2}", 16384, (16384f64).ln());
+    println!(
+        "\nReferans: rastgele tahmin = ln({}) = {:.2}",
+        16384,
+        (16384f64).ln()
+    );
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -1105,7 +1194,10 @@ fn en_eval(_args: &[String]) {
 
 #[cfg(feature = "cuda")]
 fn en_gen(args: &[String]) {
-    let prompt = args.first().cloned().unwrap_or_else(|| "Once upon a time".into());
+    let prompt = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Once upon a time".into());
     let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(200);
     let temp: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.8);
     stonefish_ai::en_train::generate("data/en/tiny", "stonefish_en.state", &prompt, n, temp, 40);
@@ -1126,7 +1218,9 @@ fn test_gpu_native(args: &[String]) {
     let steps: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
     let batch: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
-    println!("🐟 GPU-native eğitici (device-resident) — d=128, 4 katman, 4 head, S=128, batch={batch}\n");
+    println!(
+        "🐟 GPU-native eğitici (device-resident) — d=128, 4 katman, 4 head, S=128, batch={batch}\n"
+    );
     if !gpu::HAS_CUDA {
         println!("❌ CUDA kapalı.");
         return;
@@ -1149,7 +1243,11 @@ fn test_gpu_native(args: &[String]) {
     let cpu_model = GPT::new(cfg, &mut seed);
 
     let mut g = stonefish_ai::gpu_train::GpuGpt::from_cpu(&cpu_model, batch, seq_len);
-    println!("Model: {} param, {} tensör cihazda", cpu_model.n_params(), g.params_mut().len());
+    println!(
+        "Model: {} param, {} tensör cihazda",
+        cpu_model.n_params(),
+        g.params_mut().len()
+    );
 
     let batch_ids = |i: usize| -> (Vec<i32>, Vec<i32>) {
         let mut ids = Vec::with_capacity(batch * seq_len);
@@ -1200,9 +1298,14 @@ fn test_gpu_native(args: &[String]) {
 /// autograd motorunu kullanır. Ağırlıklar ayrıca bir "dış" modelde tutulur
 /// çünkü checkpoint formatı CPU modeli üzerinden tanımlı.
 enum Trainer {
-    Cpu { model: Box<GPT>, opt: Box<Adam> },
+    Cpu {
+        model: Box<GPT>,
+        opt: Box<Adam>,
+    },
     #[cfg(feature = "cuda")]
-    Gpu { g: Box<stonefish_ai::gpu_train::GpuGpt> },
+    Gpu {
+        g: Box<stonefish_ai::gpu_train::GpuGpt>,
+    },
 }
 
 impl Trainer {
@@ -1213,7 +1316,9 @@ impl Trainer {
                 let mut s = seed;
                 let probe = GPT::new(config, &mut s);
                 return Trainer::Gpu {
-                    g: Box::new(stonefish_ai::gpu_train::GpuGpt::from_cpu(&probe, batch, seq)),
+                    g: Box::new(stonefish_ai::gpu_train::GpuGpt::from_cpu(
+                        &probe, batch, seq,
+                    )),
                 };
             }
         }
@@ -1221,9 +1326,11 @@ impl Trainer {
         let model = GPT::new(config, &mut s);
         let opt = Adam::new(model.parameters(), 1e-3);
         let _ = (batch, seq);
-        Trainer::Cpu { model: Box::new(model), opt: Box::new(opt) }
+        Trainer::Cpu {
+            model: Box::new(model),
+            opt: Box::new(opt),
+        }
     }
-
 
     /// Tek eğitim adımı. Döner: (loss, kırpma öncesi global gradyan normu).
     fn train_step(
@@ -1397,19 +1504,84 @@ fn test_gpt_profile(args: &[String]) {
         gpu::HAS_CUDA
     );
     println!("  matmul çağrısı: {} / adım\n", calls / steps as u64);
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "matmul (transfer dahil)", ms(mm_ns), pct(mm_ns));
-    println!("    {:<36} {:8.2} ms/adım  %{:5.1}", "├─ transfer (CPU↔GPU)", ms(tr_ns), pct(tr_ns));
-    println!("    {:<36} {:8.2} ms/adım  %{:5.1}", "└─ gerçek GEMM", ms(matmul_compute), pct(matmul_compute));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "attention (fwd+bwd, CPU)", ms(attn), pct(attn));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "  ├─ forward", ms(af_ns), pct(af_ns));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "  └─ backward", ms(ab_ns), pct(ab_ns));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "gelu (fwd+bwd)", ms(s.gelu), pct(s.gelu));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "layer_norm (fwd+bwd)", ms(s.ln), pct(s.ln));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "cross-entropy (fwd+bwd)", ms(s.ce), pct(s.ce));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "adam.step", ms(s.adam), pct(s.adam));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "float_zero_grad (param sıfırlama)", ms(s.zero_grad), pct(s.zero_grad));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "ara tensör tahsisi (from_op)", ms(s.alloc), pct(s.alloc));
-    println!("  {:<38} {:8.2} ms/adım  %{:5.1}", "diğer (softmax, paketleme, …)", ms(diger), pct(diger));
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "matmul (transfer dahil)",
+        ms(mm_ns),
+        pct(mm_ns)
+    );
+    println!(
+        "    {:<36} {:8.2} ms/adım  %{:5.1}",
+        "├─ transfer (CPU↔GPU)",
+        ms(tr_ns),
+        pct(tr_ns)
+    );
+    println!(
+        "    {:<36} {:8.2} ms/adım  %{:5.1}",
+        "└─ gerçek GEMM",
+        ms(matmul_compute),
+        pct(matmul_compute)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "attention (fwd+bwd, CPU)",
+        ms(attn),
+        pct(attn)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  ├─ forward",
+        ms(af_ns),
+        pct(af_ns)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "  └─ backward",
+        ms(ab_ns),
+        pct(ab_ns)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "gelu (fwd+bwd)",
+        ms(s.gelu),
+        pct(s.gelu)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "layer_norm (fwd+bwd)",
+        ms(s.ln),
+        pct(s.ln)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "cross-entropy (fwd+bwd)",
+        ms(s.ce),
+        pct(s.ce)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "adam.step",
+        ms(s.adam),
+        pct(s.adam)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "float_zero_grad (param sıfırlama)",
+        ms(s.zero_grad),
+        pct(s.zero_grad)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "ara tensör tahsisi (from_op)",
+        ms(s.alloc),
+        pct(s.alloc)
+    );
+    println!(
+        "  {:<38} {:8.2} ms/adım  %{:5.1}",
+        "diğer (softmax, paketleme, …)",
+        ms(diger),
+        pct(diger)
+    );
     println!(
         "\n  Hesap (GEMM+attention) %{:.1} · Transfer %{:.1} · Diğer %{:.1}",
         pct(hesap),

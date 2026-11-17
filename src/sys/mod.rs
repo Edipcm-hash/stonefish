@@ -187,8 +187,18 @@ pub fn cuda_available() -> bool {
 }
 
 pub const CUDA_MODULES: &[&str] = &["nvcuda.dll", "libcuda.so.1", "libcuda.so"];
-pub const CUBLAS_MODULES: &[&str] = &["cublas64_13.dll", "cublas64_12.dll", "libcublas.so.12", "libcublas.so"];
-pub const NVRTC_MODULES: &[&str] = &["nvrtc64_130_0.dll", "nvrtc64_120_0.dll", "libnvrtc.so.12", "libnvrtc.so"];
+pub const CUBLAS_MODULES: &[&str] = &[
+    "cublas64_13.dll",
+    "cublas64_12.dll",
+    "libcublas.so.12",
+    "libcublas.so",
+];
+pub const NVRTC_MODULES: &[&str] = &[
+    "nvrtc64_130_0.dll",
+    "nvrtc64_120_0.dll",
+    "libnvrtc.so.12",
+    "libnvrtc.so",
+];
 
 pub mod cublas;
 pub mod cuda;

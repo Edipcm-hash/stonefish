@@ -139,7 +139,10 @@ pub fn run(seconds: u64) {
         }
         println!("\n");
     }
-    println!("Bu metin {} saniyelik eğitimden geliyor — motor çalışıyor.", seconds);
+    println!(
+        "Bu metin {} saniyelik eğitimden geliyor — motor çalışıyor.",
+        seconds
+    );
     println!("Gerçek model: `stonefish_ai en-gen` (236M parametre, 12 saat eğitim).");
 }
 

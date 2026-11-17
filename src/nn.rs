@@ -2,7 +2,7 @@
 use crate::autograd::Tensor;
 use crate::tensor::Matrix;
 use std::fs::File;
-use std::io::{Read, Write, BufWriter, BufReader};
+use std::io::{BufReader, BufWriter, Read, Write};
 
 pub struct Linear {
     pub weight: Tensor, // in × out
@@ -97,7 +97,10 @@ pub fn load_model(path: &str, n_layers: usize) -> std::io::Result<Vec<Linear>> {
 
     let mut magic = [0u8; 8];
     r.read_exact(&mut magic)?;
-    assert_eq!(&magic, MAGIC, "magic yanlış — bu bir Stonefish modeli değil");
+    assert_eq!(
+        &magic, MAGIC,
+        "magic yanlış — bu bir Stonefish modeli değil"
+    );
 
     let version = read_u32(&mut r)?;
     assert_eq!(version, VERSION, "desteklenmeyen versiyon: {}", version);

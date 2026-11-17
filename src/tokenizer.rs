@@ -46,10 +46,13 @@ impl Tokenizer {
     }
 
     fn from_chars_unchecked(chars: Vec<char>) -> Self {
-        let stoi: HashMap<char, usize> =
-            chars.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+        let stoi: HashMap<char, usize> = chars.iter().enumerate().map(|(i, &c)| (c, i)).collect();
         let vocab_size = chars.len();
-        Self { chars, stoi, vocab_size }
+        Self {
+            chars,
+            stoi,
+            vocab_size,
+        }
     }
 
     /// Metni ID vektörüne çevir. Bilinmeyen karakter → hata (sessiz bozulma yok).
@@ -67,7 +70,10 @@ impl Tokenizer {
     /// `try_encode`'in panikleyen sarmalayıcısı (CLI için pratik).
     pub fn encode(&self, text: &str) -> Vec<usize> {
         self.try_encode(text).unwrap_or_else(|c| {
-            panic!("bilinmeyen karakter: {:?} (U+{:04X}) — bu karakter eğitim korpusunda yok", c, c as u32)
+            panic!(
+                "bilinmeyen karakter: {:?} (U+{:04X}) — bu karakter eğitim korpusunda yok",
+                c, c as u32
+            )
         })
     }
 

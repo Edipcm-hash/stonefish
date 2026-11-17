@@ -32,7 +32,9 @@ pub enum Op {
     GELU,
     LayerNorm(f32), // eps
     /// Satır paketli embedding: `seq_len` pozisyon indeksini geri türetmek için.
-    Embedding { seq_len: usize },
+    Embedding {
+        seq_len: usize,
+    },
     MaskCausal,
     /// Fused causal multi-head self-attention.
     /// q, k, v: (batch*seq, d_model). Çıktı: (batch*seq, d_model).
@@ -84,12 +86,7 @@ impl Tensor {
         Self::from_op_cached(data, op, inputs, Vec::new())
     }
 
-    pub fn from_op_cached(
-        data: Matrix,
-        op: Op,
-        inputs: Vec<Tensor>,
-        cache: Vec<Matrix>,
-    ) -> Self {
+    pub fn from_op_cached(data: Matrix, op: Op, inputs: Vec<Tensor>, cache: Vec<Matrix>) -> Self {
         let t = crate::profile::start();
         let requires_grad = inputs.iter().any(|t| t.requires_grad);
         let grad = Rc::new(RefCell::new(Matrix::zeros(data.rows, data.cols)));
@@ -230,7 +227,11 @@ impl Tensor {
         let t = crate::profile::start();
         let zd = self.data.borrow();
         let (rows, classes) = (zd.rows, zd.cols);
-        assert_eq!(targets.len(), rows, "CE: hedef sayısı satır sayısına eşit olmalı");
+        assert_eq!(
+            targets.len(),
+            rows,
+            "CE: hedef sayısı satır sayısına eşit olmalı"
+        );
 
         let mut total_loss = 0.0f32;
         let mut probs = Matrix::zeros(rows, classes);
@@ -294,12 +295,7 @@ impl Tensor {
         }
         drop(zd);
         crate::profile::stop(t, &crate::profile::SOFTMAX_NANOS);
-        Tensor::from_op_cached(
-            data.clone(),
-            Op::Softmax,
-            vec![self.clone()],
-            vec![data],
-        )
+        Tensor::from_op_cached(data.clone(), Op::Softmax, vec![self.clone()], vec![data])
     }
 
     pub fn gelu(&self) -> Tensor {
@@ -465,7 +461,11 @@ impl Tensor {
         n_heads: usize,
     ) -> Tensor {
         let prof = crate::profile::enabled();
-        let t0 = if prof { Some(std::time::Instant::now()) } else { None };
+        let t0 = if prof {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let (out_data, weights) = {
             let qd = self.data.borrow();
             let kd = k.data.borrow();
@@ -499,7 +499,8 @@ impl Tensor {
                         let mut max = f32::NEG_INFINITY;
                         for j in 0..=i {
                             let k_row = b * seq + j;
-                            let k_s = &kd.data[k_row * d_model + off..k_row * d_model + off + d_head];
+                            let k_s =
+                                &kd.data[k_row * d_model + off..k_row * d_model + off + d_head];
                             let mut acc = 0.0f32;
                             for d in 0..d_head {
                                 acc += q_s[d] * k_s[d];
@@ -531,7 +532,8 @@ impl Tensor {
                         for j in 0..=i {
                             let wj = scores[j];
                             let v_row = b * seq + j;
-                            let v_s = &vd.data[v_row * d_model + off..v_row * d_model + off + d_head];
+                            let v_s =
+                                &vd.data[v_row * d_model + off..v_row * d_model + off + d_head];
                             for d in 0..d_head {
                                 o_s[d] += wj * v_s[d];
                             }
@@ -548,7 +550,11 @@ impl Tensor {
 
         Tensor::from_op_cached(
             out_data,
-            Op::CausalAttention { batch, seq, n_heads },
+            Op::CausalAttention {
+                batch,
+                seq,
+                n_heads,
+            },
             vec![self.clone(), k.clone(), v.clone()],
             vec![weights],
         )
@@ -799,7 +805,8 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                     g_x.set(
                         i,
                         j,
-                        (1.0 / n) * inv_i
+                        (1.0 / n)
+                            * inv_i
                             * (n * dx_hat[j] - sum_dxhat - x_hat.get(i, j) * sum_dxhat_xhat),
                     );
                 }
@@ -942,7 +949,11 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             let scale = 1.0 / (d_head as f32).sqrt();
             let up = &upstream.data;
             let prof = crate::profile::enabled();
-            let t0 = if prof { Some(std::time::Instant::now()) } else { None };
+            let t0 = if prof {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
             // Forward: out_i = Σ_{j<=i} w_ij v_j,  w = softmax(scale·q_i·k_j)
             // Backward:
@@ -970,8 +981,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                         // zip'ler vektörleştirmeye açık.
                         let q_s = &qd.data[q_off..q_off + d_head];
                         let up_s = &up[q_off..q_off + d_head];
-                        let w_row =
-                            &weights.data[(w_row0 + i) * seq..(w_row0 + i) * seq + i1];
+                        let w_row = &weights.data[(w_row0 + i) * seq..(w_row0 + i) * seq + i1];
 
                         // dW_ij = <dOut_i, V_j> ; dsum = Σ_j w_ij·dW_ij
                         let mut dsum = 0.0f32;

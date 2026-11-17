@@ -19,7 +19,11 @@ pub const SRC: &str = include_str!("../kernels/stonefish.cu");
 /// out = a + bias (satır bazlı broadcast)
 pub fn add_bias(out: &impl DevPtr, a: &impl DevPtr, bias: &impl DevPtr, rows: usize, cols: usize) {
     let mut k = Kargs::new();
-    k.buf(out).buf(a).buf(bias).i32(rows as i32).i32(cols as i32);
+    k.buf(out)
+        .buf(a)
+        .buf(bias)
+        .i32(rows as i32)
+        .i32(cols as i32);
     gpu::launch("add_scalar_broadcast", cfg_1d(rows * cols), 0, &mut k);
 }
 
@@ -304,7 +308,12 @@ pub fn sum_squares(acc: &impl DevPtr, x: &impl DevPtr, n: usize) {
     k.buf(acc).buf(x).i32(n as i32);
     let threads = 256u32;
     let blocks = ((n as u64).div_ceil(threads as u64)).max(1) as u32;
-    gpu::launch("sum_squares_atomic", ((blocks, 1, 1), (threads, 1, 1)), 0, &mut k);
+    gpu::launch(
+        "sum_squares_atomic",
+        ((blocks, 1, 1), (threads, 1, 1)),
+        0,
+        &mut k,
+    );
 }
 
 pub fn scale_inplace(x: &impl DevPtr, n: usize, s: f32) {
@@ -338,7 +347,12 @@ pub fn rmsnorm_forward(
         .i32(rows as i32)
         .i32(cols as i32)
         .f32(eps);
-    gpu::launch("rmsnorm_forward", cfg_rows(rows, threads), threads * 4, &mut k);
+    gpu::launch(
+        "rmsnorm_forward",
+        cfg_rows(rows, threads),
+        threads * 4,
+        &mut k,
+    );
 }
 
 pub fn rmsnorm_backward(
@@ -359,7 +373,12 @@ pub fn rmsnorm_backward(
         .buf(gamma)
         .i32(rows as i32)
         .i32(cols as i32);
-    gpu::launch("rmsnorm_backward", cfg_rows(rows, threads), threads * 4, &mut k);
+    gpu::launch(
+        "rmsnorm_backward",
+        cfg_rows(rows, threads),
+        threads * 4,
+        &mut k,
+    );
 }
 
 pub fn rmsnorm_param_grad(
@@ -370,7 +389,11 @@ pub fn rmsnorm_param_grad(
     cols: usize,
 ) {
     let mut k = Kargs::new();
-    k.buf(dgamma).buf(dy).buf(xhat).i32(rows as i32).i32(cols as i32);
+    k.buf(dgamma)
+        .buf(dy)
+        .buf(xhat)
+        .i32(rows as i32)
+        .i32(cols as i32);
     // Satır parçalama: yeterli paralellik için ~8192 blok hedefle.
     let chunks = (8192 / cols.max(1)).clamp(1, 32) as u32;
     gpu::launch(
@@ -396,7 +419,12 @@ pub fn silu_mul_backward(
     n: usize,
 ) {
     let mut k = Kargs::new();
-    k.buf(dgate).buf(dup).buf(dy).buf(gate).buf(up).i32(n as i32);
+    k.buf(dgate)
+        .buf(dup)
+        .buf(dy)
+        .buf(gate)
+        .buf(up)
+        .i32(n as i32);
     gpu::launch("silu_mul_backward", cfg_1d(n), 0, &mut k);
 }
 
@@ -479,15 +507,35 @@ pub fn dropout_backward(dx: &impl DevPtr, n: usize, p: f32, seed: u32) {
 }
 
 /// RoPE'lu mimari: yalnız token gömmesi (pozisyon gömme yok).
-pub fn embedding_forward_tok(out: &impl DevPtr, ids: &impl DevPtr, tok_emb: &impl DevPtr, rows: usize, cols: usize) {
+pub fn embedding_forward_tok(
+    out: &impl DevPtr,
+    ids: &impl DevPtr,
+    tok_emb: &impl DevPtr,
+    rows: usize,
+    cols: usize,
+) {
     let mut k = Kargs::new();
-    k.buf(out).buf(ids).buf(tok_emb).i32(rows as i32).i32(cols as i32);
+    k.buf(out)
+        .buf(ids)
+        .buf(tok_emb)
+        .i32(rows as i32)
+        .i32(cols as i32);
     gpu::launch("embedding_forward_tok", cfg_1d(rows * cols), 0, &mut k);
 }
 
-pub fn embedding_backward_tok(dtok: &impl DevPtr, dout: &impl DevPtr, ids: &impl DevPtr, rows: usize, cols: usize) {
+pub fn embedding_backward_tok(
+    dtok: &impl DevPtr,
+    dout: &impl DevPtr,
+    ids: &impl DevPtr,
+    rows: usize,
+    cols: usize,
+) {
     let mut k = Kargs::new();
-    k.buf(dtok).buf(dout).buf(ids).i32(rows as i32).i32(cols as i32);
+    k.buf(dtok)
+        .buf(dout)
+        .buf(ids)
+        .i32(rows as i32)
+        .i32(cols as i32);
     gpu::launch("embedding_backward_tok", cfg_1d(rows * cols), 0, &mut k);
 }
 
@@ -500,7 +548,12 @@ pub fn softmax_vec(out: &impl DevPtr, x: &impl DevPtr, n: usize) {
     let threads = 128u32;
     let mut k = Kargs::new();
     k.buf(out).buf(x).i32(n as i32);
-    gpu::launch("softmax_vec", ((1, 1, 1), (threads, 1, 1)), threads * 4, &mut k);
+    gpu::launch(
+        "softmax_vec",
+        ((1, 1, 1), (threads, 1, 1)),
+        threads * 4,
+        &mut k,
+    );
 }
 
 /// Belirli bir konum için RoPE (tek token).

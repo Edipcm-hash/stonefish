@@ -152,7 +152,10 @@ pub fn prepare(
     let va_bin = format!("{out_prefix}.valid.bin");
     let t = std::time::Instant::now();
     match tokenize_file_to_cache(valid_txt, &va_bin, &bpe, 64 << 20) {
-        Ok(n) => println!("valid       : {n} token, {:.1} s", t.elapsed().as_secs_f64()),
+        Ok(n) => println!(
+            "valid       : {n} token, {:.1} s",
+            t.elapsed().as_secs_f64()
+        ),
         Err(e) => println!("⚠️  valid tokenize edilemedi: {e}"),
     }
 
@@ -226,7 +229,11 @@ pub fn train(a: &EnTrainArgs) {
 
     println!("🐟 StonefishAI — İngilizce GPT eğitimi (250M sınıfı)\n");
     println!("Tokenizer : BPE vocab={vocab}");
-    println!("Korpus    : {} token (cache), seq_len={}", data.len(), a.seq_len);
+    println!(
+        "Korpus    : {} token (cache), seq_len={}",
+        data.len(),
+        a.seq_len
+    );
     println!(
         "Model     : d_model={}, layers={}, heads={} (d_head={}), ctx={}",
         a.d_model,
@@ -237,7 +244,10 @@ pub fn train(a: &EnTrainArgs) {
     );
     println!(
         "Batch     : {} × accum {} = {} dizi ({} token/adım)",
-        a.batch, a.accum, a.batch * a.accum, tokens_per_step
+        a.batch,
+        a.accum,
+        a.batch * a.accum,
+        tokens_per_step
     );
     println!(
         "Plan      : {:.2} B token → {} adım, max_lr={}, clip={}",
@@ -246,7 +256,10 @@ pub fn train(a: &EnTrainArgs) {
         a.max_lr,
         a.clip
     );
-    println!("Checkpoint: her {} adım → {}.state\n", a.ckpt_every, a.out_prefix);
+    println!(
+        "Checkpoint: her {} adım → {}.state\n",
+        a.ckpt_every, a.out_prefix
+    );
 
     let mut model = GpuGpt::new_random(cfg, a.batch, a.seq_len, 0xDEADBEEF);
     model.dropout_p = std::env::var("SFISH_DROP")

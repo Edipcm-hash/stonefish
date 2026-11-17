@@ -45,7 +45,10 @@ where
     let loss = build();
     let _ = scalar(&loss);
     loss.backward();
-    let analytic: Vec<Vec<f32>> = params.iter().map(|p| p.grad.borrow().data.clone()).collect();
+    let analytic: Vec<Vec<f32>> = params
+        .iter()
+        .map(|p| p.grad.borrow().data.clone())
+        .collect();
 
     // --- numerik ---
     let mut worst_rel = 0.0f32;
@@ -100,8 +103,7 @@ fn frozen(rows: usize, cols: usize, seed: &mut u64) -> Tensor {
 /// ReLU testleri için: |x| ≥ 0.6 (ε = 1e-3 sıfırı geçemez).
 fn leaf_away_from_zero(rows: usize, cols: usize, seed: &mut u64) -> Tensor {
     Tensor::leaf(
-        Matrix::random(rows, cols, 1.0, seed)
-            .map(|x| if x >= 0.0 { x + 0.6 } else { x - 0.6 }),
+        Matrix::random(rows, cols, 1.0, seed).map(|x| if x >= 0.0 { x + 0.6 } else { x - 0.6 }),
         true,
     )
 }
@@ -122,7 +124,9 @@ fn add_same_shape() {
     let mut s = 11u64;
     let a = leaf(3, 4, &mut s);
     let b = leaf(3, 4, &mut s);
-    gradient_check("add (aynı şekil)", &[a.clone(), b.clone()], || a.add(&b).sum());
+    gradient_check("add (aynı şekil)", &[a.clone(), b.clone()], || {
+        a.add(&b).sum()
+    });
 }
 
 #[test]
@@ -140,7 +144,9 @@ fn sub_same_shape() {
     let mut s = 13u64;
     let a = leaf(3, 4, &mut s);
     let b = leaf(3, 4, &mut s);
-    gradient_check("sub (aynı şekil)", &[a.clone(), b.clone()], || a.sub(&b).sum());
+    gradient_check("sub (aynı şekil)", &[a.clone(), b.clone()], || {
+        a.sub(&b).sum()
+    });
 }
 
 #[test]
@@ -158,9 +164,7 @@ fn mul_elem() {
     let mut s = 15u64;
     let a = leaf(3, 4, &mut s);
     let b = leaf(3, 4, &mut s);
-    gradient_check("mul_elem", &[a.clone(), b.clone()], || {
-        a.mul_elem(&b).sum()
-    });
+    gradient_check("mul_elem", &[a.clone(), b.clone()], || a.mul_elem(&b).sum());
 }
 
 #[test]
@@ -193,9 +197,7 @@ fn matmul() {
     let mut s = 19u64;
     let a = leaf(4, 3, &mut s);
     let b = leaf(3, 5, &mut s);
-    gradient_check("matmul", &[a.clone(), b.clone()], || {
-        a.matmul(&b).sum()
-    });
+    gradient_check("matmul", &[a.clone(), b.clone()], || a.matmul(&b).sum());
 }
 
 #[test]
@@ -228,9 +230,7 @@ fn transpose_op() {
     let mut s = 21u64;
     let a = leaf(3, 4, &mut s);
     let w = frozen(4, 3, &mut s);
-    gradient_check("transpose", one(&a), || {
-        a.transpose().mul_elem(&w).sum()
-    });
+    gradient_check("transpose", one(&a), || a.transpose().mul_elem(&w).sum());
 }
 
 #[test]
@@ -264,9 +264,7 @@ fn softmax_op() {
     let a = leaf(3, 5, &mut s);
     // Düz toplam sabit (1) olduğu için gradyan sıfır çıkar; ağırlıklı toplam kullan.
     let w = frozen(3, 5, &mut s);
-    gradient_check("softmax", one(&a), || {
-        a.softmax().mul_elem(&w).sum()
-    });
+    gradient_check("softmax", one(&a), || a.softmax().mul_elem(&w).sum());
 }
 
 #[test]
@@ -352,9 +350,11 @@ fn embedding() {
     };
     // v2: yalnız token gömmesi vardır (konum RoPE ile gelir)
     assert_eq!(ids.len(), batch * seq_len);
-    gradient_check("embedding (tok, B=2 S=4)", std::slice::from_ref(&emb.token_emb), || {
-        emb.forward(&ids).mul_elem(&w).sum()
-    });
+    gradient_check(
+        "embedding (tok, B=2 S=4)",
+        std::slice::from_ref(&emb.token_emb),
+        || emb.forward(&ids).mul_elem(&w).sum(),
+    );
 }
 
 // ------------------------------------------------------------
@@ -438,7 +438,11 @@ fn causal_attention_is_causal() {
     let k = leaf(batch * seq, d, &mut s);
     let v = leaf(batch * seq, d, &mut s);
 
-    let before = q.causal_attention(&k, &v, batch, seq, 1).data.borrow().clone();
+    let before = q
+        .causal_attention(&k, &v, batch, seq, 1)
+        .data
+        .borrow()
+        .clone();
 
     // Son pozisyonun V'sini boz
     {
@@ -448,7 +452,11 @@ fn causal_attention_is_causal() {
             vd.set(seq - 1, j, cur + 5.0);
         }
     }
-    let after = q.causal_attention(&k, &v, batch, seq, 1).data.borrow().clone();
+    let after = q
+        .causal_attention(&k, &v, batch, seq, 1)
+        .data
+        .borrow()
+        .clone();
 
     for i in 0..seq - 1 {
         for j in 0..d {
@@ -554,7 +562,8 @@ fn gpu_transposed_matmul_variants_match_cpu() {
         assert!(d2 < 1e-4, "matmul_ta yanlış: max fark {d2}");
 
         println!("  ✅ matmul_bt / matmul_ta CPU referansıyla uyuşuyor ({d:.1e}, {d2:.1e})");
-    }    #[cfg(not(feature = "cuda"))]
+    }
+    #[cfg(not(feature = "cuda"))]
     println!("  (CUDA kapalı — transposed matmul testi atlandı)");
 }
 
@@ -643,7 +652,10 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
         .forward_batch(&ids, batch, seq_len)
         .softmax_cross_entropy_ids(&targets)
         .backward();
-    let g_batch: Vec<Vec<f32>> = params.iter().map(|p| p.grad.borrow().data.clone()).collect();
+    let g_batch: Vec<Vec<f32>> = params
+        .iter()
+        .map(|p| p.grad.borrow().data.clone())
+        .collect();
 
     // (b) sequence'leri tek tek forward edip gradyanları topla
     for p in &params {
@@ -659,7 +671,10 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
         // böler; dolayısıyla L_batch = (1/B)·Σ_b L_b ilişkisi geçerlidir.
         l.scale(1.0 / batch as f32).backward();
     }
-    let g_sum: Vec<Vec<f32>> = params.iter().map(|p| p.grad.borrow().data.clone()).collect();
+    let g_sum: Vec<Vec<f32>> = params
+        .iter()
+        .map(|p| p.grad.borrow().data.clone())
+        .collect();
 
     let mut worst = 0.0f32;
     for (a, b) in g_batch.iter().zip(g_sum.iter()) {
@@ -710,7 +725,10 @@ fn rms_norm_forward_and_grad() {
     }
 
     gradient_check("rms_norm (x)", &[x.clone(), gamma.clone()], || {
-        x.rms_norm(&gamma, eps).mul_elem(&x.rms_norm(&gamma, eps)).scale(0.5).sum()
+        x.rms_norm(&gamma, eps)
+            .mul_elem(&x.rms_norm(&gamma, eps))
+            .scale(0.5)
+            .sum()
     });
 }
 
@@ -746,7 +764,10 @@ fn rope_forward_and_grad() {
         let xd = x.data.borrow();
         // 0. konum değişmemeli
         for j in 0..cols {
-            assert!((rd.get(0, j) - xd.get(0, j)).abs() < 1e-6, "konum 0 değişti");
+            assert!(
+                (rd.get(0, j) - xd.get(0, j)).abs() < 1e-6,
+                "konum 0 değişti"
+            );
         }
         // norm korunmalı (dönme izometridir)
         let n_in: f32 = xd.data.iter().map(|v| v * v).sum();

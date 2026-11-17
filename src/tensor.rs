@@ -18,7 +18,11 @@ pub struct Matrix {
 
 impl Matrix {
     pub fn zeros(rows: usize, cols: usize) -> Self {
-        Self { rows, cols, data: vec![0.0; rows * cols] }
+        Self {
+            rows,
+            cols,
+            data: vec![0.0; rows * cols],
+        }
     }
 
     pub fn from_vec(rows: usize, cols: usize, data: Vec<f32>) -> Self {
@@ -27,7 +31,11 @@ impl Matrix {
     }
 
     pub fn filled(rows: usize, cols: usize, v: f32) -> Self {
-        Self { rows, cols, data: vec![v; rows * cols] }
+        Self {
+            rows,
+            cols,
+            data: vec![v; rows * cols],
+        }
     }
 
     #[inline]
@@ -66,8 +74,17 @@ impl Matrix {
             }
             return out;
         }
-        assert_eq!((self.rows, self.cols), (other.rows, other.cols), "add boyut");
-        let data = self.data.iter().zip(other.data.iter()).map(|(a, b)| a + b).collect();
+        assert_eq!(
+            (self.rows, self.cols),
+            (other.rows, other.cols),
+            "add boyut"
+        );
+        let data = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a + b)
+            .collect();
         Matrix::from_vec(self.rows, self.cols, data)
     }
 
@@ -83,8 +100,17 @@ impl Matrix {
             }
             return out;
         }
-        assert_eq!((self.rows, self.cols), (other.rows, other.cols), "sub boyut");
-        let data = self.data.iter().zip(other.data.iter()).map(|(a, b)| a - b).collect();
+        assert_eq!(
+            (self.rows, self.cols),
+            (other.rows, other.cols),
+            "sub boyut"
+        );
+        let data = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a - b)
+            .collect();
         Matrix::from_vec(self.rows, self.cols, data)
     }
 
@@ -94,7 +120,12 @@ impl Matrix {
             (other.rows, other.cols),
             "mul_elem boyut"
         );
-        let data = self.data.iter().zip(other.data.iter()).map(|(a, b)| a * b).collect();
+        let data = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a * b)
+            .collect();
         Matrix::from_vec(self.rows, self.cols, data)
     }
 

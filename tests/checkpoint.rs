@@ -5,10 +5,10 @@
 //  * bozuk/yanlış dosya PANİK değil, io::Error döndürür
 //  * vocab uyuşmazlığı kaydetmeyi reddeder (sessiz bozulma yok)
 
+use std::fs;
 use stonefish_ai::checkpoint;
 use stonefish_ai::tokenizer::Tokenizer;
 use stonefish_ai::transformer::{GptConfig, GPT};
-use std::fs;
 
 fn tmp(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("stonefish_test_{name}_{}.bin", std::process::id()))
@@ -68,7 +68,10 @@ fn roundtrip_preserves_everything() {
     );
 
     let _ = fs::remove_file(path);
-    println!("  ✅ checkpoint roundtrip: config + vocab + {n} tensör birebir", n = a.len());
+    println!(
+        "  ✅ checkpoint roundtrip: config + vocab + {n} tensör birebir",
+        n = a.len()
+    );
 }
 
 #[test]

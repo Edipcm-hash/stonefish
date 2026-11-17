@@ -6,10 +6,10 @@
 
 #![cfg(feature = "cuda")]
 
-use stonefish_ai::sys::dev::{DevBuf, DevBufI32};
 use stonefish_ai::autograd::Tensor;
-use stonefish_ai::sys::dev::device_info;
 use stonefish_ai::gpu_kernels as k;
+use stonefish_ai::sys::dev::device_info;
+use stonefish_ai::sys::dev::{DevBuf, DevBufI32};
 use stonefish_ai::tensor::Matrix;
 
 const TOL: f32 = 2e-4;
@@ -124,15 +124,7 @@ fn layernorm_kernels_match_cpu() {
     let xhat_dev = zeros(n);
     let inv_dev = zeros(rows);
     k::layernorm_forward(
-        &y_dev,
-        &xhat_dev,
-        &inv_dev,
-        &x_dev,
-        &g_dev,
-        &b_dev,
-        rows,
-        cols,
-        1e-5,
+        &y_dev, &xhat_dev, &inv_dev, &x_dev, &g_dev, &b_dev, rows, cols, 1e-5,
     );
     let d_fwd = max_diff(&down(&y_dev), &y_cpu);
 
@@ -260,14 +252,7 @@ fn ce_kernels_match_cpu() {
     let d_probs = max_diff(&down(&probs_dev), &probs_cpu);
 
     let dlogits_dev = zeros(rows * classes);
-    k::ce_backward(
-        &dlogits_dev,
-        &probs_dev,
-        &targets_dev,
-        rows,
-        classes,
-        1.0,
-    );
+    k::ce_backward(&dlogits_dev, &probs_dev, &targets_dev, rows, classes, 1.0);
     let d_grad = max_diff(&down(&dlogits_dev), &dlogits_cpu);
 
     assert!(d_loss < 1e-4, "CE loss farkı {d_loss}");
@@ -351,9 +336,7 @@ fn adam_kernel_matches_cpu() {
     for t in 1..=3usize {
         let bc1 = 1.0 - b1.powi(t as i32);
         let bc2 = 1.0 - b2.powi(t as i32);
-        k::adam_step(
-            &p_dev, &g_dev, &m_dev, &v_dev, lr, b1, b2, eps, bc1, bc2, n,
-        );
+        k::adam_step(&p_dev, &g_dev, &m_dev, &v_dev, lr, b1, b2, eps, bc1, bc2, n);
     }
     let d = max_diff(&down(&p_dev), &p_cpu);
     assert!(d < 1e-6, "adam farkı {d}");
@@ -398,7 +381,18 @@ fn dev_gemm_modes_match_cpu() {
     // NT: C = A·Bᵀ  (B'yi n×k gibi kullan)
     let b_nt = rand_vec(n * br, 2.0, &mut s);
     let b_nt_dev = up(&b_nt);
-    stonefish_ai::gpu::dev_gemm(&mut c_dev, &a_dev, &b_nt_dev, m, n, k, ar, br, n, GemmMode::Nt);
+    stonefish_ai::gpu::dev_gemm(
+        &mut c_dev,
+        &a_dev,
+        &b_nt_dev,
+        m,
+        n,
+        k,
+        ar,
+        br,
+        n,
+        GemmMode::Nt,
+    );
     for i in 0..m {
         for j in 0..n {
             let mut acc = 0.0f32;
@@ -413,7 +407,18 @@ fn dev_gemm_modes_match_cpu() {
     // TN: C = Aᵀ·B  (A'yı k×m gibi kullan)
     let a_tn = rand_vec(k * ar, 2.0, &mut s);
     let a_tn_dev = up(&a_tn);
-    stonefish_ai::gpu::dev_gemm(&mut c_dev, &a_tn_dev, &b_dev, m, n, k, ar, br, n, GemmMode::Tn);
+    stonefish_ai::gpu::dev_gemm(
+        &mut c_dev,
+        &a_tn_dev,
+        &b_dev,
+        m,
+        n,
+        k,
+        ar,
+        br,
+        n,
+        GemmMode::Tn,
+    );
     for i in 0..m {
         for j in 0..n {
             let mut acc = 0.0f32;
@@ -598,8 +603,21 @@ fn attention_backward_composition_matches_cpu() {
         let k_view = k_dev.slice(off..);
         let mut sc = scores.slice_mut(h * b * seq * seq..);
         stonefish_ai::gpu::dev_gemm_batched(
-            &mut sc, &q_view, &k_view, seq, seq, dh, d, d, seq, seq * d, seq * d,
-            seq * seq, b, 0.0, GemmMode::Nt,
+            &mut sc,
+            &q_view,
+            &k_view,
+            seq,
+            seq,
+            dh,
+            d,
+            d,
+            seq,
+            seq * d,
+            seq * d,
+            seq * seq,
+            b,
+            0.0,
+            GemmMode::Nt,
         );
     }
     k::masked_softmax_forward(&w, &scores, b, nh, seq, scale);
@@ -612,8 +630,21 @@ fn attention_backward_composition_matches_cpu() {
         let v_view = v_dev.slice(off..);
         let mut av = attn.slice_mut(off..);
         stonefish_ai::gpu::dev_gemm_batched(
-            &mut av, &w_view, &v_view, seq, dh, seq, seq, d, d, seq * seq,
-            seq * d, seq * d, b, 0.0, GemmMode::Nn,
+            &mut av,
+            &w_view,
+            &v_view,
+            seq,
+            dh,
+            seq,
+            seq,
+            d,
+            d,
+            seq * seq,
+            seq * d,
+            seq * d,
+            b,
+            0.0,
+            GemmMode::Nn,
         );
     }
 
@@ -624,8 +655,21 @@ fn attention_backward_composition_matches_cpu() {
         let da_view = da_dev.slice(off..);
         let mut dv_view = dv.slice_mut(off..);
         stonefish_ai::gpu::dev_gemm_batched(
-            &mut dv_view, &w_view, &da_view, seq, dh, seq, seq, d, d, seq * seq,
-            seq * d, seq * d, b, 0.0, GemmMode::Tn,
+            &mut dv_view,
+            &w_view,
+            &da_view,
+            seq,
+            dh,
+            seq,
+            seq,
+            d,
+            d,
+            seq * seq,
+            seq * d,
+            seq * d,
+            b,
+            0.0,
+            GemmMode::Tn,
         );
     }
     // dW
@@ -635,8 +679,21 @@ fn attention_backward_composition_matches_cpu() {
         let v_view = v_dev.slice(off..);
         let mut dw_view = dscores.slice_mut(h * b * seq * seq..);
         stonefish_ai::gpu::dev_gemm_batched(
-            &mut dw_view, &da_view, &v_view, seq, seq, dh, d, d, seq, seq * d,
-            seq * d, seq * seq, b, 0.0, GemmMode::Nt,
+            &mut dw_view,
+            &da_view,
+            &v_view,
+            seq,
+            seq,
+            dh,
+            d,
+            d,
+            seq,
+            seq * d,
+            seq * d,
+            seq * seq,
+            b,
+            0.0,
+            GemmMode::Nt,
         );
     }
     // softmax geri (dscores yerinde değil: ayrı tampon)
@@ -652,15 +709,41 @@ fn attention_backward_composition_matches_cpu() {
         {
             let mut dq_view = dq.slice_mut(off..);
             stonefish_ai::gpu::dev_gemm_batched(
-                &mut dq_view, &ds_view, &k_view, seq, dh, seq, seq, d, d,
-                seq * seq, seq * d, seq * d, b, 0.0, GemmMode::Nn,
+                &mut dq_view,
+                &ds_view,
+                &k_view,
+                seq,
+                dh,
+                seq,
+                seq,
+                d,
+                d,
+                seq * seq,
+                seq * d,
+                seq * d,
+                b,
+                0.0,
+                GemmMode::Nn,
             );
         }
         {
             let mut dk_view = dk.slice_mut(off..);
             stonefish_ai::gpu::dev_gemm_batched(
-                &mut dk_view, &ds_view, &q_view, seq, dh, seq, seq, d, d,
-                seq * seq, seq * d, seq * d, b, 0.0, GemmMode::Tn,
+                &mut dk_view,
+                &ds_view,
+                &q_view,
+                seq,
+                dh,
+                seq,
+                seq,
+                d,
+                d,
+                seq * seq,
+                seq * d,
+                seq * d,
+                b,
+                0.0,
+                GemmMode::Tn,
             );
         }
     }
@@ -724,7 +807,20 @@ fn gemm_tn_and_beta_accumulation_real_shapes() {
     for (i, (xd, wd)) in [(x1d, w1d), (x2d, w2d), (x3d, w3d)].iter().enumerate() {
         let beta = if i == 0 { 0.0 } else { 1.0 };
         stonefish_ai::gpu::dev_gemm_batched(
-            &mut acc, xd, wd, bs, cols, cols, cols, cols, cols, 0, 0, 0, 1, beta,
+            &mut acc,
+            xd,
+            wd,
+            bs,
+            cols,
+            cols,
+            cols,
+            cols,
+            cols,
+            0,
+            0,
+            0,
+            1,
+            beta,
             GemmMode::Nt,
         );
     }
@@ -733,7 +829,9 @@ fn gemm_tn_and_beta_accumulation_real_shapes() {
     for r in 0..bs {
         for j in 0..cols {
             let dot = |x: &[f32], w: &[f32]| -> f32 {
-                (0..cols).map(|kk| x[r * cols + kk] * w[j * cols + kk]).sum()
+                (0..cols)
+                    .map(|kk| x[r * cols + kk] * w[j * cols + kk])
+                    .sum()
             };
             let want = dot(&x1, &w1) + dot(&x2, &w2) + dot(&x3, &w3);
             worst2 = worst2.max((got[r * cols + j] - want).abs());
@@ -834,7 +932,10 @@ fn rmsnorm_forward_matches_cpu() {
     let (rows, cols) = (5usize, 16usize);
     let mut s = 11u64;
     let x = rnd(rows * cols, &mut s, 2.0);
-    let g = rnd(cols, &mut s, 1.0).iter().map(|v| 1.0 + v * 0.3).collect::<Vec<_>>();
+    let g = rnd(cols, &mut s, 1.0)
+        .iter()
+        .map(|v| 1.0 + v * 0.3)
+        .collect::<Vec<_>>();
     let eps = 1e-6;
 
     let (dx, dg, dxi) = (up(&x), up(&g), zeros(rows));
@@ -846,7 +947,10 @@ fn rmsnorm_forward_matches_cpu() {
     // xhat'in karesel ortalaması ~1 olmalı (ölçek doğru mu)
     let xh = down(&xhat);
     for r in 0..rows {
-        let ms: f32 = (0..cols).map(|i| xh[r * cols + i] * xh[r * cols + i]).sum::<f32>() / cols as f32;
+        let ms: f32 = (0..cols)
+            .map(|i| xh[r * cols + i] * xh[r * cols + i])
+            .sum::<f32>()
+            / cols as f32;
         assert!((ms - 1.0).abs() < 1e-3, "xhat rms {ms}");
     }
 
@@ -957,7 +1061,10 @@ fn rope_forward_and_inverse() {
         }
     }
     let norm = |v: &[f32]| v.iter().map(|a| a * a).sum::<f32>();
-    assert!((norm(&fwd) - norm(&x)).abs() / norm(&x) < 1e-4, "norm korunmadı");
+    assert!(
+        (norm(&fwd) - norm(&x)).abs() / norm(&x) < 1e-4,
+        "norm korunmadı"
+    );
 
     // geri yayılım dönmeyi tersine çevirir → orijinali geri vermeli
     let back = zeros(n);
@@ -978,7 +1085,10 @@ fn dropout_scales_and_masks() {
     let zeros_n = out.iter().filter(|v| **v == 0.0).count();
     let kept = out.iter().filter(|v| **v > 0.0).count();
     let frac = zeros_n as f32 / n as f32;
-    assert!((frac - p).abs() < 0.03, "dropout oranı {frac} (beklenen {p})");
+    assert!(
+        (frac - p).abs() < 0.03,
+        "dropout oranı {frac} (beklenen {p})"
+    );
     let expected = 1.0 / (1.0 - p);
     for v in out.iter().filter(|v| **v > 0.0).take(100) {
         assert!((v - expected).abs() < 1e-5, "ölçek {v} != {expected}");

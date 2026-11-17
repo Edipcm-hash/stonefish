@@ -115,8 +115,6 @@ pub fn snapshot_full() -> Snapshot {
     }
 }
 
-
-
 /// Profil kapalıyken `None` döner (tek atomic load maliyeti).
 #[inline]
 pub fn start() -> Option<std::time::Instant> {

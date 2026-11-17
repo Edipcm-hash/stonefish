@@ -36,9 +36,18 @@ macro_rules! cuda_fn {
 
 // ---- Sürüm / cihaz / bağlam ----
 cuda_fn!(cuInit, unsafe extern "system" fn(u32) -> CUresult);
-cuda_fn!(cuDriverGetVersion, unsafe extern "system" fn(*mut i32) -> CUresult);
-cuda_fn!(cuDeviceGet, unsafe extern "system" fn(*mut CUdevice, i32) -> CUresult);
-cuda_fn!(cuDeviceGetName, unsafe extern "system" fn(*mut i8, i32, CUdevice) -> CUresult);
+cuda_fn!(
+    cuDriverGetVersion,
+    unsafe extern "system" fn(*mut i32) -> CUresult
+);
+cuda_fn!(
+    cuDeviceGet,
+    unsafe extern "system" fn(*mut CUdevice, i32) -> CUresult
+);
+cuda_fn!(
+    cuDeviceGetName,
+    unsafe extern "system" fn(*mut i8, i32, CUdevice) -> CUresult
+);
 cuda_fn!(
     cuDeviceGetAttribute,
     unsafe extern "system" fn(*mut i32, i32, CUdevice) -> CUresult
@@ -47,17 +56,29 @@ cuda_fn!(
     cuDeviceTotalMem_v2,
     unsafe extern "system" fn(*mut usize, CUdevice) -> CUresult
 );
-cuda_fn!(cuCtxCreate_v2, unsafe extern "system" fn(*mut CUcontext, u32, CUdevice) -> CUresult);
-cuda_fn!(cuCtxDestroy_v2, unsafe extern "system" fn(CUcontext) -> CUresult);
+cuda_fn!(
+    cuCtxCreate_v2,
+    unsafe extern "system" fn(*mut CUcontext, u32, CUdevice) -> CUresult
+);
+cuda_fn!(
+    cuCtxDestroy_v2,
+    unsafe extern "system" fn(CUcontext) -> CUresult
+);
 cuda_fn!(cuCtxSynchronize, unsafe extern "system" fn() -> CUresult);
-cuda_fn!(cuCtxSetCurrent, unsafe extern "system" fn(CUcontext) -> CUresult);
+cuda_fn!(
+    cuCtxSetCurrent,
+    unsafe extern "system" fn(CUcontext) -> CUresult
+);
 
 // ---- Bellek ----
 cuda_fn!(
     cuMemAlloc_v2,
     unsafe extern "system" fn(*mut CUdeviceptr, usize) -> CUresult
 );
-cuda_fn!(cuMemFree_v2, unsafe extern "system" fn(CUdeviceptr) -> CUresult);
+cuda_fn!(
+    cuMemFree_v2,
+    unsafe extern "system" fn(CUdeviceptr) -> CUresult
+);
 cuda_fn!(
     cuMemcpyHtoD_v2,
     unsafe extern "system" fn(CUdeviceptr, *const c_void, usize) -> CUresult
@@ -94,7 +115,10 @@ cuda_fn!(
         *mut *mut c_void,
     ) -> CUresult
 );
-cuda_fn!(cuModuleUnload, unsafe extern "system" fn(CUmodule) -> CUresult);
+cuda_fn!(
+    cuModuleUnload,
+    unsafe extern "system" fn(CUmodule) -> CUresult
+);
 cuda_fn!(
     cuModuleGetFunction,
     unsafe extern "system" fn(*mut CUfunction, CUmodule, *const i8) -> CUresult
@@ -117,7 +141,10 @@ cuda_fn!(
         *mut *mut c_void,
     ) -> CUresult
 );
-cuda_fn!(cuGetErrorName, unsafe extern "system" fn(CUresult, *mut *const i8) -> CUresult);
+cuda_fn!(
+    cuGetErrorName,
+    unsafe extern "system" fn(CUresult, *mut *const i8) -> CUresult
+);
 
 // ============================================================
 // Güvenli sarmalayıcılar
@@ -151,8 +178,13 @@ pub fn device_info() -> Option<(String, i32, i32, usize)> {
         let mut dev: CUdevice = 0;
         check(cuDeviceGet()?(&mut dev, 0), "cuDeviceGet");
         let mut name = [0i8; 256];
-        check(cuDeviceGetName()?(&mut name as *mut i8, 256, dev), "cuDeviceGetName");
-        let n = std::ffi::CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned();
+        check(
+            cuDeviceGetName()?(&mut name as *mut i8, 256, dev),
+            "cuDeviceGetName",
+        );
+        let n = std::ffi::CStr::from_ptr(name.as_ptr())
+            .to_string_lossy()
+            .into_owned();
         let mut maj = 0;
         let mut min = 0;
         check(

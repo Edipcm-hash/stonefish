@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # CUDA'sız derleme + tüm CPU testleri. GPU'suz koşucuda da projenin
+  # derlenip test edilebildiğini kanıtlar (tasarlanan özellik).
+  cpu-only:
+    name: CPU-only build & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - name: Tests
+        run: cargo test --release --no-default-features
+
+  # CUDA'lı derleme: sürücü yok, bu yüzden yalnız derleme + clippy.
+  # (GPU testleri gerçek donanım ister; README'de ayrıca raporlanır.)
+  cuda-build:
+    name: CUDA feature build (no GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Clippy (cuda feature)
+        run: cargo clippy --all-targets --features cuda -- -D warnings
+      - name: Build
+        run: cargo build --release --features cuda
+
+  # Zero-dependency iddiasının kanıtı: bağımlılık ağacı tek satır olmalı.
+  zero-deps:
+    name: Zero dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo tree must be a single line
+        run: |
+          LINES=$(cargo tree --all-features | wc -l)
+          cargo tree --all-features
+          if [ "$LINES" -ne 1 ]; then
+            echo "❌ Bağımlılık bulundu: $LINES satır (1 olmalı)"
+            exit 1
+          fi
+          echo "✅ Sıfır bağımlılık doğrulandı"

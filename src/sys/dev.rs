@@ -29,7 +29,7 @@ static CTX: OnceLock<Ctx> = OnceLock::new();
 /// Bağlamı (ilk çağrıda) oluştur ve bu iş parçacığına bağla.
 fn ctx() -> cuda::CUcontext {
     let c = CTX.get_or_init(|| unsafe {
-        cuda::check(cuda::cuInit().expect("cuInit") (0), "cuInit");
+        cuda::check(cuda::cuInit().expect("cuInit")(0), "cuInit");
         let mut dev: cuda::CUdevice = 0;
         cuda::check(
             cuda::cuDeviceGet().expect("cuDeviceGet")(&mut dev, 0),

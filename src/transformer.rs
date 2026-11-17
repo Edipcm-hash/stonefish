@@ -222,7 +222,7 @@ impl GptConfig {
         let norm = 3 * d; // block içi 2 + final 1 (beta yok)
         let attn = 4 * d * d;
         let ff = 3 * d * h; // W1 + W3 + W2, bias yok
-        // gömme yalnız bir kez sayılır (çıkış matrisi onunla paylaşılır)
+                            // gömme yalnız bir kez sayılır (çıkış matrisi onunla paylaşılır)
         v * d + self.n_layers * (norm + attn + ff)
     }
 }

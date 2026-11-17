@@ -67,7 +67,10 @@ pub fn run() -> bool {
 
         // ---- 4) NVRTC ile çekirdek derle → modül yükle ----
         let t0 = std::time::Instant::now();
-        let ptx = match nvrtc::compile(ADD_KERNEL, &["--gpu-architecture=compute_120", "--fmad=true"]) {
+        let ptx = match nvrtc::compile(
+            ADD_KERNEL,
+            &["--gpu-architecture=compute_120", "--fmad=true"],
+        ) {
             Ok(p) => p,
             Err(e) => {
                 println!("❌ NVRTC: {e}");
@@ -75,7 +78,10 @@ pub fn run() -> bool {
             }
         };
         let compile_ms = t0.elapsed().as_millis();
-        println!("NVRTC      : PTX üretildi ({} KB, {compile_ms} ms)", ptx.len() / 1024);
+        println!(
+            "NVRTC      : PTX üretildi ({} KB, {compile_ms} ms)",
+            ptx.len() / 1024
+        );
 
         let c_ptx = std::ffi::CString::new(ptx).unwrap();
         let mut module: cuda::CUmodule = std::ptr::null_mut();
@@ -139,7 +145,9 @@ pub fn run() -> bool {
         // operandlar yer değiştirir: gemm(m=3, n=2, k=4, lda=3, ldb=4, ldc=3)
         let (m, k, nn) = (2usize, 4usize, 3usize);
         let a = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]; // 2x4
-        let b = [1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]; // 4x3
+        let b = [
+            1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0,
+        ]; // 4x3
         let mut c_cpu = vec![0f32; m * nn];
         for i in 0..m {
             for j in 0..nn {
@@ -154,9 +162,18 @@ pub fn run() -> bool {
         let mut ga: cuda::CUdeviceptr = 0;
         let mut gb: cuda::CUdeviceptr = 0;
         let mut gc: cuda::CUdeviceptr = 0;
-        cuda::check(cuda::cuMemAlloc_v2().unwrap()(&mut ga, m * k * 4), "alloc ga");
-        cuda::check(cuda::cuMemAlloc_v2().unwrap()(&mut gb, k * nn * 4), "alloc gb");
-        cuda::check(cuda::cuMemAlloc_v2().unwrap()(&mut gc, m * nn * 4), "alloc gc");
+        cuda::check(
+            cuda::cuMemAlloc_v2().unwrap()(&mut ga, m * k * 4),
+            "alloc ga",
+        );
+        cuda::check(
+            cuda::cuMemAlloc_v2().unwrap()(&mut gb, k * nn * 4),
+            "alloc gb",
+        );
+        cuda::check(
+            cuda::cuMemAlloc_v2().unwrap()(&mut gc, m * nn * 4),
+            "alloc gc",
+        );
         cuda::check(
             cuda::cuMemcpyHtoD_v2().unwrap()(ga, a.as_ptr() as *const c_void, m * k * 4),
             "HtoD ga",
@@ -167,7 +184,10 @@ pub fn run() -> bool {
         );
 
         let mut handle: cublas::cublasHandle_t = std::ptr::null_mut();
-        cublas::check(cublas::cublasCreate_v2().unwrap()(&mut handle), "cublasCreate");
+        cublas::check(
+            cublas::cublasCreate_v2().unwrap()(&mut handle),
+            "cublasCreate",
+        );
         let alpha = 1.0f32;
         let beta = 0.0f32;
         cublas::check(
@@ -175,17 +195,17 @@ pub fn run() -> bool {
                 handle,
                 cublas::CUBLAS_OP_N,
                 cublas::CUBLAS_OP_N,
-                nn as i32,   // m
-                m as i32,    // n
-                k as i32,    // k
+                nn as i32, // m
+                m as i32,  // n
+                k as i32,  // k
                 &alpha,
                 gb as *const f32,
-                nn as i32,   // lda = B'nin satır adımı
+                nn as i32, // lda = B'nin satır adımı
                 ga as *const f32,
-                k as i32,    // ldb = A'nın satır adımı
+                k as i32, // ldb = A'nın satır adımı
                 &beta,
                 gc as *mut f32,
-                nn as i32,   // ldc
+                nn as i32, // ldc
             ),
             "cublasSgemm",
         );

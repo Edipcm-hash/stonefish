@@ -281,7 +281,12 @@ mod imp {
     }
 
     /// Çekirdek başlatma kısayolu.
-    pub fn launch(name: &str, grid: ((u32, u32, u32), (u32, u32, u32)), shared: u32, args: &mut Kargs) {
+    pub fn launch(
+        name: &str,
+        grid: ((u32, u32, u32), (u32, u32, u32)),
+        shared: u32,
+        args: &mut Kargs,
+    ) {
         dev::launch(kernel(name), grid.0, grid.1, shared, args);
     }
 }

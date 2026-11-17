@@ -23,8 +23,14 @@ macro_rules! blas_fn {
     };
 }
 
-blas_fn!(cublasCreate_v2, unsafe extern "system" fn(*mut cublasHandle_t) -> cublasStatus_t);
-blas_fn!(cublasDestroy_v2, unsafe extern "system" fn(cublasHandle_t) -> cublasStatus_t);
+blas_fn!(
+    cublasCreate_v2,
+    unsafe extern "system" fn(*mut cublasHandle_t) -> cublasStatus_t
+);
+blas_fn!(
+    cublasDestroy_v2,
+    unsafe extern "system" fn(cublasHandle_t) -> cublasStatus_t
+);
 blas_fn!(
     cublasSetStream_v2,
     unsafe extern "system" fn(cublasHandle_t, *mut c_void) -> cublasStatus_t

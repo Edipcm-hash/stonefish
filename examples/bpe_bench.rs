@@ -5,15 +5,24 @@ use stonefish_ai::bpe::train_bpe;
 use stonefish_ai::corpus::tokenize_file_to_cache;
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or("data/en/bench10.txt".into());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or("data/en/bench10.txt".into());
     let bytes = std::fs::read(&path).expect("dosya okunamadı");
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    println!("dosya: {path} ({:.1} MB)", bytes.len() as f64 / (1 << 20) as f64);
+    println!(
+        "dosya: {path} ({:.1} MB)",
+        bytes.len() as f64 / (1 << 20) as f64
+    );
 
     // BPE'yi aynı dosyadan öğren (küçük vocab, hız odaklı)
     let t0 = std::time::Instant::now();
     let bpe = train_bpe(&text, 16_384, 300_000);
-    println!("BPE öğrenimi: {:.2} s (vocab={})", t0.elapsed().as_secs_f64(), bpe.vocab());
+    println!(
+        "BPE öğrenimi: {:.2} s (vocab={})",
+        t0.elapsed().as_secs_f64(),
+        bpe.vocab()
+    );
 
     // 1) Bellek içi, önbelleksiz (naif)
     let t0 = std::time::Instant::now();

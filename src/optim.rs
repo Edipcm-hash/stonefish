@@ -90,7 +90,7 @@ impl Adam {
             lr,
             beta1: 0.9,
             beta2: 0.999,
-            eps: 1e-6,   // 1e-8 yerine 1e-6 (daha güvenli)
+            eps: 1e-6, // 1e-8 yerine 1e-6 (daha güvenli)
             t: 0,
             m,
             v,
@@ -161,7 +161,10 @@ mod tests {
         // norm = 5 → max_norm=1 ile ölçek 0.2; yön korunur.
         let t = leaf_with_grad(1, 2, vec![3.0, 4.0]);
         let norm = clip_grad_norm(std::slice::from_ref(&t), 1.0);
-        assert!((norm - 5.0).abs() < 1e-6, "kırpma öncesi norm dönmeli: {norm}");
+        assert!(
+            (norm - 5.0).abs() < 1e-6,
+            "kırpma öncesi norm dönmeli: {norm}"
+        );
         let g = t.grad.borrow();
         assert!((g.get(0, 0) - 0.6).abs() < 1e-6, "g0={}", g.get(0, 0));
         assert!((g.get(0, 1) - 0.8).abs() < 1e-6, "g1={}", g.get(0, 1));
