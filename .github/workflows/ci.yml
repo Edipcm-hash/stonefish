@@ -58,7 +58,7 @@ jobs:
           fi
           echo "✅ Zero dependencies verified"
 
-  # Proje dili koruması: README-Tr.md dışında Türkçe metin olmamalı.
+  # Language guard: no Turkish text outside README-Tr.md.
   language:
     name: English-only source
     runs-on: ubuntu-latest
