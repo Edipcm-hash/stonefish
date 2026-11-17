@@ -449,3 +449,16 @@ pub fn dropout_backward(dx: &impl DevPtr, n: usize, p: f32, seed: u32) {
     k.buf(dx).i32(n as i32).f32(p).i32(seed as i32);
     gpu::launch("dropout_backward", cfg_1d(n), 0, &mut k);
 }
+
+/// RoPE'lu mimari: yalnız token gömmesi (pozisyon gömme yok).
+pub fn embedding_forward_tok(out: &impl DevPtr, ids: &impl DevPtr, tok_emb: &impl DevPtr, rows: usize, cols: usize) {
+    let mut k = Kargs::new();
+    k.buf(out).buf(ids).buf(tok_emb).i32(rows as i32).i32(cols as i32);
+    gpu::launch("embedding_forward_tok", cfg_1d(rows * cols), 0, &mut k);
+}
+
+pub fn embedding_backward_tok(dtok: &impl DevPtr, dout: &impl DevPtr, ids: &impl DevPtr, rows: usize, cols: usize) {
+    let mut k = Kargs::new();
+    k.buf(dtok).buf(dout).buf(ids).i32(rows as i32).i32(cols as i32);
+    gpu::launch("embedding_backward_tok", cfg_1d(rows * cols), 0, &mut k);
+}

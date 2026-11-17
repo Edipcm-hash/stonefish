@@ -712,9 +712,9 @@ fn test_embed() {
     println!("🐟 Embedding testi\n");
     let mut seed = 42u64;
     let (vocab, seq_len, d_model) = (10, 4, 8);
-    let emb = transformer::Embedding::new(vocab, 16, d_model, &mut seed);
+    let emb = transformer::Embedding::new(vocab, d_model, &mut seed);
     let ids = vec![1, 3, 5, 7];
-    let out = emb.forward(&ids, seq_len);
+    let out = emb.forward(&ids);
     {
         let od = out.data.borrow();
         println!("Çıktı boyutu: {}x{}", od.rows, od.cols);
@@ -722,16 +722,15 @@ fn test_embed() {
     }
     out.sum().backward();
     let tg = emb.token_emb.grad.borrow();
-    let pg = emb.pos_emb.grad.borrow();
     println!("token_emb grad: {}x{}", tg.rows, tg.cols);
-    println!("pos_emb grad: {}x{}", pg.rows, pg.cols);
-
-    let mut pos0_sum = 0.0f32;
+    // loss = sum(çıktı) olduğu için her token satırının gradyanı 1'dir;
+    // token 1 ve 3 birer kez geçtiği için o satırların toplamı d_model olmalı.
+    let mut s1 = 0.0f32;
     for d in 0..d_model {
-        pos0_sum += pg.get(0, d);
+        s1 += tg.get(1, d);
     }
-    assert!((pos0_sum - d_model as f32).abs() < 1e-4, "pos_emb grad toplamı yanlış");
-    println!("✅ Embedding OK");
+    assert!((s1 - d_model as f32).abs() < 1e-4, "token_emb grad toplamı yanlış");
+    println!("✅ Embedding OK (RoPE: pozisyon gömme yok)");
 }
 
 fn test_attn() {

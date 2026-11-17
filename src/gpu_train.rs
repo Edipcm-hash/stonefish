@@ -22,9 +22,10 @@
 
 use crate::gpu::{self, GemmMode};
 use crate::gpu_kernels as k;
-use crate::transformer::{GptConfig, GPT};
+use crate::transformer::{swiglu_hidden, GptConfig, GPT, RMS_EPS};
 use crate::sys::dev::{DevBuf, DevBufI32, DevPtr};
 
+#[allow(dead_code)]
 const LN_EPS: f32 = 1e-5;
 
 
@@ -119,36 +120,38 @@ impl Param {
 // ============================================================
 
 struct GpuBlock {
-    ln1_g: Param,
-    ln1_b: Param,
+    /// RMSNorm gama (beta yok)
+    norm1_g: Param,
     wq: Param,
     wk: Param,
     wv: Param,
     wo: Param,
-    ln2_g: Param,
-    ln2_b: Param,
-    ff1_w: Param,
-    ff1_b: Param,
-    ff2_w: Param,
-    ff2_b: Param,
+    norm2_g: Param,
+    /// SwiGLU kapısı (d → hidden)
+    ff_gate: Param,
+    /// SwiGLU yukarı izdüşümü (d → hidden)
+    ff_up: Param,
+    /// SwiGLU aşağı izdüşümü (hidden → d)
+    ff_down: Param,
 }
 
 /// Katman başına geri yayılım için saklanan ara sonuçlar.
 struct Acts {
-    ln1: DevBuf,
-    xhat1: DevBuf,
+    x1: DevBuf,     // RMSNorm1 çıktısı
+    xhat1: DevBuf,  // normalize edilmiş (gama öncesi)
     inv1: DevBuf,
     q: DevBuf,
     k: DevBuf,
     v: DevBuf,
-    w: DevBuf,
-    attn: DevBuf,
-    res1: DevBuf,
-    ln2: DevBuf,
+    w: DevBuf,      // attention ağırlıkları (B·H·S, S)
+    attn: DevBuf,   // projeksiyon öncesi attention çıktısı
+    res1: DevBuf,   // x + attn_proj
+    x2: DevBuf,     // RMSNorm2 çıktısı
     xhat2: DevBuf,
     inv2: DevBuf,
-    ff1: DevBuf,
-    gelu: DevBuf,
+    gate: DevBuf,   // x2·W1
+    up: DevBuf,     // x2·W3
+    act: DevBuf,    // silu(gate) ⊙ up
     dq: DevBuf,
     dk: DevBuf,
     dv: DevBuf,
@@ -188,13 +191,16 @@ pub struct GpuGpt {
     pub batch: usize,
     pub seq: usize,
 
+    /// Token gömmesi — ÇIKIŞ MATRİSİ DE BU (weight tying).
     tok_emb: Param,
-    pos_emb: Param,
     blocks: Vec<GpuBlock>,
     lnf_g: Param,
-    lnf_b: Param,
-    head_w: Param,
-    head_b: Param,
+    /// Eğitimde dropout olasılığı (değerlendirme/üretimde 0).
+    pub dropout_p: f32,
+    /// Dropout maskeleri için tohum (adım başına güncellenir).
+    drop_seed: u32,
+    /// true ise dropout uygulanır.
+    pub training: bool,
 
     acts: Vec<Acts>,
     h: Vec<DevBuf>,
@@ -214,9 +220,11 @@ pub struct GpuGpt {
     tmp_c: DevBuf,
     tmp_fa: DevBuf,
     tmp_fb: DevBuf,
+    tmp_fc: DevBuf,
     /// İleri geçişte attention skorları, geri geçişte dW için yeniden kullanılır.
     scores: DevBuf,
     dscores: DevBuf,
+    #[allow(dead_code)]
     ones: DevBuf,
 
     pub adam_t: usize,
@@ -245,19 +253,20 @@ impl GpuGpt {
     /// Sıfırdan rastgele başlatma (CPU ikizi yok). GPT::new ile aynı dağılım:
     /// gömme 0.02, projeksiyonlar 1/sqrt(d) ölçeğinde.
     pub fn new_random(cfg: GptConfig, batch: usize, seq: usize, seed: u64) -> Self {
-        let (v, d, f) = (cfg.vocab_size, cfg.d_model, 4 * cfg.d_model);
+        let (v, d) = (cfg.vocab_size, cfg.d_model);
+        let f = swiglu_hidden(d);
         let bs = batch * seq;
         let bh_seq = batch * cfg.n_heads * seq;
         let mut s = seed;
 
         let emb_scale = 0.02;
         let proj_scale = (1.0 / d as f32).sqrt();
-        let ff1_scale = (2.0 / d as f32).sqrt();
+        let ff_scale = (2.0 / d as f32).sqrt();
 
         let mut mk = |rows: usize, cols: usize, scale: f32, name: &'static str| {
             Param::from_host(rows, cols, name, &seed_uniform(rows * cols, scale, &mut s))
         };
-        let zeros = |rows: usize, cols: usize, name: &'static str| {
+        let _zeros = |rows: usize, cols: usize, name: &'static str| {
             Param::from_host(rows, cols, name, &vec![0.0; rows * cols])
         };
         let orig = Param::from_host;
@@ -265,18 +274,15 @@ impl GpuGpt {
 
         let blocks: Vec<GpuBlock> = (0..cfg.n_layers)
             .map(|_| GpuBlock {
-                ln1_g: Param::from_host(1, d, "ln1_g", &vec![1.0; d]),
-                ln1_b: zeros(1, d, "ln1_b"),
+                norm1_g: Param::from_host(1, d, "norm1_g", &vec![1.0; d]),
                 wq: mk(d, d, proj_scale, "wq"),
                 wk: mk(d, d, proj_scale, "wk"),
                 wv: mk(d, d, proj_scale, "wv"),
                 wo: mk(d, d, proj_scale, "wo"),
-                ln2_g: Param::from_host(1, d, "ln2_g", &vec![1.0; d]),
-                ln2_b: zeros(1, d, "ln2_b"),
-                ff1_w: mk(d, f, ff1_scale, "ff1_w"),
-                ff1_b: zeros(1, f, "ff1_b"),
-                ff2_w: mk(f, d, ff1_scale, "ff2_w"),
-                ff2_b: mk(1, d, 0.0, "ff2_b"),
+                norm2_g: Param::from_host(1, d, "norm2_g", &vec![1.0; d]),
+                ff_gate: mk(d, f, ff_scale, "ff_gate"),
+                ff_up: mk(d, f, ff_scale, "ff_up"),
+                ff_down: mk(f, d, proj_scale, "ff_down"),
             })
             .collect();
 
@@ -284,7 +290,7 @@ impl GpuGpt {
         let dh: Vec<DevBuf> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
         let acts: Vec<Acts> = (0..cfg.n_layers)
             .map(|_| Acts {
-                ln1: alloc(bs * d),
+                x1: alloc(bs * d),
                 xhat1: alloc(bs * d),
                 inv1: alloc(bs),
                 q: alloc(bs * d),
@@ -293,11 +299,12 @@ impl GpuGpt {
                 w: alloc(bh_seq * seq),
                 attn: alloc(bs * d),
                 res1: alloc(bs * d),
-                ln2: alloc(bs * d),
+                x2: alloc(bs * d),
                 xhat2: alloc(bs * d),
                 inv2: alloc(bs),
-                ff1: alloc(bs * f),
-                gelu: alloc(bs * f),
+                gate: alloc(bs * f),
+                up: alloc(bs * f),
+                act: alloc(bs * f),
                 dq: alloc(bs * d),
                 dk: alloc(bs * d),
                 dv: alloc(bs * d),
@@ -309,12 +316,11 @@ impl GpuGpt {
             batch,
             seq,
             tok_emb: mk(v, d, emb_scale, "tok_emb"),
-            pos_emb: mk(seq, d, emb_scale, "pos_emb"),
             blocks,
             lnf_g: Param::from_host(1, d, "lnf_g", &vec![1.0; d]),
-            lnf_b: zeros(1, d, "lnf_b"),
-            head_w: mk(d, v, emb_scale, "head_w"),
-            head_b: zeros(1, v, "head_b"),
+            dropout_p: 0.0,
+            drop_seed: 1,
+            training: false,
             acts,
             h,
             dh,
@@ -331,6 +337,7 @@ impl GpuGpt {
             tmp_c: alloc(bs * d),
             tmp_fa: alloc(bs * f),
             tmp_fb: alloc(bs * f),
+            tmp_fc: alloc(bs * f),
             scores: alloc(bh_seq * seq),
             dscores: alloc(bh_seq * seq),
             ones: upload(&vec![1.0f32; bs]),
@@ -342,7 +349,8 @@ impl GpuGpt {
     pub fn from_cpu(model: &GPT, batch: usize, seq: usize) -> Self {
         let cfg = model.config;
         assert!(seq <= cfg.max_seq_len, "seq > max_seq_len");
-        let (v, d, f) = (cfg.vocab_size, cfg.d_model, 4 * cfg.d_model);
+        let (v, d) = (cfg.vocab_size, cfg.d_model);
+        let f = swiglu_hidden(d);
         let bs = batch * seq;
         let bh_seq = batch * cfg.n_heads * seq;
 
@@ -350,18 +358,15 @@ impl GpuGpt {
             .blocks
             .iter()
             .map(|b| GpuBlock {
-                ln1_g: mk_param(&b.ln1_gamma, "ln1_g"),
-                ln1_b: mk_param(&b.ln1_beta, "ln1_b"),
+                norm1_g: mk_param(&b.norm1_gamma, "norm1_g"),
                 wq: mk_param(&b.attn.w_q, "wq"),
                 wk: mk_param(&b.attn.w_k, "wk"),
                 wv: mk_param(&b.attn.w_v, "wv"),
                 wo: mk_param(&b.attn.w_o, "wo"),
-                ln2_g: mk_param(&b.ln2_gamma, "ln2_g"),
-                ln2_b: mk_param(&b.ln2_beta, "ln2_b"),
-                ff1_w: mk_param(&b.ff1.weight, "ff1_w"),
-                ff1_b: mk_param(&b.ff1.bias, "ff1_b"),
-                ff2_w: mk_param(&b.ff2.weight, "ff2_w"),
-                ff2_b: mk_param(&b.ff2.bias, "ff2_b"),
+                norm2_g: mk_param(&b.norm2_gamma, "norm2_g"),
+                ff_gate: mk_param(&b.ff_gate, "ff_gate"),
+                ff_up: mk_param(&b.ff_up, "ff_up"),
+                ff_down: mk_param(&b.ff_down, "ff_down"),
             })
             .collect();
 
@@ -369,7 +374,7 @@ impl GpuGpt {
         let dh: Vec<DevBuf> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
         let acts: Vec<Acts> = (0..cfg.n_layers)
             .map(|_| Acts {
-                ln1: alloc(bs * d),
+                x1: alloc(bs * d),
                 xhat1: alloc(bs * d),
                 inv1: alloc(bs),
                 q: alloc(bs * d),
@@ -378,11 +383,12 @@ impl GpuGpt {
                 w: alloc(bh_seq * seq),
                 attn: alloc(bs * d),
                 res1: alloc(bs * d),
-                ln2: alloc(bs * d),
+                x2: alloc(bs * d),
                 xhat2: alloc(bs * d),
                 inv2: alloc(bs),
-                ff1: alloc(bs * f),
-                gelu: alloc(bs * f),
+                gate: alloc(bs * f),
+                up: alloc(bs * f),
+                act: alloc(bs * f),
                 dq: alloc(bs * d),
                 dk: alloc(bs * d),
                 dv: alloc(bs * d),
@@ -394,12 +400,11 @@ impl GpuGpt {
             batch,
             seq,
             tok_emb: mk_param(&model.embedding.token_emb, "tok_emb"),
-            pos_emb: mk_param(&model.embedding.pos_emb, "pos_emb"),
             blocks,
             lnf_g: mk_param(&model.ln_f_gamma, "lnf_g"),
-            lnf_b: mk_param(&model.ln_f_beta, "lnf_b"),
-            head_w: mk_param(&model.head.weight, "head_w"),
-            head_b: mk_param(&model.head.bias, "head_b"),
+            dropout_p: 0.0,
+            drop_seed: 1,
+            training: false,
             acts,
             h,
             dh,
@@ -416,6 +421,7 @@ impl GpuGpt {
             tmp_c: alloc(bs * d),
             tmp_fa: alloc(bs * f),
             tmp_fb: alloc(bs * f),
+            tmp_fc: alloc(bs * f),
             scores: alloc(bh_seq * seq),
             dscores: alloc(bh_seq * seq),
             ones: upload(&vec![1.0f32; bs]),
@@ -427,7 +433,7 @@ impl GpuGpt {
         Dims {
             v: self.cfg.vocab_size,
             d: self.cfg.d_model,
-            f: 4 * self.cfg.d_model,
+            f: swiglu_hidden(self.cfg.d_model),
             h: self.cfg.n_heads,
             b: self.batch,
             s: self.seq,
@@ -435,25 +441,19 @@ impl GpuGpt {
     }
 
     pub fn params_mut(&mut self) -> Vec<&mut Param> {
-        let mut out: Vec<&mut Param> = vec![&mut self.tok_emb, &mut self.pos_emb];
+        let mut out: Vec<&mut Param> = vec![&mut self.tok_emb];
         for b in &mut self.blocks {
-            out.push(&mut b.ln1_g);
-            out.push(&mut b.ln1_b);
+            out.push(&mut b.norm1_g);
             out.push(&mut b.wq);
             out.push(&mut b.wk);
             out.push(&mut b.wv);
             out.push(&mut b.wo);
-            out.push(&mut b.ln2_g);
-            out.push(&mut b.ln2_b);
-            out.push(&mut b.ff1_w);
-            out.push(&mut b.ff1_b);
-            out.push(&mut b.ff2_w);
-            out.push(&mut b.ff2_b);
+            out.push(&mut b.norm2_g);
+            out.push(&mut b.ff_gate);
+            out.push(&mut b.ff_up);
+            out.push(&mut b.ff_down);
         }
         out.push(&mut self.lnf_g);
-        out.push(&mut self.lnf_b);
-        out.push(&mut self.head_w);
-        out.push(&mut self.head_b);
         out
     }
 
@@ -495,42 +495,7 @@ impl GpuGpt {
         let ids_dev = upload_i32(ids);
         let tgt_dev = upload_i32(targets);
 
-        k::embedding_forward(
-            &self.h[0],
-            &ids_dev,
-            &self.tok_emb.data,
-            &self.pos_emb.data,
-            dm.bs(),
-            dm.d,
-            dm.s,
-        );
-        for l in 0..self.cfg.n_layers {
-            self.block_forward(l, &dm);
-        }
-        k::layernorm_forward(
-            &self.lnf_out,
-            &self.xhat_f,
-            &self.inv_f,
-            &self.h[self.cfg.n_layers],
-            &self.lnf_g.data,
-            &self.lnf_b.data,
-            dm.bs(),
-            dm.d,
-            LN_EPS,
-        );
-        gpu::dev_gemm(
-            &mut self.logits,
-            &self.lnf_out,
-            &self.head_w.data,
-            dm.bs(),
-            dm.v,
-            dm.d,
-            dm.d,
-            dm.v,
-            dm.v,
-            GemmMode::Nn,
-        );
-        k::add_bias_inplace(&self.logits, &self.head_b.data, dm.bs(), dm.v);
+        self.head_forward(&ids_dev, &dm);
         k::zero_fill(&self.loss, 1);
         k::ce_forward(
             &self.loss,
@@ -557,47 +522,43 @@ impl GpuGpt {
         assert_eq!(ids.len(), dm.bs(), "ids.len() = batch*seq olmalı");
         let ids_dev = upload_i32(ids);
 
-        k::embedding_forward(
-            &self.h[0],
-            &ids_dev,
-            &self.tok_emb.data,
-            &self.pos_emb.data,
-            dm.bs(),
-            dm.d,
-            dm.s,
-        );
-        for l in 0..self.cfg.n_layers {
-            self.block_forward(l, &dm);
-        }
-        k::layernorm_forward(
-            &self.lnf_out,
-            &self.xhat_f,
-            &self.inv_f,
-            &self.h[self.cfg.n_layers],
-            &self.lnf_g.data,
-            &self.lnf_b.data,
-            dm.bs(),
-            dm.d,
-            LN_EPS,
-        );
-        gpu::dev_gemm(
-            &mut self.logits,
-            &self.lnf_out,
-            &self.head_w.data,
-            dm.bs(),
-            dm.v,
-            dm.d,
-            dm.d,
-            dm.v,
-            dm.v,
-            GemmMode::Nn,
-        );
-        k::add_bias_inplace(&self.logits, &self.head_b.data, dm.bs(), dm.v);
+        self.head_forward(&ids_dev, &dm);
 
         // istenen satırın logitleri
         let all = self.logits.to_host();
         let last = row * dm.v;
         all[last..last + dm.v].to_vec()
+    }
+
+    /// Gövde ileri geçişi: gömme → katmanlar → final RMSNorm → logits (tied).
+    fn head_forward(&mut self, ids_dev: &DevBufI32, dm: &Dims) {
+        k::embedding_forward_tok(&self.h[0], ids_dev, &self.tok_emb.data, dm.bs(), dm.d);
+        for l in 0..self.cfg.n_layers {
+            self.block_forward(l, dm);
+        }
+        k::rmsnorm_forward(
+            &self.lnf_out,
+            &self.xhat_f,
+            &self.inv_f,
+            &self.h[self.cfg.n_layers],
+            &self.lnf_g.data,
+            dm.bs(),
+            dm.d,
+            RMS_EPS,
+        );
+        // weight tying: logits = lnf_out · tok_embᵀ
+        gpu::dev_gemm(
+            &mut self.logits,
+            &self.lnf_out,
+            &self.tok_emb.data,
+            dm.bs(),
+            dm.v,
+            dm.d,
+            dm.d,
+            dm.d,
+            dm.v,
+            GemmMode::Nt,
+        );
     }
 
     /// Tek bir token'ın logitlerini hesaplamak için `seq` uzunluğu 1 olmalı.
@@ -752,43 +713,7 @@ impl GpuGpt {
         }
 
         // ---- ileri ----
-        k::embedding_forward(
-            &self.h[0],
-            &ids_dev,
-            &self.tok_emb.data,
-            &self.pos_emb.data,
-            dm.bs(),
-            dm.d,
-            dm.s,
-        );
-        for l in 0..self.cfg.n_layers {
-            self.block_forward(l, &dm);
-        }
-
-        k::layernorm_forward(
-            &self.lnf_out,
-            &self.xhat_f,
-            &self.inv_f,
-            &self.h[self.cfg.n_layers],
-            &self.lnf_g.data,
-            &self.lnf_b.data,
-            dm.bs(),
-            dm.d,
-            LN_EPS,
-        );
-        gpu::dev_gemm(
-            &mut self.logits,
-            &self.lnf_out,
-            &self.head_w.data,
-            dm.bs(),
-            dm.v,
-            dm.d,
-            dm.d,
-            dm.v,
-            dm.v,
-            GemmMode::Nn,
-        );
-        k::add_bias_inplace(&self.logits, &self.head_b.data, dm.bs(), dm.v);
+        self.head_forward(&ids_dev, &dm);
         k::zero_fill(&self.loss, 1);
         k::ce_forward(
             &self.loss,
@@ -803,48 +728,38 @@ impl GpuGpt {
         // ---- geri ----
         k::ce_backward(&self.dlogits, &self.probs, &tgt_dev, dm.bs(), dm.v, loss_scale);
 
+        // --- weight tying: dtok_emb += dlogitsᵀ·lnf_out (V,D) ---
         gpu::dev_gemm(
-            &mut self.head_w.grad,
-            &self.lnf_out,
+            &mut self.tok_emb.grad,
             &self.dlogits,
-            dm.d,
+            &self.lnf_out,
             dm.v,
+            dm.d,
             dm.bs(),
+            dm.v,
             dm.d,
-            dm.v,
-            dm.v,
+            dm.d,
             GemmMode::Tn,
         );
-        gpu::dev_gemm(
-            &mut self.head_b.grad,
-            &self.ones,
-            &self.dlogits,
-            1,
-            dm.v,
-            dm.bs(),
-            dm.bs(),
-            dm.v,
-            dm.v,
-            GemmMode::Nn,
-        );
-        // dlnf = dlogits·head_wᵀ
+        // dlnf = dlogits·tok_emb (BS,D)
         gpu::dev_gemm(
             &mut self.dlnf,
             &self.dlogits,
-            &self.head_w.data,
+            &self.tok_emb.data,
             dm.bs(),
             dm.d,
             dm.v,
             dm.v,
-            dm.v,
             dm.d,
-            GemmMode::Nt,
+            dm.d,
+            GemmMode::Nn,
         );
 
         {
             let g = alloc(dm.d);
-            let b = alloc(dm.d);
-            k::layernorm_backward(
+            k::rmsnorm_param_grad(&g, &self.dlnf, &self.xhat_f, dm.bs(), dm.d);
+            k::add_inplace(&self.lnf_g.grad, &g, dm.d);
+            k::rmsnorm_backward(
                 &self.dh[self.cfg.n_layers],
                 &self.dlnf,
                 &self.xhat_f,
@@ -853,24 +768,13 @@ impl GpuGpt {
                 dm.bs(),
                 dm.d,
             );
-            k::layernorm_param_grad(&g, &b, &self.dlnf, &self.xhat_f, dm.bs(), dm.d);
-            k::add_inplace(&self.lnf_g.grad, &g, dm.d);
-            k::add_inplace(&self.lnf_b.grad, &b, dm.d);
         }
 
         for l in (0..self.cfg.n_layers).rev() {
             self.block_backward(l, &dm);
         }
 
-        k::embedding_backward(
-            &self.tok_emb.grad,
-            &self.pos_emb.grad,
-            &self.dh[0],
-            &ids_dev,
-            dm.bs(),
-            dm.d,
-            dm.s,
-        );
+        k::embedding_backward_tok(&self.tok_emb.grad, &self.dh[0], &ids_dev, dm.bs(), dm.d);
 
         loss
     }
@@ -883,11 +787,13 @@ impl GpuGpt {
             h,
             scores,
             tmp_a,
-            tmp_fa,
-            tmp_fb,
+            tmp_b,
+            dropout_p,
+            drop_seed,
+            training,
             ..
         } = self;
-        let (bs, d, f, s, nh, dh, scale) = (
+        let (bs, d, f, s, nh, dhh, scale) = (
             dm.bs(),
             dm.d,
             dm.f,
@@ -902,27 +808,30 @@ impl GpuGpt {
         let x_in = &h_lo[l];
         let out = &mut h_hi[0];
 
-        // LN1
-        k::layernorm_forward(
-            &a.ln1,
-            &a.xhat1,
-            &a.inv1,
-            x_in,
-            &blk.ln1_g.data,
-            &blk.ln1_b.data,
-            bs,
-            d,
-            LN_EPS,
-        );
+        // Katman başına farklı dropout maskesi (geri geçişte aynısı üretilir).
+        let base = *drop_seed ^ (l as u32).wrapping_mul(0x9E37_79B1);
+        let (seed_proj, seed_ffn) = (base, base ^ 0x5BF0_3635);
+        let drop = if *training && *dropout_p > 0.0 {
+            *dropout_p
+        } else {
+            0.0
+        };
 
-        // q, k, v (bias yok)
-        gpu::dev_gemm(&mut a.q, &a.ln1, &blk.wq.data, bs, d, d, d, d, d, GemmMode::Nn);
-        gpu::dev_gemm(&mut a.k, &a.ln1, &blk.wk.data, bs, d, d, d, d, d, GemmMode::Nn);
-        gpu::dev_gemm(&mut a.v, &a.ln1, &blk.wv.data, bs, d, d, d, d, d, GemmMode::Nn);
+        // --- RMSNorm 1 ---
+        k::rmsnorm_forward(&a.x1, &a.xhat1, &a.inv1, x_in, &blk.norm1_g.data, bs, d, RMS_EPS);
 
-        // skorlar (her head, batch üzerinde strided)
+        // --- q, k, v (bias yok) ---
+        gpu::dev_gemm(&mut a.q, &a.x1, &blk.wq.data, bs, d, d, d, d, d, GemmMode::Nn);
+        gpu::dev_gemm(&mut a.k, &a.x1, &blk.wk.data, bs, d, d, d, d, d, GemmMode::Nn);
+        gpu::dev_gemm(&mut a.v, &a.x1, &blk.wv.data, bs, d, d, d, d, d, GemmMode::Nn);
+
+        // --- RoPE: yalnız Q ve K döndürülür (yerinde güvenli) ---
+        k::rope_forward(&a.q, &a.q, dm.b, s, nh, dhh);
+        k::rope_forward(&a.k, &a.k, dm.b, s, nh, dhh);
+
+        // --- skorlar (her head, batch üzerinde strided) ---
         for hh in 0..nh {
-            let off = hh * dh;
+            let off = hh * dhh;
             let q_view = a.q.slice(off..);
             let k_view = a.k.slice(off..);
             let mut sc = scores.slice_mut(hh * dm.b * s * s..);
@@ -932,7 +841,7 @@ impl GpuGpt {
                 &k_view,
                 s,
                 s,
-                dh,
+                dhh,
                 d,
                 d,
                 s,
@@ -946,9 +855,9 @@ impl GpuGpt {
         }
         k::masked_softmax_forward(&a.w, scores, dm.b, nh, s, scale);
 
-        // attn = W·V
+        // --- attn = W·V ---
         for hh in 0..nh {
-            let off = hh * dh;
+            let off = hh * dhh;
             let w_view = a.w.slice(hh * dm.b * s * s..);
             let v_view = a.v.slice(off..);
             let mut av = a.attn.slice_mut(off..);
@@ -957,7 +866,7 @@ impl GpuGpt {
                 &w_view,
                 &v_view,
                 s,
-                dh,
+                dhh,
                 s,
                 s,
                 d,
@@ -971,38 +880,32 @@ impl GpuGpt {
             );
         }
 
-        // proj = attn·wo
-        gpu::dev_gemm(&mut *tmp_a, &a.attn, &blk.wo.data, bs, d, d, d, d, d, GemmMode::Nn);
+        // --- proj = attn·wo  (+ dropout) ---
+        gpu::dev_gemm(tmp_a, &a.attn, &blk.wo.data, bs, d, d, d, d, d, GemmMode::Nn);
+        if drop > 0.0 {
+            k::dropout_inplace(tmp_a, bs * d, drop, seed_proj);
+        }
 
-        // res1 = x + proj
+        // --- res1 = x + proj ---
         dtod(&mut a.res1, x_in);
         k::add_inplace(&a.res1, tmp_a, bs * d);
 
-        // LN2
-        k::layernorm_forward(
-            &a.ln2,
-            &a.xhat2,
-            &a.inv2,
-            &a.res1,
-            &blk.ln2_g.data,
-            &blk.ln2_b.data,
-            bs,
-            d,
-            LN_EPS,
-        );
+        // --- RMSNorm 2 ---
+        k::rmsnorm_forward(&a.x2, &a.xhat2, &a.inv2, &a.res1, &blk.norm2_g.data, bs, d, RMS_EPS);
 
-        // ff1 + bias → gelu → ff2 + bias
-        gpu::dev_gemm(&mut *tmp_fa, &a.ln2, &blk.ff1_w.data, bs, f, d, d, f, f, GemmMode::Nn);
-        k::add_bias_inplace(tmp_fa, &blk.ff1_b.data, bs, f);
-        dtod(&mut a.ff1, tmp_fa);
-        k::gelu_forward(&a.gelu, &a.ff1, bs * f);
+        // --- SwiGLU FFN: silu(x·W1) ⊙ (x·W3) ·W2 ---
+        gpu::dev_gemm(&mut a.gate, &a.x2, &blk.ff_gate.data, bs, f, d, d, f, f, GemmMode::Nn);
+        gpu::dev_gemm(&mut a.up, &a.x2, &blk.ff_up.data, bs, f, d, d, f, f, GemmMode::Nn);
+        k::silu_mul_forward(&a.act, &a.gate, &a.up, bs * f);
 
-        gpu::dev_gemm(&mut *tmp_fb, &a.gelu, &blk.ff2_w.data, bs, d, f, f, d, d, GemmMode::Nn);
-        k::add_bias_inplace(tmp_fb, &blk.ff2_b.data, bs, d);
+        gpu::dev_gemm(tmp_b, &a.act, &blk.ff_down.data, bs, d, f, f, d, d, GemmMode::Nn);
+        if drop > 0.0 {
+            k::dropout_inplace(tmp_b, bs * d, drop, seed_ffn);
+        }
 
-        // out = res1 + ff2_out
+        // --- out = res1 + ffn ---
         dtod(out, &a.res1);
-        k::add_inplace(out, tmp_fb, bs * d);
+        k::add_inplace(out, tmp_b, bs * d);
     }
 
     fn block_backward(&mut self, l: usize, dm: &Dims) {
@@ -1012,12 +915,15 @@ impl GpuGpt {
             dh: dh_vec,
             scores,
             dscores,
-            ones,
             tmp_a,
             tmp_b,
             tmp_c,
             tmp_fa,
             tmp_fb,
+            tmp_fc,
+            dropout_p,
+            drop_seed,
+            training,
             ..
         } = self;
         let (bs, d, f, s, nh, dhh, scale) = (
@@ -1034,68 +940,42 @@ impl GpuGpt {
         let (dh_lo, dh_hi) = dh_vec.split_at_mut(l + 1);
         let dout = dh_hi[0].full();
 
-        // --- ff2 ---
-        // dgelu = dOut·ff2_wᵀ  (BS,F)
-        gpu::dev_gemm(
-            tmp_fa,
-            &dout,
-            &blk.ff2_w.data,
-            bs,
-            f,
-            d,
-            d,
-            d,
-            f,
-            GemmMode::Nt,
-        );
-        // dff2_w = geluᵀ·dOut (F,D)
-        gpu::dev_gemm(
-            &mut blk.ff2_w.grad,
-            &a.gelu,
-            &dout,
-            f,
-            d,
-            bs,
-            f,
-            d,
-            d,
-            GemmMode::Tn,
-        );
-        // dff2_b = ones·dOut (1,D)
-        gpu::dev_gemm(
-            &mut blk.ff2_b.grad,
-            ones,
-            &dout,
-            1,
-            d,
-            bs,
-            bs,
-            d,
-            d,
-            GemmMode::Nn,
-        );
+        let base = *drop_seed ^ (l as u32).wrapping_mul(0x9E37_79B1);
+        let (seed_proj, seed_ffn) = (base, base ^ 0x5BF0_3635);
+        let drop = if *training && *dropout_p > 0.0 {
+            *dropout_p
+        } else {
+            0.0
+        };
 
-        // gelu geri
-        k::gelu_backward(tmp_fb, tmp_fa, &a.ff1, bs * f);
-
-        // --- ff1 ---
-        // dln2 = dff1_out·ff1_wᵀ (BS,D)
+        // ================= FFN dalı =================
+        // dfn = dOut (dropout maskesi aynı) → tmp_b
+        dtod(tmp_b, &dout);
+        if drop > 0.0 {
+            k::dropout_backward(tmp_b, bs * d, drop, seed_ffn);
+        }
+        // dact = dfn·ff_downᵀ (BS,F) → tmp_fa
+        gpu::dev_gemm(tmp_fa, tmp_b, &blk.ff_down.data, bs, f, d, d, d, f, GemmMode::Nt);
+        // dff_down = actᵀ·dfn (F,D)
         gpu::dev_gemm(
+            &mut blk.ff_down.grad,
+            &a.act,
             tmp_b,
-            tmp_fb,
-            &blk.ff1_w.data,
+            f,
+            d,
             bs,
-            d,
-            f,
-            f,
             f,
             d,
-            GemmMode::Nt,
+            d,
+            GemmMode::Tn,
         );
-        // dff1_w = ln2ᵀ·dff1_out (D,F)
+        // SwiGLU geri: dgate → tmp_fb, dup → tmp_fc
+        k::silu_mul_backward(tmp_fb, tmp_fc, tmp_fa, &a.gate, &a.up, bs * f);
+
+        // dff_gate = x2ᵀ·dgate (D,F) ; dff_up = x2ᵀ·dup
         gpu::dev_gemm(
-            &mut blk.ff1_w.grad,
-            &a.ln2,
+            &mut blk.ff_gate.grad,
+            &a.x2,
             tmp_fb,
             d,
             f,
@@ -1105,51 +985,57 @@ impl GpuGpt {
             f,
             GemmMode::Tn,
         );
-        // dff1_b = ones·dff1_out (1,F)
         gpu::dev_gemm(
-            &mut blk.ff1_b.grad,
-            ones,
-            tmp_fb,
-            1,
+            &mut blk.ff_up.grad,
+            &a.x2,
+            tmp_fc,
+            d,
             f,
             bs,
-            bs,
+            d,
             f,
             f,
-            GemmMode::Nn,
+            GemmMode::Tn,
         );
 
-        // --- LN2 geri ---
-        k::layernorm_backward(tmp_c, tmp_b, &a.xhat2, &a.inv2, &blk.ln2_g.data, bs, d);
+        // dx2 = dgate·ff_gateᵀ + dup·ff_upᵀ (BS,D) → tmp_b
+        gpu::dev_gemm(tmp_b, tmp_fb, &blk.ff_gate.data, bs, d, f, f, f, d, GemmMode::Nt);
+        gpu::dev_gemm_batched(
+            tmp_b,
+            tmp_fc,
+            &blk.ff_up.data,
+            bs,
+            d,
+            f,
+            f,
+            f,
+            d,
+            0,
+            0,
+            0,
+            1,
+            1.0,
+            GemmMode::Nt,
+        );
+
+        // ---- RMSNorm 2 geri ----
         {
             let g = alloc(d);
-            let b = alloc(d);
-            k::layernorm_param_grad(&g, &b, tmp_b, &a.xhat2, bs, d);
-            k::add_inplace(&blk.ln2_g.grad, &g, d);
-            k::add_inplace(&blk.ln2_b.grad, &b, d);
+            k::rmsnorm_param_grad(&g, tmp_b, &a.xhat2, bs, d);
+            k::add_inplace(&blk.norm2_g.grad, &g, d);
         }
+        k::rmsnorm_backward(tmp_c, tmp_b, &a.xhat2, &a.inv2, &blk.norm2_g.data, bs, d);
 
-        // dh[l] = dOut (residual) + dx_ln2
+        // dh[l] = dOut (residual) + dx_rmsnorm2 → attention dalının yukarı akışı
         dtod(&mut dh_lo[l], &dout);
         k::add_inplace(&dh_lo[l], tmp_c, bs * d);
 
-        // --- attention çıkış projeksiyonu ---
-        // ÖNEMLİ: bu noktada dh[l] = dOut + dx_ln2'dir; attention dalının
-        // yukarı akışı budur (res1 = x + proj olduğu için). Blok çıkışının
-        // gradyanı (dOut) tek başına kullanılamaz.
-        // dattn = dh[l]·woᵀ (BS,D) → tmp_a
-        gpu::dev_gemm(
-            tmp_a,
-            &dh_lo[l],
-            &blk.wo.data,
-            bs,
-            d,
-            d,
-            d,
-            d,
-            d,
-            GemmMode::Nt,
-        );
+        // ================= attention dalı =================
+        // dattn = dh[l]·woᵀ (BS,D) → tmp_a   (+ aynı dropout maskesi)
+        gpu::dev_gemm(tmp_a, &dh_lo[l], &blk.wo.data, bs, d, d, d, d, d, GemmMode::Nt);
+        if drop > 0.0 {
+            k::dropout_backward(tmp_a, bs * d, drop, seed_proj);
+        }
         // dwo = attnᵀ·dh[l] (D,D)
         gpu::dev_gemm(
             &mut blk.wo.grad,
@@ -1164,8 +1050,6 @@ impl GpuGpt {
             GemmMode::Tn,
         );
 
-
-        // --- attention geri ---
         // dV = Wᵀ·dAttn
         for hh in 0..nh {
             let off = hh * dhh;
@@ -1264,20 +1148,12 @@ impl GpuGpt {
             }
         }
 
-        // --- q/k/v projeksiyon gradyanları ---
-        // dln1 = dQ·wqᵀ + dK·wkᵀ + dV·wvᵀ  (beta ile biriktir)
-        gpu::dev_gemm(
-            tmp_b,
-            &a.dq,
-            &blk.wq.data,
-            bs,
-            d,
-            d,
-            d,
-            d,
-            d,
-            GemmMode::Nt,
-        );
+        // RoPE geri: dQ/dK ters döndürülür (Q, K ileri geçişte döndürülmüştü)
+        k::rope_backward(&a.dq, &a.dq, dm.b, s, nh, dhh);
+        k::rope_backward(&a.dk, &a.dk, dm.b, s, nh, dhh);
+
+        // dln1 = dQ·wqᵀ + dK·wkᵀ + dV·wvᵀ (beta ile biriktir) → tmp_b
+        gpu::dev_gemm(tmp_b, &a.dq, &blk.wq.data, bs, d, d, d, d, d, GemmMode::Nt);
         gpu::dev_gemm_batched(
             tmp_b,
             &a.dk,
@@ -1313,10 +1189,10 @@ impl GpuGpt {
             GemmMode::Nt,
         );
 
-        // dWq/dWk/dWv = ln1ᵀ·d{Q,K,V}
+        // dWq/dWk/dWv = x1ᵀ·d{Q,K,V}
         gpu::dev_gemm(
             &mut blk.wq.grad,
-            &a.ln1,
+            &a.x1,
             &a.dq,
             d,
             d,
@@ -1328,7 +1204,7 @@ impl GpuGpt {
         );
         gpu::dev_gemm(
             &mut blk.wk.grad,
-            &a.ln1,
+            &a.x1,
             &a.dk,
             d,
             d,
@@ -1340,7 +1216,7 @@ impl GpuGpt {
         );
         gpu::dev_gemm(
             &mut blk.wv.grad,
-            &a.ln1,
+            &a.x1,
             &a.dv,
             d,
             d,
@@ -1351,18 +1227,17 @@ impl GpuGpt {
             GemmMode::Tn,
         );
 
-        // --- LN1 geri ---
-        k::layernorm_backward(tmp_c, tmp_b, &a.xhat1, &a.inv1, &blk.ln1_g.data, bs, d);
+        // ---- RMSNorm 1 geri ----
         {
             let g = alloc(d);
-            let b = alloc(d);
-            k::layernorm_param_grad(&g, &b, tmp_b, &a.xhat1, bs, d);
-            k::add_inplace(&blk.ln1_g.grad, &g, d);
-            k::add_inplace(&blk.ln1_b.grad, &b, d);
+            k::rmsnorm_param_grad(&g, tmp_b, &a.xhat1, bs, d);
+            k::add_inplace(&blk.norm1_g.grad, &g, d);
         }
+        k::rmsnorm_backward(tmp_c, tmp_b, &a.xhat1, &a.inv1, &blk.norm1_g.data, bs, d);
         k::add_inplace(&dh_lo[l], tmp_c, bs * d);
     }
 }
+
 
 impl GpuGpt {
     /// Test/teşhis için: isimle parametre gradyanı.
@@ -1374,18 +1249,15 @@ impl GpuGpt {
         }
         let blk = &self.blocks[block];
         let p = match name {
-            "ln1_g" => &blk.ln1_g,
-            "ln1_b" => &blk.ln1_b,
+            "norm1_g" => &blk.norm1_g,
             "wq" => &blk.wq,
             "wk" => &blk.wk,
             "wv" => &blk.wv,
             "wo" => &blk.wo,
-            "ln2_g" => &blk.ln2_g,
-            "ln2_b" => &blk.ln2_b,
-            "ff1_w" => &blk.ff1_w,
-            "ff1_b" => &blk.ff1_b,
-            "ff2_w" => &blk.ff2_w,
-            "ff2_b" => &blk.ff2_b,
+            "norm2_g" => &blk.norm2_g,
+            "ff_gate" => &blk.ff_gate,
+            "ff_up" => &blk.ff_up,
+            "ff_down" => &blk.ff_down,
             _ => return None,
         };
         Some(p.download_grad())
@@ -1404,25 +1276,19 @@ impl GpuGpt {
             d.data.copy_from_slice(&host);
         };
         put(&model.embedding.token_emb, &self.tok_emb);
-        put(&model.embedding.pos_emb, &self.pos_emb);
         for (bi, blk) in model.blocks.iter().enumerate() {
             let gb = &self.blocks[bi];
-            put(&blk.ln1_gamma, &gb.ln1_g);
-            put(&blk.ln1_beta, &gb.ln1_b);
+            put(&blk.norm1_gamma, &gb.norm1_g);
             put(&blk.attn.w_q, &gb.wq);
             put(&blk.attn.w_k, &gb.wk);
             put(&blk.attn.w_v, &gb.wv);
             put(&blk.attn.w_o, &gb.wo);
-            put(&blk.ln2_gamma, &gb.ln2_g);
-            put(&blk.ln2_beta, &gb.ln2_b);
-            put(&blk.ff1.weight, &gb.ff1_w);
-            put(&blk.ff1.bias, &gb.ff1_b);
-            put(&blk.ff2.weight, &gb.ff2_w);
-            put(&blk.ff2.bias, &gb.ff2_b);
+            put(&blk.norm2_gamma, &gb.norm2_g);
+            put(&blk.ff_gate, &gb.ff_gate);
+            put(&blk.ff_up, &gb.ff_up);
+            put(&blk.ff_down, &gb.ff_down);
         }
+        // weight tying: ayrı çıkış matrisi yok (tok_emb paylaşılır)
         put(&model.ln_f_gamma, &self.lnf_g);
-        put(&model.ln_f_beta, &self.lnf_b);
-        put(&model.head.weight, &self.head_w);
-        put(&model.head.bias, &self.head_b);
     }
 }

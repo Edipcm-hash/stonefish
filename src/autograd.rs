@@ -42,6 +42,16 @@ pub enum Op {
         seq: usize,
         n_heads: usize,
     },
+    /// RMSNorm — LayerNorm'un ortalamasız hâli (LLaMA/PaLM).
+    /// `y = x / sqrt(mean(x²)+eps) · gamma`. Beta yok.
+    RmsNorm(f32),
+    /// Döner konum kodlaması (RoPE). Girdi: (batch*seq, n_heads·d_head).
+    /// Her head dilimindeki (2i, 2i+1) çifti, token konumuna göre döndürülür.
+    Rope {
+        batch: usize,
+        seq: usize,
+        n_heads: usize,
+    },
 }
 
 pub struct Node {
@@ -364,6 +374,80 @@ impl Tensor {
         }
         drop(d);
         Tensor::from_op(out, Op::MaskCausal, vec![self.clone()])
+    }
+
+    /// RMSNorm: `y = x / sqrt(mean(x²)+eps) · gamma` (ortalama çıkarma yok).
+    ///
+    /// LayerNorm'dan farkı: ortalama hesaplanmaz ve beta yok. LLaMA/PaLM
+    /// tarafından kullanılır; aynı kalitede daha az iş.
+    pub fn rms_norm(&self, gamma: &Tensor, eps: f32) -> Tensor {
+        let xd = self.data.borrow();
+        let (rows, cols) = (xd.rows, xd.cols);
+        let gd = gamma.data.borrow();
+        assert_eq!(gd.cols, cols, "rms_norm: gamma boyutu");
+
+        let mut data = Matrix::zeros(rows, cols);
+        let mut x_hat = Matrix::zeros(rows, cols);
+        let mut inv = Matrix::zeros(rows, 1);
+        for i in 0..rows {
+            let mut ss = 0.0f32;
+            for j in 0..cols {
+                let v = xd.get(i, j);
+                ss += v * v;
+            }
+            let r = 1.0 / (ss / cols as f32 + eps).sqrt();
+            inv.set(i, 0, r);
+            for j in 0..cols {
+                let h = xd.get(i, j) * r;
+                x_hat.set(i, j, h);
+                data.set(i, j, h * gd.get(0, j));
+            }
+        }
+        drop(xd);
+        drop(gd);
+        Self::from_op_cached(
+            data,
+            Op::RmsNorm(eps),
+            vec![self.clone(), gamma.clone()],
+            vec![x_hat, inv],
+        )
+    }
+
+    /// RoPE: (batch*seq, n_heads·d_head) tensörünü konuma göre döndürür.
+    pub fn rope(&self, batch: usize, seq: usize, n_heads: usize) -> Tensor {
+        let xd = self.data.borrow();
+        let (rows, cols) = (xd.rows, xd.cols);
+        assert_eq!(rows, batch * seq, "rope: satır sayısı batch*seq olmalı");
+        assert_eq!(cols % n_heads, 0, "rope: sütun sayısı n_heads'e bölünmeli");
+        let d_head = cols / n_heads;
+        assert!(d_head % 2 == 0, "rope: d_head çift olmalı");
+
+        let mut data = Matrix::zeros(rows, cols);
+        for r in 0..rows {
+            let s = r % seq;
+            for h in 0..n_heads {
+                for j in 0..d_head / 2 {
+                    let freq = 10000f32.powf(-2.0 * j as f32 / d_head as f32);
+                    let ang = s as f32 * freq;
+                    let (c, sn) = (ang.cos(), ang.sin());
+                    let base = h * d_head + 2 * j;
+                    let x0 = xd.get(r, base);
+                    let x1 = xd.get(r, base + 1);
+                    data.set(r, base, x0 * c - x1 * sn);
+                    data.set(r, base + 1, x0 * sn + x1 * c);
+                }
+            }
+        }
+        drop(xd);
+        Self::from_op(
+            data,
+            Op::Rope {
+                batch,
+                seq,
+                n_heads,
+            },
+            vec![self.clone()],
+        )
     }
 
     /// Fused causal multi-head self-attention.
@@ -729,39 +813,85 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
             accumulate(beta, &g_beta);
         }
 
-        Op::Embedding { seq_len } => {
-            let tok_emb = &node.inputs[0];
-            let pos_emb = &node.inputs[1];
-            let ids = &node.inputs[2];
+        Op::RmsNorm(_eps) => {
+            let x = &node.inputs[0];
+            let gamma = &node.inputs[1];
+            let x_hat = &node.cache[0];
+            let inv = &node.cache[1];
 
-            let idd = ids.data.borrow();
-            let rows = idd.rows;
-            let d_model = upstream.cols;
+            let (rows, cols) = {
+                let xd = x.data.borrow();
+                (xd.rows, xd.cols)
+            };
+            let gdata = gamma.data.borrow();
+            let mut g_x = Matrix::zeros(rows, cols);
+            let mut g_gamma = Matrix::zeros(1, cols);
 
-            let vocab = tok_emb.data.borrow().rows;
-            let pos_rows = pos_emb.data.borrow().rows;
-            let mut g_tok = Matrix::zeros(vocab, d_model);
-            let mut g_pos = Matrix::zeros(pos_rows, d_model);
-
-            for r in 0..rows {
-                let id = idd.get(r, 0) as usize;
-                let s = r % seq_len;
-                for d in 0..d_model {
-                    let g = upstream.get(r, d);
-                    g_tok.set(id, d, g_tok.get(id, d) + g);
-                    g_pos.set(s, d, g_pos.get(s, d) + g);
+            for i in 0..rows {
+                // dγ katkısı: dy · x̂
+                for j in 0..cols {
+                    g_gamma.set(
+                        0,
+                        j,
+                        g_gamma.get(0, j) + upstream.get(i, j) * x_hat.get(i, j),
+                    );
+                }
+                // dx = inv·(dy·γ − x̂·mean(dy·γ·x̂))
+                let mut mean = 0.0f32;
+                for j in 0..cols {
+                    mean += upstream.get(i, j) * gdata.get(0, j) * x_hat.get(i, j);
+                }
+                mean /= cols as f32;
+                let r_inv = inv.get(i, 0);
+                for j in 0..cols {
+                    let g = upstream.get(i, j) * gdata.get(0, j);
+                    g_x.set(i, j, r_inv * (g - x_hat.get(i, j) * mean));
                 }
             }
-            drop(idd);
+            drop(gdata);
+            accumulate(x, &g_x);
+            accumulate(gamma, &g_gamma);
+        }
 
-            accumulate(tok_emb, &g_tok);
-            accumulate(pos_emb, &g_pos);
+        Op::Rope {
+            batch: _batch,
+            seq,
+            n_heads,
+        } => {
+            let x = &node.inputs[0];
+            let (rows, cols) = {
+                let xd = x.data.borrow();
+                (xd.rows, xd.cols)
+            };
+            let d_head = cols / n_heads;
+            let mut g_x = Matrix::zeros(rows, cols);
+            // Ters dönüş: R(−θ) = R(θ)ᵀ
+            for r in 0..rows {
+                let s = r % seq;
+                for h in 0..n_heads {
+                    for j in 0..d_head / 2 {
+                        let freq = 10000f32.powf(-2.0 * j as f32 / d_head as f32);
+                        let ang = s as f32 * freq;
+                        let (c, sn) = (ang.cos(), ang.sin());
+                        let base = h * d_head + 2 * j;
+                        let y0 = upstream.get(r, base);
+                        let y1 = upstream.get(r, base + 1);
+                        g_x.set(r, base, y0 * c + y1 * sn);
+                        g_x.set(r, base + 1, -y0 * sn + y1 * c);
+                    }
+                }
+            }
+            accumulate(x, &g_x);
         }
 
         Op::MaskCausal => {
+            // Nedensel maske: üst üçgen (j > i) ileri geçişte maskelenir,
+            // dolayısıyla o bölgeye gradyan akmaz.
             let x = &node.inputs[0];
-            let d = x.data.borrow();
-            let (rows, cols) = (d.rows, d.cols);
+            let (rows, cols) = {
+                let d = x.data.borrow();
+                (d.rows, d.cols)
+            };
             let mut g = Matrix::zeros(rows, cols);
             for i in 0..rows {
                 for j in 0..cols {
@@ -770,10 +900,30 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
                     }
                 }
             }
-            drop(d);
             accumulate(x, &g);
         }
 
+        Op::Embedding { seq_len } => {
+            // v2: girdiler (tok_emb, ids). Konum bilgisi RoPE'den gelir,
+            // dolayısıyla pozisyon gömme gradyanı yoktur.
+            let _ = seq_len;
+            let tok_emb = &node.inputs[0];
+            let ids = &node.inputs[1];
+
+            let idd = ids.data.borrow();
+            let rows = idd.rows;
+            let d_model = upstream.cols;
+            let vocab = tok_emb.data.borrow().rows;
+            let mut g_tok = Matrix::zeros(vocab, d_model);
+            for r in 0..rows {
+                let id = idd.get(r, 0) as usize;
+                for j in 0..d_model {
+                    g_tok.set(id, j, g_tok.get(id, j) + upstream.get(r, j));
+                }
+            }
+            drop(idd);
+            accumulate(tok_emb, &g_tok);
+        }
         Op::CausalAttention {
             batch,
             seq,

@@ -285,52 +285,38 @@ fn embedding_kernels_match_cpu() {
     use stonefish_ai::transformer::Embedding;
 
     let mut s = 5u64;
-    let (vocab, max_seq, d) = (11usize, 6usize, 5usize);
-    let (batch, seq_len) = (2usize, 3usize);
-    let rows = batch * seq_len;
+    let (vocab, d) = (11usize, 5usize);
+    let rows = 6usize; // batch*seq
     let ids: Vec<usize> = vec![1, 3, 0, 5, 2, 3];
     let ids_i32: Vec<i32> = ids.iter().map(|&i| i as i32).collect();
 
-    let emb = Embedding::new(vocab, max_seq, d, &mut s);
+    // v2: yalnız token gömmesi (konum bilgisi RoPE'den gelir)
+    let emb = Embedding::new(vocab, d, &mut s);
     let tok_host = emb.token_emb.data.borrow().data.clone();
-    let pos_host = emb.pos_emb.data.borrow().data.clone();
     let dy_host = rand_vec(rows * d, 2.0, &mut s);
 
     // Referans: autograd
     let dy_t = Tensor::leaf(Matrix::from_vec(rows, d, dy_host.clone()), false);
-    let out = emb.forward(&ids, seq_len);
+    let out = emb.forward(&ids);
     let y_cpu = out.data.borrow().data.clone();
     out.mul_elem(&dy_t).sum().backward();
     let dtok_cpu = emb.token_emb.grad.borrow().data.clone();
-    let dpos_cpu = emb.pos_emb.grad.borrow().data.clone();
 
     // GPU
     let tok_dev = up(&tok_host);
-    let pos_dev = up(&pos_host);
     let ids_dev = up_i32(&ids_i32);
     let y_dev = zeros(rows * d);
-    k::embedding_forward(&y_dev, &ids_dev, &tok_dev, &pos_dev, rows, d, seq_len);
+    k::embedding_forward_tok(&y_dev, &ids_dev, &tok_dev, rows, d);
     let d_fwd = max_diff(&down(&y_dev), &y_cpu);
 
     let dy_dev = up(&dy_host);
     let dtok_dev = zeros(vocab * d);
-    let dpos_dev = zeros(max_seq * d);
-    k::embedding_backward(
-        &dtok_dev,
-        &dpos_dev,
-        &dy_dev,
-        &ids_dev,
-        rows,
-        d,
-        seq_len,
-    );
+    k::embedding_backward_tok(&dtok_dev, &dy_dev, &ids_dev, rows, d);
     let d_tok = max_diff(&down(&dtok_dev), &dtok_cpu);
-    let d_pos = max_diff(&down(&dpos_dev), &dpos_cpu);
 
     assert!(d_fwd < TOL, "embedding ileri farkı {d_fwd}");
     assert!(d_tok < TOL, "embedding dtok farkı {d_tok}");
-    assert!(d_pos < TOL, "embedding dpos farkı {d_pos}");
-    println!("  ✅ embedding: fwd {d_fwd:.2e}, dtok {d_tok:.2e}, dpos {d_pos:.2e}");
+    println!("  ✅ embedding: fwd {d_fwd:.2e}, dtok {d_tok:.2e}");
 }
 
 // ------------------------------------------------------------

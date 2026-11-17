@@ -1,85 +1,99 @@
 // src/transformer.rs
-// Transformer bileşenleri: Embedding, MultiHeadSelfAttention, TransformerBlock, GPT.
+// Transformer bileşenleri (v2 mimarisi): Embedding, MultiHeadSelfAttention,
+// TransformerBlock, GPT.
+//
+// v2'de değişenler (v1 → v2):
+//   LayerNorm  → RMSNorm  (ortalama ve beta yok, daha az iş, eşit kalite)
+//   GELU FFN   → SwiGLU   (kapılı: silu(x·W1)·(x·W3), aynı parametre bütçesi)
+//   mutlak pos → RoPE     (Q/K döndürülür; göreli konum, uzun bağlama genelleme)
+//   ayrı head  → weight tying (giriş gömmesi = çıkış matrisi, -V·d parametre)
 //
 // Tüm bileşenler **satır paketli** çalışır: (batch, seq, d_model) tensörü
-// (batch*seq, d_model) matrisi olarak temsil edilir. LayerNorm/Linear/GELU satır
-// bazlı olduğu için bu bedava; attention ise `Tensor::causal_attention` içinde
-// batch/seq/head bilgisiyle çözülür.
+// (batch*seq, d_model) matrisi olarak temsil edilir. RMSNorm/SwiGLU/Linear
+// satır bazlı olduğu için bu bedava; attention `Tensor::causal_attention`
+// içinde batch/seq/head bilgisiyle çözülür.
 
-use crate::autograd::{Op, Tensor};
-use crate::nn::Linear;
+use crate::autograd::Tensor;
 use crate::tensor::Matrix;
 
+/// RMSNorm epsilon'u.
+pub const RMS_EPS: f32 = 1e-6;
+
+/// SwiGLU gizli boyutu: LLaMA tarzı ~8/3·d.
+///
+/// Çıktı, GPU verimliliği için bir basamağa yuvarlanır. Basamak model
+/// boyutuyla ölçeklenir — yoksa d_model=4 olan gradyan testi modeli 256
+/// gizli nörona sahip olurdu (test için 64× fazla parametre).
+/// Böylece toplam FFN parametresi v1'in (d→4d→d) ile aynı kalır.
+pub fn swiglu_hidden(d_model: usize) -> usize {
+    let raw = (8 * d_model).div_ceil(3);
+    let step = if raw >= 1024 {
+        256
+    } else if raw >= 256 {
+        64
+    } else {
+        8
+    };
+    raw.div_ceil(step) * step
+}
+
 // ============================================================
-// Embedding (token + pozisyon)
+// Embedding (yalnız token — konum bilgisi RoPE'den gelir)
 // ============================================================
 
 pub struct Embedding {
     pub token_emb: Tensor, // (vocab, d_model)
-    pub pos_emb: Tensor,   // (max_seq_len, d_model)
     pub vocab_size: usize,
-    pub max_seq_len: usize,
     pub d_model: usize,
 }
 
 impl Embedding {
-    pub fn new(vocab_size: usize, max_seq_len: usize, d_model: usize, seed: &mut u64) -> Self {
+    pub fn new(vocab_size: usize, d_model: usize, seed: &mut u64) -> Self {
         let scale = 0.02;
         Self {
             token_emb: Tensor::leaf(Matrix::random(vocab_size, d_model, scale, seed), true),
-            pos_emb: Tensor::leaf(Matrix::random(max_seq_len, d_model, scale, seed), true),
             vocab_size,
-            max_seq_len,
             d_model,
         }
     }
 
     /// `ids` satır paketli: uzunluk = batch*seq, pozisyon = satır % seq_len.
-    pub fn forward(&self, ids: &[usize], seq_len: usize) -> Tensor {
-        assert!(
-            seq_len <= self.max_seq_len,
-            "seq_len ({seq_len}) > max_seq_len ({})",
-            self.max_seq_len
-        );
+    pub fn forward(&self, ids: &[usize]) -> Tensor {
         let rows = ids.len();
         let d_model = self.d_model;
-
         let out = {
             let te = self.token_emb.data.borrow();
-            let pe = self.pos_emb.data.borrow();
             let mut out = Matrix::zeros(rows, d_model);
             for (r, &id) in ids.iter().enumerate() {
-                assert!(id < self.vocab_size, "token id {id} >= vocab {}", self.vocab_size);
-                let s = r % seq_len;
-                let (dst, tok, pos) = (
+                assert!(
+                    id < self.vocab_size,
+                    "token id {id} >= vocab {}",
+                    self.vocab_size
+                );
+                let (dst, tok) = (
                     &mut out.data[r * d_model..(r + 1) * d_model],
                     &te.data[id * d_model..(id + 1) * d_model],
-                    &pe.data[s * d_model..(s + 1) * d_model],
                 );
-                for d in 0..d_model {
-                    dst[d] = tok[d] + pos[d];
-                }
+                dst.copy_from_slice(tok);
             }
             out
         };
-
         let ids_mat = Matrix::from_vec(rows, 1, ids.iter().map(|&x| x as f32).collect());
         let ids_t = Tensor::leaf(ids_mat, false);
-
         Tensor::from_op(
             out,
-            Op::Embedding { seq_len },
-            vec![self.token_emb.clone(), self.pos_emb.clone(), ids_t],
+            crate::autograd::Op::Embedding { seq_len: 1 },
+            vec![self.token_emb.clone(), ids_t],
         )
     }
 
     pub fn parameters(&self) -> Vec<Tensor> {
-        vec![self.token_emb.clone(), self.pos_emb.clone()]
+        vec![self.token_emb.clone()]
     }
 }
 
 // ============================================================
-// Multi-Head Self-Attention
+// Multi-Head Self-Attention (RoPE'lu)
 // ============================================================
 
 pub struct MultiHeadSelfAttention {
@@ -95,7 +109,8 @@ impl MultiHeadSelfAttention {
         assert!(n_heads > 0, "n_heads > 0 olmalı");
         assert_eq!(d_model % n_heads, 0, "d_model, n_heads'e bölünmeli");
         let scale = (1.0 / d_model as f32).sqrt();
-        let proj = |seed: &mut u64| Tensor::leaf(Matrix::random(d_model, d_model, scale, seed), true);
+        let proj =
+            |seed: &mut u64| Tensor::leaf(Matrix::random(d_model, d_model, scale, seed), true);
         Self {
             w_q: proj(seed),
             w_k: proj(seed),
@@ -110,6 +125,9 @@ impl MultiHeadSelfAttention {
         let q = x.matmul(&self.w_q);
         let k = x.matmul(&self.w_k);
         let v = x.matmul(&self.w_v);
+        // RoPE yalnız Q ve K'ye uygulanır (V'ye uygulanmaz).
+        let q = q.rope(batch, seq, self.n_heads);
+        let k = k.rope(batch, seq, self.n_heads);
         let attn = q.causal_attention(&k, &v, batch, seq, self.n_heads);
         attn.matmul(&self.w_o)
     }
@@ -125,51 +143,54 @@ impl MultiHeadSelfAttention {
 }
 
 // ============================================================
-// Transformer Block (pre-LN)
+// Transformer Block (pre-norm, RMSNorm + SwiGLU)
 // ============================================================
 
 pub struct TransformerBlock {
-    pub ln1_gamma: Tensor,
-    pub ln1_beta: Tensor,
+    pub norm1_gamma: Tensor, // (1, d_model)
     pub attn: MultiHeadSelfAttention,
-    pub ln2_gamma: Tensor,
-    pub ln2_beta: Tensor,
-    pub ff1: Linear,
-    pub ff2: Linear,
+    pub norm2_gamma: Tensor,
+    pub ff_gate: Tensor, // (d_model, hidden)   W1
+    pub ff_up: Tensor,   // (d_model, hidden)   W3
+    pub ff_down: Tensor, // (hidden, d_model)   W2
+    pub hidden: usize,
 }
 
 impl TransformerBlock {
     pub fn new(d_model: usize, n_heads: usize, seed: &mut u64) -> Self {
+        let hidden = swiglu_hidden(d_model);
+        let scale = (1.0 / d_model as f32).sqrt();
+        let ff_scale = (2.0 / d_model as f32).sqrt();
         Self {
-            ln1_gamma: Tensor::leaf(Matrix::filled(1, d_model, 1.0), true),
-            ln1_beta: Tensor::leaf(Matrix::zeros(1, d_model), true),
-            ln2_gamma: Tensor::leaf(Matrix::filled(1, d_model, 1.0), true),
-            ln2_beta: Tensor::leaf(Matrix::zeros(1, d_model), true),
+            norm1_gamma: Tensor::leaf(Matrix::filled(1, d_model, 1.0), true),
             attn: MultiHeadSelfAttention::new(d_model, n_heads, seed),
-            ff1: Linear::new(d_model, 4 * d_model, seed),
-            ff2: Linear::new(4 * d_model, d_model, seed),
+            norm2_gamma: Tensor::leaf(Matrix::filled(1, d_model, 1.0), true),
+            ff_gate: Tensor::leaf(Matrix::random(d_model, hidden, ff_scale, seed), true),
+            ff_up: Tensor::leaf(Matrix::random(d_model, hidden, ff_scale, seed), true),
+            ff_down: Tensor::leaf(Matrix::random(hidden, d_model, scale, seed), true),
+            hidden,
         }
     }
 
     pub fn forward(&self, x: &Tensor, batch: usize, seq: usize) -> Tensor {
-        // pre-LN residual: x + attn(LN(x));  x + ff(LN(x))
-        let x_norm = x.layer_norm(&self.ln1_gamma, &self.ln1_beta, 1e-5);
+        // pre-norm residual: x + attn(RMSNorm(x));  h + ffn(RMSNorm(h))
+        let x_norm = x.rms_norm(&self.norm1_gamma, RMS_EPS);
         let h = x.add(&self.attn.forward(&x_norm, batch, seq));
-        let h_norm = h.layer_norm(&self.ln2_gamma, &self.ln2_beta, 1e-5);
-        let ff = self.ff2.forward(&self.ff1.forward(&h_norm).gelu());
-        h.add(&ff)
+        let h_norm = h.rms_norm(&self.norm2_gamma, RMS_EPS);
+        // SwiGLU: silu(x·W1) ⊙ (x·W3) ·W2
+        let gate = h_norm.matmul(&self.ff_gate);
+        let up = h_norm.matmul(&self.ff_up);
+        let silu = gate.mul_elem(&gate.sigmoid()); // silu(g) = g·σ(g)
+        let act = silu.mul_elem(&up);
+        h.add(&act.matmul(&self.ff_down))
     }
 
     pub fn parameters(&self) -> Vec<Tensor> {
-        let mut p = vec![
-            self.ln1_gamma.clone(),
-            self.ln1_beta.clone(),
-            self.ln2_gamma.clone(),
-            self.ln2_beta.clone(),
-        ];
+        let mut p = vec![self.norm1_gamma.clone(), self.norm2_gamma.clone()];
         p.extend(self.attn.parameters());
-        p.extend(self.ff1.parameters());
-        p.extend(self.ff2.parameters());
+        p.push(self.ff_gate.clone());
+        p.push(self.ff_up.clone());
+        p.push(self.ff_down.clone());
         p
     }
 }
@@ -192,15 +213,17 @@ impl GptConfig {
     pub fn d_head(&self) -> usize {
         self.d_model / self.n_heads
     }
-    /// Gerçek parametre sayısı (her tensörün eleman sayısı toplamı).
+
+    /// Gerçek parametre sayısı (v2 mimarisi, weight tying dahil).
     pub fn n_params(&self) -> usize {
         let v = self.vocab_size;
         let d = self.d_model;
-        let s = self.max_seq_len;
-        let ln = 4 * d; // ln1/ln2 gamma+beta
+        let h = swiglu_hidden(d);
+        let norm = 3 * d; // block içi 2 + final 1 (beta yok)
         let attn = 4 * d * d;
-        let ff = (d * 4 * d + 4 * d) + (4 * d * d + d);
-        v * d + s * d + self.n_layers * (ln + attn + ff) + 2 * d + (d * v + v)
+        let ff = 3 * d * h; // W1 + W3 + W2, bias yok
+        // gömme yalnız bir kez sayılır (çıkış matrisi onunla paylaşılır)
+        v * d + self.n_layers * (norm + attn + ff)
     }
 }
 
@@ -209,27 +232,18 @@ pub struct GPT {
     pub embedding: Embedding,
     pub blocks: Vec<TransformerBlock>,
     pub ln_f_gamma: Tensor,
-    pub ln_f_beta: Tensor,
-    pub head: Linear,
 }
 
 impl GPT {
     pub fn new(config: GptConfig, seed: &mut u64) -> Self {
         let d_model = config.d_model;
-        let embedding = Embedding::new(
-            config.vocab_size,
-            config.max_seq_len,
-            d_model,
-            seed,
-        );
+        let embedding = Embedding::new(config.vocab_size, d_model, seed);
         let mut blocks = Vec::with_capacity(config.n_layers);
         for _ in 0..config.n_layers {
             blocks.push(TransformerBlock::new(d_model, config.n_heads, seed));
         }
         Self {
             ln_f_gamma: Tensor::leaf(Matrix::filled(1, d_model, 1.0), true),
-            ln_f_beta: Tensor::leaf(Matrix::zeros(1, d_model), true),
-            head: Linear::new(d_model, config.vocab_size, seed),
             config,
             embedding,
             blocks,
@@ -240,12 +254,13 @@ impl GPT {
     pub fn forward_batch(&self, ids: &[usize], batch: usize, seq: usize) -> Tensor {
         assert_eq!(ids.len(), batch * seq, "ids.len() = batch*seq olmalı");
         assert!(seq <= self.config.max_seq_len, "seq, max_seq_len'i aşıyor");
-        let mut x = self.embedding.forward(ids, seq);
+        let mut x = self.embedding.forward(ids);
         for block in &self.blocks {
             x = block.forward(&x, batch, seq);
         }
-        let x = x.layer_norm(&self.ln_f_gamma, &self.ln_f_beta, 1e-5);
-        self.head.forward(&x)
+        let x = x.rms_norm(&self.ln_f_gamma, RMS_EPS);
+        // weight tying: logits = x · tok_embᵀ  (ayrı çıkış matrisi yok)
+        x.matmul(&self.embedding.token_emb.transpose())
     }
 
     /// Tek sequence (üretim yolu). Döner: (seq, vocab_size).
@@ -260,15 +275,16 @@ impl GPT {
             p.extend(b.parameters());
         }
         p.push(self.ln_f_gamma.clone());
-        p.push(self.ln_f_beta.clone());
-        p.extend(self.head.parameters());
         p
     }
 
     pub fn n_params(&self) -> usize {
         self.parameters()
             .iter()
-            .map(|p| p.data.borrow().data.len())
+            .map(|p| {
+                let d = p.data.borrow();
+                d.rows * d.cols
+            })
             .sum()
     }
 }

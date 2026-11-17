@@ -616,3 +616,24 @@ extern "C" __global__ void dropout_backward(float* dx, int n, float p, unsigned 
     if (u < p) dx[i] = 0.0f;
     else dx[i] *= 1.0f / (1.0f - p);
 }
+
+// RoPE'lu mimari için: yalnız token gömmesi (pozisyon gömme yok).
+extern "C" __global__ void embedding_forward_tok(float* out, const int* ids,
+                                                const float* tok_emb,
+                                                int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= rows * cols) return;
+    int r = idx / cols;
+    int c = idx % cols;
+    out[idx] = tok_emb[(long long)ids[r] * cols + c];
+}
+
+// Yalnız token gömmesinin gradyanı (pozisyon gradyanı yok).
+extern "C" __global__ void embedding_backward_tok(float* dtok, const float* dout,
+                                                 const int* ids, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= rows * cols) return;
+    int r = idx / cols;
+    int c = idx % cols;
+    atomicAdd(&dtok[(long long)ids[r] * cols + c], dout[idx]);
+}

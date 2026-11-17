@@ -340,9 +340,9 @@ fn embedding() {
     use stonefish_ai::transformer::Embedding;
 
     let mut s = 29u64;
-    let (vocab, max_seq, d) = (7usize, 6usize, 3usize);
+    let (vocab, d) = (7usize, 3usize);
     let (batch, seq_len) = (2usize, 4usize);
-    let emb = Embedding::new(vocab, max_seq, d, &mut s);
+    let emb = Embedding::new(vocab, d, &mut s);
     let ids: Vec<usize> = vec![1, 3, 0, 6, 2, 2, 5, 1];
     assert_eq!(ids.len(), batch * seq_len);
 
@@ -350,11 +350,11 @@ fn embedding() {
         let mut s2 = 999u64;
         frozen_positive(ids.len(), d, &mut s2)
     };
-    gradient_check(
-        "embedding (tok+pos, B=2 S=4)",
-        &[emb.token_emb.clone(), emb.pos_emb.clone()],
-        || emb.forward(&ids, seq_len).mul_elem(&w).sum(),
-    );
+    // v2: yalnız token gömmesi vardır (konum RoPE ile gelir)
+    assert_eq!(ids.len(), batch * seq_len);
+    gradient_check("embedding (tok, B=2 S=4)", std::slice::from_ref(&emb.token_emb), || {
+        emb.forward(&ids).mul_elem(&w).sum()
+    });
 }
 
 // ------------------------------------------------------------
@@ -581,7 +581,9 @@ fn tiny_gpt_end_to_end() {
     // merkezi farkın doğrusallık varsayımı çöker (ikinci türev terimi baskın çıkar).
     // Ölçüldü: dokunulmazsa gömme gradyanlarında 1.4e-1 sahte sapma; ×50 ölçekle
     // 8e-5'e iner ve diğer tüm parametrelerle aynı seviyeye gelir.
-    for p in [&model.embedding.token_emb, &model.embedding.pos_emb] {
+    {
+        // Gömme init ölçeği 0.02 → RMSNorm eps kalibrasyonu için ×50
+        let p = &model.embedding.token_emb;
         let scaled = p.data.borrow().scale(50.0);
         *p.data.borrow_mut() = scaled;
     }
@@ -621,7 +623,9 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
         n_heads: 2,
     };
     let model = GPT::new(config, &mut s);
-    for p in [&model.embedding.token_emb, &model.embedding.pos_emb] {
+    {
+        // Gömme init ölçeği 0.02 → RMSNorm eps kalibrasyonu için ×50
+        let p = &model.embedding.token_emb;
         let scaled = p.data.borrow().scale(50.0);
         *p.data.borrow_mut() = scaled;
     }
@@ -668,4 +672,91 @@ fn batch_grad_equals_sum_of_single_sequence_grads() {
         "batch gradyanı, tek tek gradyanların toplamına eşit değil (max fark {worst})"
     );
     println!("  ✅ batch gradyanı == Σ tek-sequence gradyanı (max fark {worst:.2e})");
+}
+
+// ============================================================
+// v2 mimarisi: RMSNorm ve RoPE
+// ============================================================
+
+#[test]
+fn rms_norm_forward_and_grad() {
+    let mut s = 77u64;
+    let (rows, cols) = (4usize, 6usize);
+    let x = leaf(rows, cols, &mut s);
+    let gamma = Tensor::leaf(Matrix::filled(1, cols, 1.0), true);
+    let eps = 1e-6;
+
+    // x̂'in karesel ortalaması 1 olmalı
+    let out = x.rms_norm(&gamma, eps);
+    {
+        let od = out.data.borrow();
+        for r in 0..rows {
+            let ms: f32 = (0..cols).map(|j| od.get(r, j) * od.get(r, j)).sum::<f32>() / cols as f32;
+            assert!((ms - 1.0).abs() < 1e-3, "rms_norm çıktı rms {ms}");
+        }
+    }
+
+    // elle hesap: x / sqrt(mean(x²)+eps)
+    {
+        let xd = x.data.borrow();
+        let od = out.data.borrow();
+        for r in 0..rows {
+            let ss: f32 = (0..cols).map(|j| xd.get(r, j) * xd.get(r, j)).sum();
+            let inv = 1.0 / (ss / cols as f32 + eps).sqrt();
+            for j in 0..cols {
+                assert!((od.get(r, j) - xd.get(r, j) * inv).abs() < 1e-6);
+            }
+        }
+    }
+
+    gradient_check("rms_norm (x)", &[x.clone(), gamma.clone()], || {
+        x.rms_norm(&gamma, eps).mul_elem(&x.rms_norm(&gamma, eps)).scale(0.5).sum()
+    });
+}
+
+#[test]
+fn rms_norm_gamma_grad() {
+    let mut s = 78u64;
+    let (rows, cols) = (5usize, 8usize);
+    let x = frozen(rows, cols, &mut s);
+    // gamma sıfırdan uzak olsun (eps kalibrasyonu)
+    let gamma = Tensor::leaf(
+        Matrix::random(1, cols, 1.0, &mut s).map(|v| 1.0 + v * 0.5),
+        true,
+    );
+    let eps = 1e-6;
+    // gamma gradyanını görünür kılmak için çıktıyı gamma ile ağırlıkla
+    let w = frozen(rows, cols, &mut s);
+    let f = || x.rms_norm(&gamma, eps).mul_elem(&w).sum();
+    // Yalnız gamma kontrol edilir: `x` donmuş bir sabittir, `gradient_check`
+    // onun analitik gradyanını 0 görüp numerikle karşılaştırırdı.
+    gradient_check("rms_norm (gamma)", std::slice::from_ref(&gamma), f);
+}
+
+#[test]
+fn rope_forward_and_grad() {
+    let mut s = 79u64;
+    let (batch, seq, n_heads, d_head) = (2usize, 5usize, 2usize, 4usize);
+    let cols = n_heads * d_head;
+    let x = leaf(batch * seq, cols, &mut s);
+
+    let rot = x.rope(batch, seq, n_heads);
+    {
+        let rd = rot.data.borrow();
+        let xd = x.data.borrow();
+        // 0. konum değişmemeli
+        for j in 0..cols {
+            assert!((rd.get(0, j) - xd.get(0, j)).abs() < 1e-6, "konum 0 değişti");
+        }
+        // norm korunmalı (dönme izometridir)
+        let n_in: f32 = xd.data.iter().map(|v| v * v).sum();
+        let n_out: f32 = rd.data.iter().map(|v| v * v).sum();
+        assert!((n_in - n_out).abs() / n_in < 1e-4, "norm korunmadı");
+    }
+
+    gradient_check("rope", std::slice::from_ref(&x), || {
+        x.rope(batch, seq, n_heads)
+            .mul_elem(&x.rope(batch, seq, n_heads))
+            .sum()
+    });
 }

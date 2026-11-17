@@ -25,10 +25,9 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
     };
     let model = GPT::new(config, &mut seed);
     if emb_scale != 1.0 {
-        for p in [&model.embedding.token_emb, &model.embedding.pos_emb] {
-            let d = p.data.borrow().scale(emb_scale);
-            *p.data.borrow_mut() = d;
-        }
+        let p = &model.embedding.token_emb;
+        let d = p.data.borrow().scale(emb_scale);
+        *p.data.borrow_mut() = d;
     }
     let params = model.parameters();
 
@@ -47,10 +46,20 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
     println!("\n=== {label} (B={batch}, S={seq}) loss={:.6} ===", l.item());
     l.backward();
 
+    // v2 parametre sırası: gömme → her blok (norm1, wq/wk/wv/wo, norm2,
+    // ff_gate/ff_up/ff_down) → final norm. Sıra `GPT::parameters()` ile aynı.
     let names = [
-        "token_emb", "pos_emb", "ln1_gamma", "ln1_beta", "w_q", "w_k", "w_v", "w_o",
-        "ff1_w", "ff1_b", "ff2_w", "ff2_b", "ln2_gamma", "ln2_beta", "lnf_gamma",
-        "lnf_beta", "head_w", "head_b",
+        "token_emb",
+        "norm1_g",
+        "w_q",
+        "w_k",
+        "w_v",
+        "w_o",
+        "norm2_g",
+        "ff_gate",
+        "ff_up",
+        "ff_down",
+        "lnf_gamma",
     ];
 
     for (pi, p) in params.iter().enumerate() {

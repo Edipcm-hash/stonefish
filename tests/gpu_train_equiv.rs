@@ -68,25 +68,18 @@ fn cpu_forward_backward(c: &Case) -> (f32, Vec<(String, Vec<f32>)>) {
         out.push((name.to_string(), t.grad.borrow().data.clone()));
     };
     g("tok_emb", &c.model.embedding.token_emb, &mut grads);
-    g("pos_emb", &c.model.embedding.pos_emb, &mut grads);
     for (i, b) in c.model.blocks.iter().enumerate() {
-        g(&format!("ln1_g[{i}]"), &b.ln1_gamma, &mut grads);
-        g(&format!("ln1_b[{i}]"), &b.ln1_beta, &mut grads);
+        g(&format!("norm1_g[{i}]"), &b.norm1_gamma, &mut grads);
         g(&format!("wq[{i}]"), &b.attn.w_q, &mut grads);
         g(&format!("wk[{i}]"), &b.attn.w_k, &mut grads);
         g(&format!("wv[{i}]"), &b.attn.w_v, &mut grads);
         g(&format!("wo[{i}]"), &b.attn.w_o, &mut grads);
-        g(&format!("ln2_g[{i}]"), &b.ln2_gamma, &mut grads);
-        g(&format!("ln2_b[{i}]"), &b.ln2_beta, &mut grads);
-        g(&format!("ff1_w[{i}]"), &b.ff1.weight, &mut grads);
-        g(&format!("ff1_b[{i}]"), &b.ff1.bias, &mut grads);
-        g(&format!("ff2_w[{i}]"), &b.ff2.weight, &mut grads);
-        g(&format!("ff2_b[{i}]"), &b.ff2.bias, &mut grads);
+        g(&format!("norm2_g[{i}]"), &b.norm2_gamma, &mut grads);
+        g(&format!("ff_gate[{i}]"), &b.ff_gate, &mut grads);
+        g(&format!("ff_up[{i}]"), &b.ff_up, &mut grads);
+        g(&format!("ff_down[{i}]"), &b.ff_down, &mut grads);
     }
     g("lnf_g", &c.model.ln_f_gamma, &mut grads);
-    g("lnf_b", &c.model.ln_f_beta, &mut grads);
-    g("head_w", &c.model.head.weight, &mut grads);
-    g("head_b", &c.model.head.bias, &mut grads);
     (l, grads)
 }
 
