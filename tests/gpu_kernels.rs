@@ -811,3 +811,200 @@ fn elementwise_and_reduction_kernels() {
 
     println!("  ✅ elementwise/reduction: {d1:.1e} {d2:.1e} {d3:.1e} {d4:.1e} {d5:.1e}");
 }
+
+// ============================================================
+// Yeni mimari çekirdekleri (RMSNorm, SwiGLU, RoPE, dropout)
+// ============================================================
+
+/// Basit xorshift — test verisi üretimi için.
+fn rnd(n: usize, seed: &mut u64, scale: f32) -> Vec<f32> {
+    (0..n)
+        .map(|_| {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 7;
+            *seed ^= *seed << 17;
+            (((*seed >> 11) as f64 / (1u64 << 53) as f64) as f32 - 0.5) * 2.0 * scale
+        })
+        .collect()
+}
+
+fn rmsnorm_cpu(x: &[f32], g: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
+    let mut out = vec![0f32; rows * cols];
+    for r in 0..rows {
+        let mut ss = 0.0f32;
+        for i in 0..cols {
+            ss += x[r * cols + i] * x[r * cols + i];
+        }
+        let inv = 1.0 / (ss / cols as f32 + eps).sqrt();
+        for i in 0..cols {
+            out[r * cols + i] = x[r * cols + i] * inv * g[i];
+        }
+    }
+    out
+}
+
+#[test]
+fn rmsnorm_forward_matches_cpu() {
+    let (rows, cols) = (5usize, 16usize);
+    let mut s = 11u64;
+    let x = rnd(rows * cols, &mut s, 2.0);
+    let g = rnd(cols, &mut s, 1.0).iter().map(|v| 1.0 + v * 0.3).collect::<Vec<_>>();
+    let eps = 1e-6;
+
+    let (dx, dg, dxi) = (up(&x), up(&g), zeros(rows));
+    let out = zeros(rows * cols);
+    let xhat = zeros(rows * cols);
+    k::rmsnorm_forward(&out, &xhat, &dxi, &dx, &dg, rows, cols, eps);
+    assert!(max_diff(&down(&out), &rmsnorm_cpu(&x, &g, rows, cols, eps)) < TOL);
+
+    // xhat'in karesel ortalaması ~1 olmalı (ölçek doğru mu)
+    let xh = down(&xhat);
+    for r in 0..rows {
+        let ms: f32 = (0..cols).map(|i| xh[r * cols + i] * xh[r * cols + i]).sum::<f32>() / cols as f32;
+        assert!((ms - 1.0).abs() < 1e-3, "xhat rms {ms}");
+    }
+
+    // dx: sayısal türevle karşılaştır (loss = sum(out * w))
+    let w = rnd(rows * cols, &mut s, 1.0);
+    let f = |xv: &[f32]| -> f32 {
+        rmsnorm_cpu(xv, &g, rows, cols, eps)
+            .iter()
+            .zip(w.iter())
+            .map(|(a, b)| a * b)
+            .sum()
+    };
+    let eps_num = 1e-3;
+    let mut dx_num = vec![0f32; rows * cols];
+    for i in 0..rows * cols {
+        let mut xp = x.clone();
+        let mut xm = x.clone();
+        xp[i] += eps_num;
+        xm[i] -= eps_num;
+        dx_num[i] = (f(&xp) - f(&xm)) / (2.0 * eps_num);
+    }
+    // dgamma = sum_r dy*xhat ; dx çekirdeği dy = w ile
+    let dy = up(&w);
+    let dx_out = zeros(rows * cols);
+    let dgam = zeros(cols);
+    k::rmsnorm_backward(&dx_out, &dy, &xhat, &dxi, &dg, rows, cols);
+    k::rmsnorm_param_grad(&dgam, &dy, &xhat, rows, cols);
+    let got = down(&dx_out);
+    let diff = max_diff(&got, &dx_num);
+    assert!(diff < 2e-3, "rmsnorm dx farkı {diff}");
+
+    let mut dg_num = vec![0f32; cols];
+    let fg = |gv: &[f32]| -> f32 {
+        rmsnorm_cpu(&x, gv, rows, cols, eps)
+            .iter()
+            .zip(w.iter())
+            .map(|(a, b)| a * b)
+            .sum()
+    };
+    for i in 0..cols {
+        let mut gp = g.clone();
+        let mut gm = g.clone();
+        gp[i] += eps_num;
+        gm[i] -= eps_num;
+        dg_num[i] = (fg(&gp) - fg(&gm)) / (2.0 * eps_num);
+    }
+    let dgd = max_diff(&down(&dgam), &dg_num);
+    assert!(dgd < 2e-3, "rmsnorm dgamma farkı {dgd}");
+}
+
+#[test]
+fn silu_mul_matches_cpu() {
+    let n = 64usize;
+    let mut s = 21u64;
+    let gate = rnd(n, &mut s, 3.0);
+    let up_v = rnd(n, &mut s, 2.0);
+    let g = up(&gate);
+    let u = up(&up_v);
+    let out = zeros(n);
+    k::silu_mul_forward(&out, &g, &u, n);
+
+    let cpu: Vec<f32> = gate
+        .iter()
+        .zip(up_v.iter())
+        .map(|(a, b)| (a / (1.0 + (-a).exp())) * b)
+        .collect();
+    assert!(max_diff(&down(&out), &cpu) < TOL);
+
+    // geri yayılım: dy = 1 → dgate = up*silu'(gate), dup = silu(gate)
+    let dy = up(&vec![1.0f32; n]);
+    let dgate = zeros(n);
+    let dup = zeros(n);
+    k::silu_mul_backward(&dgate, &dup, &dy, &g, &u, n);
+    let dg_cpu: Vec<f32> = gate
+        .iter()
+        .zip(up_v.iter())
+        .map(|(a, b)| {
+            let sig = 1.0 / (1.0 + (-a).exp());
+            b * sig * (1.0 + a * (1.0 - sig))
+        })
+        .collect();
+    let du_cpu: Vec<f32> = gate.iter().map(|a| a / (1.0 + (-a).exp())).collect();
+    assert!(max_diff(&down(&dgate), &dg_cpu) < TOL, "dgate");
+    assert!(max_diff(&down(&dup), &du_cpu) < TOL, "dup");
+}
+
+#[test]
+fn rope_forward_and_inverse() {
+    let (batch, seq, n_heads, d_head) = (2usize, 6usize, 2usize, 8usize);
+    let n = batch * seq * n_heads * d_head;
+    let mut s = 33u64;
+    let x = rnd(n, &mut s, 1.0);
+
+    let xd = up(&x);
+    let rot = zeros(n);
+    k::rope_forward(&rot, &xd, batch, seq, n_heads, d_head);
+    let fwd = down(&rot);
+
+    // pozitif norm korunmalı (dönme izometridir) ve 0. konumda değişim olmamalı
+    for r in 0..(batch * seq) {
+        if r % seq == 0 {
+            for i in 0..(n_heads * d_head) {
+                assert!((fwd[r * n_heads * d_head + i] - x[r * n_heads * d_head + i]).abs() < 1e-6);
+            }
+        }
+    }
+    let norm = |v: &[f32]| v.iter().map(|a| a * a).sum::<f32>();
+    assert!((norm(&fwd) - norm(&x)).abs() / norm(&x) < 1e-4, "norm korunmadı");
+
+    // geri yayılım dönmeyi tersine çevirir → orijinali geri vermeli
+    let back = zeros(n);
+    k::rope_backward(&back, &rot, batch, seq, n_heads, d_head);
+    let b = down(&back);
+    let d = max_diff(&b, &x);
+    assert!(d < 1e-4, "rope ters dönüş farkı {d}");
+}
+
+#[test]
+fn dropout_scales_and_masks() {
+    let n = 10000usize;
+    let x = vec![1.0f32; n];
+    let xd = up(&x);
+    let p = 0.25f32;
+    k::dropout_inplace(&xd, n, p, 12345);
+    let out = down(&xd);
+    let zeros_n = out.iter().filter(|v| **v == 0.0).count();
+    let kept = out.iter().filter(|v| **v > 0.0).count();
+    let frac = zeros_n as f32 / n as f32;
+    assert!((frac - p).abs() < 0.03, "dropout oranı {frac} (beklenen {p})");
+    let expected = 1.0 / (1.0 - p);
+    for v in out.iter().filter(|v| **v > 0.0).take(100) {
+        assert!((v - expected).abs() < 1e-5, "ölçek {v} != {expected}");
+    }
+    assert!(kept > 0);
+
+    // geri yayılım aynı maskeyi uygulamalı
+    let dx = up(&vec![1.0f32; n]);
+    k::dropout_backward(&dx, n, p, 12345);
+    let d = down(&dx);
+    for i in 0..n {
+        if out[i] == 0.0 {
+            assert_eq!(d[i], 0.0, "maske tutarsız at {i}");
+        } else {
+            assert!((d[i] - expected).abs() < 1e-5);
+        }
+    }
+}

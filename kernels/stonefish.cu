@@ -432,3 +432,187 @@ extern "C" __global__ void scale_inplace(float* x, int n, float s) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) x[idx] *= s;
 }
+
+// ============================================================
+// RMSNorm — LayerNorm'un ortalamasız hali (LLaMA/PaLM).
+//   y = x / sqrt(mean(x^2) + eps) * gamma
+// Ortalama çıkarma ve beta yok: daha az iş, eşit kalite.
+// ============================================================
+
+extern "C" __global__ void rmsnorm_forward(float* out, float* xhat, float* inv,
+                                          const float* x, const float* gamma,
+                                          int rows, int cols, float eps) {
+    extern __shared__ float sh[];
+    int r = blockIdx.x;
+    int t = threadIdx.x;
+    const float* xr = x + (long long)r * cols;
+    float ss = 0.0f;
+    for (int i = t; i < cols; i += blockDim.x) ss += xr[i] * xr[i];
+    sh[t] = ss;
+    __syncthreads();
+    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
+        if (t < st) sh[t] += sh[t + st];
+        __syncthreads();
+    }
+    float ms = sh[0] / (float)cols;
+    float r_inv = rsqrtf(ms + eps);
+    if (t == 0) inv[r] = r_inv;
+    float* orow = out + (long long)r * cols;
+    float* xh = xhat + (long long)r * cols;
+    for (int i = t; i < cols; i += blockDim.x) {
+        float h = xr[i] * r_inv;
+        xh[i] = h;
+        orow[i] = h * gamma[i];
+    }
+}
+
+// dx = r_inv * (dy*gamma - xhat * mean(dy*gamma*xhat))
+extern "C" __global__ void rmsnorm_backward(float* dx, const float* dy,
+                                           const float* xhat, const float* inv,
+                                           const float* gamma,
+                                           int rows, int cols) {
+    extern __shared__ float sh[];
+    int r = blockIdx.x;
+    int t = threadIdx.x;
+    const float* dyr = dy + (long long)r * cols;
+    const float* xh = xhat + (long long)r * cols;
+    float s = 0.0f;
+    for (int i = t; i < cols; i += blockDim.x) {
+        float g = dyr[i] * gamma[i];
+        s += g * xh[i];
+    }
+    sh[t] = s;
+    __syncthreads();
+    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
+        if (t < st) sh[t] += sh[t + st];
+        __syncthreads();
+    }
+    float mean = sh[0] / (float)cols;
+    float r_inv = inv[r];
+    float* dxr = dx + (long long)r * cols;
+    for (int i = t; i < cols; i += blockDim.x) {
+        float g = dyr[i] * gamma[i];
+        dxr[i] = r_inv * (g - xh[i] * mean);
+    }
+}
+
+extern "C" __global__ void rmsnorm_param_grad(float* dgamma, const float* dy,
+                                             const float* xhat, int rows, int cols) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= cols) return;
+    float acc = 0.0f;
+    for (int r = 0; r < rows; r++) {
+        acc += dy[(long long)r * cols + i] * xhat[(long long)r * cols + i];
+    }
+    atomicAdd(dgamma + i, acc);
+}
+
+// ============================================================
+// SwiGLU — kapılı FFN: silu(x·W1) * (x·W3)
+// ============================================================
+
+extern "C" __global__ void silu_mul_forward(float* out, const float* gate, const float* up, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float g = gate[i];
+    float s = g / (1.0f + expf(-g));
+    out[i] = s * up[i];
+}
+
+// dgate = dy*up*silu'(gate) ; dup = dy*silu(gate)
+extern "C" __global__ void silu_mul_backward(float* dgate, float* dup,
+                                            const float* dy, const float* gate,
+                                            const float* up, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float g = gate[i];
+    float sig = 1.0f / (1.0f + expf(-g));
+    float silu = g * sig;
+    // silu'(g) = sig*(1 + g*(1-sig))
+    float dsilu = sig * (1.0f + g * (1.0f - sig));
+    float d = dy[i];
+    dgate[i] = d * up[i] * dsilu;
+    dup[i] = d * silu;
+}
+
+// ============================================================
+// RoPE — döner konum kodlaması. Q/K vektörlerini konuma göre döndürür.
+// Göreli konum bilgisi verir; mutlak konum kayması sorununu bitirir.
+// ============================================================
+
+__device__ void rope_apply(float* a, float* b, int s, int j, int d_head, int inverse) {
+    float freq = powf(10000.0f, -2.0f * (float)j / (float)d_head);
+    float ang = (float)s * freq;
+    float c = cosf(ang);
+    float sn = sinf(ang);
+    if (inverse) sn = -sn;
+    float x0 = a[0], x1 = b[0];
+    a[0] = x0 * c - x1 * sn;
+    b[0] = x0 * sn + x1 * c;
+}
+
+extern "C" __global__ void rope_forward(float* out, const float* x,
+                                       int batch, int seq, int n_heads, int d_head) {
+    int half = d_head / 2;
+    long long total = (long long)batch * seq * n_heads * half;
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+    int j = (int)(idx % half);
+    long long tmp = idx / half;
+    int h = (int)(tmp % n_heads);
+    long long r = tmp / n_heads;
+    int s = (int)(r % seq);
+    long long base = (r * n_heads + h) * d_head + 2 * j;
+    out[base] = x[base];
+    out[base + 1] = x[base + 1];
+    rope_apply(&out[base], &out[base + 1], s, j, d_head, 0);
+}
+
+extern "C" __global__ void rope_backward(float* dx, const float* dy,
+                                        int batch, int seq, int n_heads, int d_head) {
+    int half = d_head / 2;
+    long long total = (long long)batch * seq * n_heads * half;
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+    int j = (int)(idx % half);
+    long long tmp = idx / half;
+    int h = (int)(tmp % n_heads);
+    long long r = tmp / n_heads;
+    int s = (int)(r % seq);
+    long long base = (r * n_heads + h) * d_head + 2 * j;
+    dx[base] = dy[base];
+    dx[base + 1] = dy[base + 1];
+    // ters dönüş
+    rope_apply(&dx[base], &dx[base + 1], s, j, d_head, 1);
+}
+
+// ============================================================
+// Dropout — eğitimde rastgele sıfırla, 1/(1-p) ile ölçekle.
+// Her iş parçacığı kendi xorshift durumunu tohumdan türetir.
+// ============================================================
+
+__device__ unsigned int hash_u32(unsigned int x) {
+    x ^= x >> 16; x *= 0x7feb352dU;
+    x ^= x >> 15; x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
+}
+
+extern "C" __global__ void dropout_inplace(float* x, int n, float p, unsigned int seed) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    unsigned int h = hash_u32((unsigned int)i ^ seed);
+    float u = (float)(h >> 8) / 16777216.0f;
+    if (u < p) x[i] = 0.0f;
+    else x[i] *= 1.0f / (1.0f - p);
+}
+
+// Dropout maskesini geri yayılımda uygula (aynı tohum → aynı maske).
+extern "C" __global__ void dropout_backward(float* dx, int n, float p, unsigned int seed) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    unsigned int h = hash_u32((unsigned int)i ^ seed);
+    float u = (float)(h >> 8) / 16777216.0f;
+    if (u < p) dx[i] = 0.0f;
+    else dx[i] *= 1.0f / (1.0f - p);
+}

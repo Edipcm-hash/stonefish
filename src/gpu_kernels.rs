@@ -312,3 +312,140 @@ pub fn scale_inplace(x: &impl DevPtr, n: usize, s: f32) {
     k.buf(x).i32(n as i32).f32(s);
     gpu::launch("scale_inplace", cfg_1d(n), 0, &mut k);
 }
+
+// ============================================================
+// Yeni mimari için Rust sarmalayıcıları
+// ============================================================
+
+#[allow(clippy::too_many_arguments)]
+pub fn rmsnorm_forward(
+    out: &impl DevPtr,
+    xhat: &impl DevPtr,
+    inv: &impl DevPtr,
+    x: &impl DevPtr,
+    gamma: &impl DevPtr,
+    rows: usize,
+    cols: usize,
+    eps: f32,
+) {
+    let threads = 128u32;
+    let mut k = Kargs::new();
+    k.buf(out)
+        .buf(xhat)
+        .buf(inv)
+        .buf(x)
+        .buf(gamma)
+        .i32(rows as i32)
+        .i32(cols as i32)
+        .f32(eps);
+    gpu::launch("rmsnorm_forward", cfg_rows(rows, threads), threads * 4, &mut k);
+}
+
+pub fn rmsnorm_backward(
+    dx: &impl DevPtr,
+    dy: &impl DevPtr,
+    xhat: &impl DevPtr,
+    inv: &impl DevPtr,
+    gamma: &impl DevPtr,
+    rows: usize,
+    cols: usize,
+) {
+    let threads = 128u32;
+    let mut k = Kargs::new();
+    k.buf(dx)
+        .buf(dy)
+        .buf(xhat)
+        .buf(inv)
+        .buf(gamma)
+        .i32(rows as i32)
+        .i32(cols as i32);
+    gpu::launch("rmsnorm_backward", cfg_rows(rows, threads), threads * 4, &mut k);
+}
+
+pub fn rmsnorm_param_grad(
+    dgamma: &impl DevPtr,
+    dy: &impl DevPtr,
+    xhat: &impl DevPtr,
+    rows: usize,
+    cols: usize,
+) {
+    let mut k = Kargs::new();
+    k.buf(dgamma).buf(dy).buf(xhat).i32(rows as i32).i32(cols as i32);
+    gpu::launch(
+        "rmsnorm_param_grad",
+        ((cols as u32, 1, 1), (1, 1, 1)),
+        0,
+        &mut k,
+    );
+}
+
+pub fn silu_mul_forward(out: &impl DevPtr, gate: &impl DevPtr, up: &impl DevPtr, n: usize) {
+    let mut k = Kargs::new();
+    k.buf(out).buf(gate).buf(up).i32(n as i32);
+    gpu::launch("silu_mul_forward", cfg_1d(n), 0, &mut k);
+}
+
+pub fn silu_mul_backward(
+    dgate: &impl DevPtr,
+    dup: &impl DevPtr,
+    dy: &impl DevPtr,
+    gate: &impl DevPtr,
+    up: &impl DevPtr,
+    n: usize,
+) {
+    let mut k = Kargs::new();
+    k.buf(dgate).buf(dup).buf(dy).buf(gate).buf(up).i32(n as i32);
+    gpu::launch("silu_mul_backward", cfg_1d(n), 0, &mut k);
+}
+
+pub fn rope_forward(
+    out: &impl DevPtr,
+    x: &impl DevPtr,
+    batch: usize,
+    seq: usize,
+    n_heads: usize,
+    d_head: usize,
+) {
+    let half = d_head / 2;
+    let total = batch * seq * n_heads * half;
+    let mut k = Kargs::new();
+    k.buf(out)
+        .buf(x)
+        .i32(batch as i32)
+        .i32(seq as i32)
+        .i32(n_heads as i32)
+        .i32(d_head as i32);
+    gpu::launch("rope_forward", cfg_1d(total), 0, &mut k);
+}
+
+pub fn rope_backward(
+    dx: &impl DevPtr,
+    dy: &impl DevPtr,
+    batch: usize,
+    seq: usize,
+    n_heads: usize,
+    d_head: usize,
+) {
+    let half = d_head / 2;
+    let total = batch * seq * n_heads * half;
+    let mut k = Kargs::new();
+    k.buf(dx)
+        .buf(dy)
+        .i32(batch as i32)
+        .i32(seq as i32)
+        .i32(n_heads as i32)
+        .i32(d_head as i32);
+    gpu::launch("rope_backward", cfg_1d(total), 0, &mut k);
+}
+
+pub fn dropout_inplace(x: &impl DevPtr, n: usize, p: f32, seed: u32) {
+    let mut k = Kargs::new();
+    k.buf(x).i32(n as i32).f32(p).i32(seed as i32);
+    gpu::launch("dropout_inplace", cfg_1d(n), 0, &mut k);
+}
+
+pub fn dropout_backward(dx: &impl DevPtr, n: usize, p: f32, seed: u32) {
+    let mut k = Kargs::new();
+    k.buf(dx).i32(n as i32).f32(p).i32(seed as i32);
+    gpu::launch("dropout_backward", cfg_1d(n), 0, &mut k);
+}
