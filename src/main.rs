@@ -41,6 +41,8 @@ const MODES: &[(&str, &str)] = &[
     ("test-gpt-gpu", "küçük GPT'te adım süresi"),
     ("test-gpt-profile", "gerçek modelde zaman nereye gidiyor (matmul/transfer/attn)"),
     ("test-gpu-native", "GPU-native eğiticiyi ölç (device-resident, çekirdekler)"),
+    ("en-prepare", "İngilizce korpus: BPE öğren + u16 token cache üret"),
+    ("en-train", "İngilizce GPT eğit [token_sayısı] [d_model]"),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
@@ -91,6 +93,8 @@ fn main() {
         "test-gpt-gpu" => test_gpt_gpu(rest),
         "test-gpt-profile" => test_gpt_profile(rest),
         "test-gpu-native" => test_gpu_native(rest),
+        "en-prepare" => en_prepare(),
+        "en-train" => en_train(rest),
         other => {
             eprintln!("Bilinmeyen mod: {}", other);
             eprintln!(
@@ -994,6 +998,66 @@ fn test_gpt_gpu(args: &[String]) {
     );
     println!("Ortalama loss: {:.4}", total / steps as f32);
     println!("✅ GPT hız testi tamam!");
+}
+
+// ============================================================
+// İngilizce hat (BPE + disk cache + 250M sınıfı model)
+// ============================================================
+
+#[cfg(feature = "cuda")]
+fn en_prepare() {
+    stonefish_ai::en_train::prepare(
+        "data/en/train.txt",
+        "data/en/valid.txt",
+        16_384,
+        "data/en/tiny",
+    );
+}
+
+#[cfg(not(feature = "cuda"))]
+fn en_prepare() {
+    // BPE öğrenimi ve tokenize GPU gerektirmez; CUDA'sız derlemede de çalışır.
+    use std::io::Read;
+    let mut f = std::fs::File::open("data/en/train.txt").expect("korpus açılamadı");
+    let mut buf = vec![0u8; 100 << 20];
+    let got = f.read(&mut buf).expect("okuma");
+    buf.truncate(got);
+    let sample = String::from_utf8_lossy(&buf).into_owned();
+    let bpe = stonefish_ai::bpe::train_bpe(&sample, 16_384, 300_000);
+    println!("BPE: vocab={} ({} merge)", bpe.vocab(), bpe.merges.len());
+    let n = stonefish_ai::corpus::tokenize_file_to_cache(
+        "data/en/train.txt",
+        "data/en/tiny.train.bin",
+        &bpe,
+        64 << 20,
+    )
+    .expect("tokenize");
+    println!("train token: {n}");
+}
+
+#[cfg(feature = "cuda")]
+fn en_train(args: &[String]) {
+    let mut a = stonefish_ai::en_train::EnTrainArgs::default();
+    if let Some(t) = args.first().and_then(|s| s.parse::<u64>().ok()) {
+        a.total_tokens = t;
+    }
+    if let Some(d) = args.get(1).and_then(|s| s.parse::<usize>().ok()) {
+        a.d_model = d;
+        a.n_layers = if d >= 1024 {
+            16
+        } else if d >= 768 {
+            16
+        } else {
+            12
+        };
+        a.n_heads = (d / 128).max(4);
+    }
+    stonefish_ai::en_train::train(&a);
+}
+
+#[cfg(not(feature = "cuda"))]
+fn en_train(_args: &[String]) {
+    println!("❌ en-train CUDA gerektirir (--no-default-features ile derlendi).");
 }
 
 // ============================================================

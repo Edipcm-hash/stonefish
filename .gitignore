@@ -4,6 +4,8 @@
 # Model checkpoint'leri ve türev artifact'lar (yeniden üretilebilir, repoda tutulmaz)
 *.bin
 *.vocab
+*.state
+*.bpe
 
 # Eğitim verisi (büyük, dışarıdan indirilir — README'ye bak)
 /data/

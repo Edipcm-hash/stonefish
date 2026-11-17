@@ -82,7 +82,7 @@ impl Param {
         }
     }
 
-    fn n(&self) -> usize {
+    pub fn n(&self) -> usize {
         self.rows * self.cols
     }
 
@@ -233,7 +233,117 @@ fn mk_param(t: &crate::autograd::Tensor, name: &'static str) -> Param {
     Param::from_host(data.rows, data.cols, name, &data.data)
 }
 
+/// CPU ağırlık ikizi olmadan doğrudan cihazda rastgele başlatma.
+/// (250M modelde CPU ikizi 1 GB RAM ve yükleme süresi demek.)
+fn seed_uniform(n: usize, scale: f32, seed: &mut u64) -> Vec<f32> {
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        let r = ((*seed >> 11) as f64 / (1u64 << 53) as f64) as f32 - 0.5;
+        v.push(r * scale);
+    }
+    v
+}
+
 impl GpuGpt {
+    /// Sıfırdan rastgele başlatma (CPU ikizi yok). GPT::new ile aynı dağılım:
+    /// gömme 0.02, projeksiyonlar 1/sqrt(d) ölçeğinde.
+    pub fn new_random(cfg: GptConfig, batch: usize, seq: usize, seed: u64) -> Self {
+        let (v, d, f) = (cfg.vocab_size, cfg.d_model, 4 * cfg.d_model);
+        let bs = batch * seq;
+        let bh_seq = batch * cfg.n_heads * seq;
+        let mut s = seed;
+
+        let emb_scale = 0.02;
+        let proj_scale = (1.0 / d as f32).sqrt();
+        let ff1_scale = (2.0 / d as f32).sqrt();
+
+        let mut mk = |rows: usize, cols: usize, scale: f32, name: &'static str| {
+            Param::from_host(rows, cols, name, &seed_uniform(rows * cols, scale, &mut s))
+        };
+        let zeros = |rows: usize, cols: usize, name: &'static str| {
+            Param::from_host(rows, cols, name, &vec![0.0; rows * cols])
+        };
+        let orig = Param::from_host;
+        let _ = orig;
+
+        let blocks: Vec<GpuBlock> = (0..cfg.n_layers)
+            .map(|_| GpuBlock {
+                ln1_g: Param::from_host(1, d, "ln1_g", &vec![1.0; d]),
+                ln1_b: zeros(1, d, "ln1_b"),
+                wq: mk(d, d, proj_scale, "wq"),
+                wk: mk(d, d, proj_scale, "wk"),
+                wv: mk(d, d, proj_scale, "wv"),
+                wo: mk(d, d, proj_scale, "wo"),
+                ln2_g: Param::from_host(1, d, "ln2_g", &vec![1.0; d]),
+                ln2_b: zeros(1, d, "ln2_b"),
+                ff1_w: mk(d, f, ff1_scale, "ff1_w"),
+                ff1_b: zeros(1, f, "ff1_b"),
+                ff2_w: mk(f, d, ff1_scale, "ff2_w"),
+                ff2_b: mk(1, d, 0.0, "ff2_b"),
+            })
+            .collect();
+
+        let h: Vec<CudaSlice<f32>> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
+        let dh: Vec<CudaSlice<f32>> = (0..=cfg.n_layers).map(|_| alloc(bs * d)).collect();
+        let acts: Vec<Acts> = (0..cfg.n_layers)
+            .map(|_| Acts {
+                ln1: alloc(bs * d),
+                xhat1: alloc(bs * d),
+                inv1: alloc(bs),
+                q: alloc(bs * d),
+                k: alloc(bs * d),
+                v: alloc(bs * d),
+                w: alloc(bh_seq * seq),
+                attn: alloc(bs * d),
+                res1: alloc(bs * d),
+                ln2: alloc(bs * d),
+                xhat2: alloc(bs * d),
+                inv2: alloc(bs),
+                ff1: alloc(bs * f),
+                gelu: alloc(bs * f),
+                dq: alloc(bs * d),
+                dk: alloc(bs * d),
+                dv: alloc(bs * d),
+            })
+            .collect();
+
+        Self {
+            cfg,
+            batch,
+            seq,
+            tok_emb: mk(v, d, emb_scale, "tok_emb"),
+            pos_emb: mk(seq, d, emb_scale, "pos_emb"),
+            blocks,
+            lnf_g: Param::from_host(1, d, "lnf_g", &vec![1.0; d]),
+            lnf_b: zeros(1, d, "lnf_b"),
+            head_w: mk(d, v, emb_scale, "head_w"),
+            head_b: zeros(1, v, "head_b"),
+            acts,
+            h,
+            dh,
+            lnf_out: alloc(bs * d),
+            xhat_f: alloc(bs * d),
+            inv_f: alloc(bs),
+            logits: alloc(bs * v),
+            probs: alloc(bs * v),
+            dlogits: alloc(bs * v),
+            dlnf: alloc(bs * d),
+            loss: alloc(1),
+            tmp_a: alloc(bs * d),
+            tmp_b: alloc(bs * d),
+            tmp_c: alloc(bs * d),
+            tmp_fa: alloc(bs * f),
+            tmp_fb: alloc(bs * f),
+            scores: alloc(bh_seq * seq),
+            dscores: alloc(bh_seq * seq),
+            ones: upload(&vec![1.0f32; bs]),
+            adam_t: 0,
+        }
+    }
+
     /// CPU modelindeki ağırlıklarla kurar — iki eğitici aynı noktadan başlar.
     pub fn from_cpu(model: &GPT, batch: usize, seq: usize) -> Self {
         let cfg = model.config;
@@ -383,18 +493,205 @@ impl GpuGpt {
         norm
     }
 
+    /// Yalnız ileri geçiş: son satırın logitlerini döndürür (üretim yolu).
+    pub fn forward_last_logits(&mut self, ids: &[i32]) -> Vec<f32> {
+        let dm = self.dims();
+        assert_eq!(ids.len(), dm.bs(), "ids.len() = batch*seq olmalı");
+        let ids_dev = upload_i32(ids);
+
+        k::embedding_forward(
+            &mut self.h[0],
+            &ids_dev,
+            &self.tok_emb.data,
+            &self.pos_emb.data,
+            dm.bs(),
+            dm.d,
+            dm.s,
+        );
+        for l in 0..self.cfg.n_layers {
+            self.block_forward(l, &dm);
+        }
+        k::layernorm_forward(
+            &mut self.lnf_out,
+            &mut self.xhat_f,
+            &mut self.inv_f,
+            &self.h[self.cfg.n_layers],
+            &self.lnf_g.data,
+            &self.lnf_b.data,
+            dm.bs(),
+            dm.d,
+            LN_EPS,
+        );
+        gpu::dev_gemm(
+            &mut self.logits,
+            &self.lnf_out,
+            &self.head_w.data,
+            dm.bs(),
+            dm.v,
+            dm.d,
+            dm.d,
+            dm.v,
+            dm.v,
+            GemmMode::Nn,
+        );
+        k::add_bias_inplace(&mut self.logits, &self.head_b.data, dm.bs(), dm.v);
+
+        // son satırın logitleri
+        let all = stream().clone_dtoh(&self.logits).unwrap();
+        let last = (dm.bs() - 1) * dm.v;
+        all[last..last + dm.v].to_vec()
+    }
+
+    /// Tek bir token'ın logitlerini hesaplamak için `seq` uzunluğu 1 olmalı.
+    pub fn seq_len(&self) -> usize {
+        self.seq
+    }
+
+    /// Ağırlıkları diske yaz (resume için). CPU ikizi gerekmez.
+    /// Format: magic, sürüm, config (5×u32), adam_t (u64), tensör sayısı,
+    ///         her tensör için rows/cols + f32 veri.
+    pub fn save_state(&mut self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let cfg = self.cfg;
+        let f = std::fs::File::create(path)?;
+        let mut w = std::io::BufWriter::new(f);
+        w.write_all(b"SFEN001\0")?;
+        w.write_all(&1u32.to_le_bytes())?;
+        for v in [
+            cfg.vocab_size,
+            cfg.max_seq_len,
+            cfg.d_model,
+            cfg.n_layers,
+            cfg.n_heads,
+        ] {
+            w.write_all(&(v as u32).to_le_bytes())?;
+        }
+        w.write_all(&(self.adam_t as u64).to_le_bytes())?;
+        let params = self.params_mut();
+        w.write_all(&(params.len() as u32).to_le_bytes())?;
+        for p in params {
+            w.write_all(&(p.rows as u32).to_le_bytes())?;
+            w.write_all(&(p.cols as u32).to_le_bytes())?;
+            let host = p.download();
+            let mut bytes = Vec::with_capacity(host.len() * 4);
+            for v in host {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            w.write_all(&bytes)?;
+        }
+        w.flush()?;
+        Ok(())
+    }
+
+    /// `save_state` ile yazılmış ağırlıkları yükler; `adam_t`'yi döndürür.
+    /// Config uyuşmazsa hata verir (sessiz bozulma yok).
+    pub fn load_state(&mut self, path: &str) -> std::io::Result<usize> {
+        use std::io::Read;
+        let f = std::fs::File::open(path)?;
+        let mut r = std::io::BufReader::new(f);
+        let mut magic = [0u8; 8];
+        r.read_exact(&mut magic)?;
+        if &magic != b"SFEN001\0" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "magic yanlış — bu bir SFEN ağırlık dosyası değil",
+            ));
+        }
+        let mut u4 = [0u8; 4];
+        r.read_exact(&mut u4)?;
+        let ver = u32::from_le_bytes(u4);
+        if ver != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("desteklenmeyen sürüm: {ver}"),
+            ));
+        }
+        let mut cfg = [0usize; 5];
+        for c in cfg.iter_mut() {
+            r.read_exact(&mut u4)?;
+            *c = u32::from_le_bytes(u4) as usize;
+        }
+        let mine = self.cfg;
+        let want = [
+            mine.vocab_size,
+            mine.max_seq_len,
+            mine.d_model,
+            mine.n_layers,
+            mine.n_heads,
+        ];
+        if cfg != want {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("config uyuşmuyor: dosya {cfg:?}, model {want:?}"),
+            ));
+        }
+        let mut u8b = [0u8; 8];
+        r.read_exact(&mut u8b)?;
+        let adam_t = u64::from_le_bytes(u8b) as usize;
+        r.read_exact(&mut u4)?;
+        let n = u32::from_le_bytes(u4) as usize;
+        let params = self.params_mut();
+        if n != params.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("tensör sayısı uyuşmuyor: dosya {n}, model {}", params.len()),
+            ));
+        }
+        for p in params {
+            r.read_exact(&mut u4)?;
+            let rows = u32::from_le_bytes(u4) as usize;
+            r.read_exact(&mut u4)?;
+            let cols = u32::from_le_bytes(u4) as usize;
+            if (rows, cols) != (p.rows, p.cols) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{}: şekil uyuşmuyor (dosya {rows}x{cols}, model {}x{})",
+                        p.name, p.rows, p.cols
+                    ),
+                ));
+            }
+            let mut bytes = vec![0u8; rows * cols * 4];
+            r.read_exact(&mut bytes)?;
+            let host: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            p.data = upload(&host);
+            let n = p.n();
+            k::zero_fill(&mut p.grad, n);
+        }
+        self.adam_t = adam_t;
+        Ok(adam_t)
+    }
+
     // ========================================================
     // İleri + geri
     // ========================================================
 
     pub fn forward_backward(&mut self, ids: &[i32], targets: &[i32]) -> f32 {
+        self.forward_backward_with(ids, targets, true, 1.0)
+    }
+
+    /// Gradyan biriktirme desteği: `zero_grads=false` ile ardışık çağrılar
+    /// gradyanları toplar; `loss_scale` ile her mikro-batch'in katkısı
+    /// ölçeklenir (efektif batch'in ortalaması için 1/accum).
+    pub fn forward_backward_with(
+        &mut self,
+        ids: &[i32],
+        targets: &[i32],
+        zero_grads: bool,
+        loss_scale: f32,
+    ) -> f32 {
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs());
         assert_eq!(targets.len(), dm.bs());
 
         let ids_dev = upload_i32(ids);
         let tgt_dev = upload_i32(targets);
-        self.zero_grads();
+        if zero_grads {
+            self.zero_grads();
+        }
 
         // ---- ileri ----
         k::embedding_forward(
@@ -446,7 +743,7 @@ impl GpuGpt {
         let loss = stream().clone_dtoh(&self.loss).unwrap()[0];
 
         // ---- geri ----
-        k::ce_backward(&mut self.dlogits, &self.probs, &tgt_dev, dm.bs(), dm.v, 1.0);
+        k::ce_backward(&mut self.dlogits, &self.probs, &tgt_dev, dm.bs(), dm.v, loss_scale);
 
         gpu::dev_gemm(
             &mut self.head_w.grad,

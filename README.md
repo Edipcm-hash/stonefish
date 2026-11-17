@@ -345,6 +345,35 @@ cargo test --no-default-features      # her şey CPU'da
 
 `gpu::matmul_gpu` bu durumda `Matrix::matmul`'a düşer; kod yolu aynıdır.
 
+
+## İngilizce hat (250M sınıfı)
+
+Türkçe karakter-seviyesi yoldan ayrı, ölçeklenebilir hat:
+
+| Bileşen | Dosya | Not |
+|---|---|---|
+| BPE-16k tokenizer (eğitim + encode/decode) | `src/bpe.rs` | Artımlı çift sayımı; 16k merge 7 saniyede |
+| Akışlı veri hattı (u16 + disk cache + pencere) | `src/corpus.rs` | 450 M token; RAM'de tutulmaz |
+| İngilizce eğitim döngüsü | `src/en_train.rs` | Gradyan biriktirme + periyodik checkpoint/resume |
+| Rastgele başlatma (CPU ikizi yok) | `gpu_train::new_random` | 236 M modelde 1 GB RAM tasarrufu |
+| Ağırlık kaydet/yükle (`SFEN001`) | `gpu_train::{save_state,load_state}` | Config doğrulamalı resume |
+
+```bash
+# 1) Korpus hazırla (BPE + u16 cache)
+stonefish_ai en-prepare
+# 2) Eğit [token] [d_model]
+stonefish_ai en-train 450000000
+```
+
+**Veri:** TinyStories v2 (GPT-4 temizlenmiş), 2,1 GB → **450,9 M token**, BPE 16.384 vocab,
+4,7 karakter/token sıkıştırma.
+
+**Model:** d_model=1024, 16 katman, 8 head (d_head=128), ctx=512, vocab=16.384
+→ **235,6 M parametre**.
+
+**Ölçülen (RTX 5070, 210 W güç limiti):**
+- VRAM 8,4 GB / 12 GB, sıcaklık ~75 °C, GPU %99
+- ~10.500 token/s → 450 M token ≈ 12–13 saat
 ---
 
 ## Bilinen sınırlar

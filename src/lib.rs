@@ -15,13 +15,17 @@
 #![allow(clippy::manual_is_multiple_of)]
 
 pub mod autograd;
+pub mod bpe;
 pub mod checkpoint;
+pub mod corpus;
 pub mod data;
 pub mod gpu;
 #[cfg(feature = "cuda")]
 pub mod gpu_kernels;
 #[cfg(feature = "cuda")]
 pub mod gpu_train;
+#[cfg(feature = "cuda")]
+pub mod en_train;
 pub mod loss;
 pub mod nn;
 pub mod optim;
