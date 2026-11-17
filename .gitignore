@@ -1,24 +1,24 @@
-# Rust build çıktıları
+# Rust build output
 /target/
 target2/
 
-# Model checkpoint'leri ve türev artifact'lar (yeniden üretilebilir, repoda tutulmaz)
+# Model checkpoints and derived artifacts (reproducible, not kept in the repo)
 *.bin
 *.vocab
 *.state
 *.bpe
 
-# Eğitim verisi (büyük, dışarıdan indirilir — README'ye bak)
+# Training data (large, downloaded separately - see README)
 /data/
 
-# Editör / OS
+# Editor / OS
 .vscode/
 .idea/
 *.swp
 Thumbs.db
 desktop.ini
 
-# Geçici çıktılar
+# Scratch output
 *.log
 bench_results/
 runs/

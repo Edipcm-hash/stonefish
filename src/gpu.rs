@@ -168,7 +168,12 @@ mod imp {
             b.cols,
             GemmMode::Nn,
         );
+        let t_down = std::time::Instant::now();
         let out = c.to_host();
+        transfer_ns += t_down.elapsed().as_nanos() as u64;
+        if let Some(t0) = t_start {
+            crate::profile::add_matmul(t0.elapsed().as_nanos() as u64, transfer_ns);
+        }
         Matrix::from_vec(a.rows, b.cols, out)
     }
 

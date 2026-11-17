@@ -11,7 +11,7 @@
 use crate::bpe::Bpe;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, SeekFrom, Write};
 
 /// Token cache file: a raw u16 little-endian array.
 pub struct TokenDataset {

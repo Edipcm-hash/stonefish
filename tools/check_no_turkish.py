@@ -17,6 +17,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TURKISH = re.compile(r"[\u00E7\u011F\u0131\u00F6\u015F\u00FC\u00C7\u011E\u0130\u00D6\u015E\u00DC]")
 
 EXTENSIONS = (".rs", ".cu", ".py", ".yml", ".toml", ".md", ".txt")
+# Extensionless files that are still part of the project.
+EXACT_FILES = {".gitignore", ".gitattributes"}
 SKIP_DIRS = {"target", "target2", "data", "runs", ".git"}
 ALLOWED = {"README-Tr.md"}
 
@@ -26,7 +28,7 @@ def main():
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
-            if fn in ALLOWED or not fn.endswith(EXTENSIONS):
+            if fn in ALLOWED or not (fn.endswith(EXTENSIONS) or fn in EXACT_FILES):
                 continue
             path = os.path.join(dirpath, fn)
             try:

@@ -232,15 +232,6 @@ impl DevBuf {
         }
     }
 
-    pub fn fill_zero(&mut self) {
-        ctx();
-        unsafe {
-            cuda::check(
-                cuda::cuMemsetD32_v2().expect("memset")(self.ptr, 0, self.len),
-                "cuMemsetD32",
-            );
-        }
-    }
 
     /// Slice view (no ownership).
     pub fn slice(&self, range: std::ops::RangeFrom<usize>) -> DevView<'_> {
@@ -270,13 +261,6 @@ impl DevBuf {
         }
     }
 
-    pub fn full_mut(&mut self) -> DevViewMut<'_> {
-        DevViewMut {
-            ptr: self.ptr,
-            len: self.len,
-            _p: PhantomData,
-        }
-    }
 }
 
 impl DevBufI32 {

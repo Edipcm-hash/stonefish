@@ -181,10 +181,6 @@ fn load_module(names: &'static [&'static str]) -> Option<*mut c_void> {
     h
 }
 
-/// Is the CUDA driver available in this build/environment?
-pub fn cuda_available() -> bool {
-    CUDA_MODULES.iter().any(|n| library(&[n]).is_some())
-}
 
 pub const CUDA_MODULES: &[&str] = &["nvcuda.dll", "libcuda.so.1", "libcuda.so"];
 pub const CUBLAS_MODULES: &[&str] = &[

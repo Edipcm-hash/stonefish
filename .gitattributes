@@ -1,11 +1,11 @@
-# Satır sonlarını tekilleştir: repoda daima LF.
+# Normalize line endings: always LF inside the repository.
 * text=auto eol=lf
 
-# Windows'a özgü betikler (varsa) CRLF kalsın
+# Windows-only scripts (if any) keep CRLF
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# İkili dosyalar
+# Binary files
 *.bin binary
 *.gz binary
 *.png binary

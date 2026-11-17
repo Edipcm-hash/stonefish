@@ -25,8 +25,6 @@ use crate::gpu_kernels as k;
 use crate::sys::dev::{DevBuf, DevBufI32, DevPtr};
 use crate::transformer::{swiglu_hidden, GptConfig, GPT, RMS_EPS};
 
-#[allow(dead_code)]
-const LN_EPS: f32 = 1e-5;
 
 fn alloc(n: usize) -> DevBuf {
     DevBuf::zeros(n)
@@ -244,7 +242,6 @@ pub struct GpuGpt {
     scores: DevBuf,
     dscores: DevBuf,
     #[allow(dead_code)]
-    ones: DevBuf,
 
     pub adam_t: usize,
 }
@@ -367,7 +364,6 @@ impl GpuGpt {
             tmp_fc: alloc(bs * f),
             scores: alloc(bh_seq * seq),
             dscores: alloc(bh_seq * seq),
-            ones: upload(&vec![1.0f32; bs]),
             adam_t: 0,
         }
     }
@@ -459,7 +455,6 @@ impl GpuGpt {
             tmp_fc: alloc(bs * f),
             scores: alloc(bh_seq * seq),
             dscores: alloc(bh_seq * seq),
-            ones: upload(&vec![1.0f32; bs]),
             adam_t: 0,
         }
     }
@@ -561,11 +556,6 @@ impl GpuGpt {
         self.loss.to_host()[0]
     }
 
-    /// Forward only: returns the last row's logits (the generation path).
-    pub fn forward_last_logits(&mut self, ids: &[i32]) -> Vec<f32> {
-        let row = self.batch * self.seq - 1;
-        self.forward_logits_at(ids, row)
-    }
 
     /// Returns the logits of the given row. During generation the context is
     /// right-padded (causal attention keeps the positions unchanged), so this
