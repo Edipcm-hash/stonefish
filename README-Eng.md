@@ -260,6 +260,30 @@ Reproducibility: hyperparameters + seeds + per-epoch metrics are written to `run
 | Speed | ~10,000 tok/s → **~12.5 hours** |
 | Checkpoint | `stonefish_en.state` (`SFEN001`, every 500 steps) |
 
+**Training completed (2026-11-17):** 13,732 steps, **745 minutes**, 10,061 tok/s average.
+
+**Measured quality (`valid.bin`, 3,928,064 tokens):**
+
+| Metric | Value |
+|---|---|
+| val loss | **2.3700** nats/token |
+| perplexity | **10.70** |
+| **BPC** | **0.6913 bits/character** |
+| final train loss | ~1.95 (gap 0.42 → mild overfitting) |
+| random baseline | 9.70 |
+
+**Sample generation (temperature 0, greedy):**
+
+> Once upon a time-out lived a little girl named Lily. She loved to play with her toys and make up stories. One day, she found a big box in her room. She was very excited and wanted to see what was inside.
+> Lily opened the box and found a lot of fun toys inside. She played with the toys and had a lot of fun. But then, she heard a loud noise outside. She looked out the window and saw a big, scary monster! The monster was very big and scary. Lily was scared and ran back to her room.
+
+**Dialogue formatting (temperature 0.8):**
+
+> "Yes! I love to play with my car," Tommy said.
+> "But I need your toy car," Jane said.
+
+The model learned the `<|endoftext|>` story boundary and quoted dialogue formatting on its own.
+
 ---
 
 ## 7. Measured results
@@ -364,7 +388,7 @@ This list is the most valuable part of the project: **every one was caught by a 
 - **fp32 training only** — no bf16; this caps VRAM usage at ~250 M parameters.
 - **No gradient checkpointing** — activations are kept; needed for larger models.
 - **Single-threaded CPU path** — no `rayon`; the CPU path is the reference/fallback.
-- **Turkish model saw 8.6 M tokens** (1.9 tokens/param) → at the saturation boundary.
+- **Turkish model processed 17 M tokens** but the corpus is only 2.87 M (3.4 unique tokens/param) → limited diversity, heavy epoch repetition.
 - **English model saw 450 M tokens** (1.9 tokens/param) → 1/10 of Chinchilla, i.e. **undertrained**.
 - **No SFT/DPO** → the model shows no assistant behaviour.
 - **No validation/generation tooling for the English path yet** (`en-eval`, `en-gen` are on the roadmap).

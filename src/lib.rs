@@ -21,6 +21,8 @@ pub mod corpus;
 pub mod data;
 pub mod gpu;
 #[cfg(feature = "cuda")]
+pub mod sys;
+#[cfg(feature = "cuda")]
 pub mod gpu_kernels;
 #[cfg(feature = "cuda")]
 pub mod gpu_train;

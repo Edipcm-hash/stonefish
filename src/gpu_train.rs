@@ -493,8 +493,72 @@ impl GpuGpt {
         norm
     }
 
+    /// Sadece ileri + cross-entropy: gradyan hesaplamaz (değerlendirme yolu).
+    pub fn forward_loss(&mut self, ids: &[i32], targets: &[i32]) -> f32 {
+        let dm = self.dims();
+        assert_eq!(ids.len(), dm.bs());
+        assert_eq!(targets.len(), dm.bs());
+        let ids_dev = upload_i32(ids);
+        let tgt_dev = upload_i32(targets);
+
+        k::embedding_forward(
+            &mut self.h[0],
+            &ids_dev,
+            &self.tok_emb.data,
+            &self.pos_emb.data,
+            dm.bs(),
+            dm.d,
+            dm.s,
+        );
+        for l in 0..self.cfg.n_layers {
+            self.block_forward(l, &dm);
+        }
+        k::layernorm_forward(
+            &mut self.lnf_out,
+            &mut self.xhat_f,
+            &mut self.inv_f,
+            &self.h[self.cfg.n_layers],
+            &self.lnf_g.data,
+            &self.lnf_b.data,
+            dm.bs(),
+            dm.d,
+            LN_EPS,
+        );
+        gpu::dev_gemm(
+            &mut self.logits,
+            &self.lnf_out,
+            &self.head_w.data,
+            dm.bs(),
+            dm.v,
+            dm.d,
+            dm.d,
+            dm.v,
+            dm.v,
+            GemmMode::Nn,
+        );
+        k::add_bias_inplace(&mut self.logits, &self.head_b.data, dm.bs(), dm.v);
+        k::zero_fill(&mut self.loss, 1);
+        k::ce_forward(
+            &mut self.loss,
+            &mut self.probs,
+            &self.logits,
+            &tgt_dev,
+            dm.bs(),
+            dm.v,
+        );
+        stream().clone_dtoh(&self.loss).unwrap()[0]
+    }
+
     /// Yalnız ileri geçiş: son satırın logitlerini döndürür (üretim yolu).
     pub fn forward_last_logits(&mut self, ids: &[i32]) -> Vec<f32> {
+        let row = self.batch * self.seq - 1;
+        self.forward_logits_at(ids, row)
+    }
+
+    /// Belirtilen satırın logitlerini döndürür. Üretimde bağlam sağdan
+    /// doldurulduğunda (nedensel attention sayesinde konumlar kaymaz) son
+    /// gerçek tokenin satırını okumak için kullanılır.
+    pub fn forward_logits_at(&mut self, ids: &[i32], row: usize) -> Vec<f32> {
         let dm = self.dims();
         assert_eq!(ids.len(), dm.bs(), "ids.len() = batch*seq olmalı");
         let ids_dev = upload_i32(ids);
@@ -536,9 +600,9 @@ impl GpuGpt {
         );
         k::add_bias_inplace(&mut self.logits, &self.head_b.data, dm.bs(), dm.v);
 
-        // son satırın logitleri
+        // istenen satırın logitleri
         let all = stream().clone_dtoh(&self.logits).unwrap();
-        let last = (dm.bs() - 1) * dm.v;
+        let last = row * dm.v;
         all[last..last + dm.v].to_vec()
     }
 

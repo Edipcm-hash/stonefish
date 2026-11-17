@@ -260,6 +260,30 @@ Tekrar üretilebilirlik: hiperparametreler + seed'ler + epoch metrikleri `runs/<
 | Hız | ~10.000 tok/s → **~12,5 saat** |
 | Checkpoint | `stonefish_en.state` (`SFEN001`, her 500 adım) |
 
+**Eğitim tamamlandı (2026-11-17):** 13.732 adım, **745 dakika**, ortalama 10.061 tok/s.
+
+**Ölçülen kalite (valid.bin, 3.928.064 token):**
+
+| Metrik | Değer |
+|---|---|
+| val loss | **2,3700** nat/token |
+| perplexity | **10,70** |
+| **BPC** | **0,6913 bit/karakter** |
+| train loss (son) | ~1,95 (val ile fark 0,42 → hafif ezber) |
+| rastgele taban | 9,70 |
+
+**Üretim örneği (sıcaklık 0, açgözlü):**
+
+> Once upon a time-out lived a little girl named Lily. She loved to play with her toys and make up stories. One day, she found a big box in her room. She was very excited and wanted to see what was inside.
+> Lily opened the box and found a lot of fun toys inside. She played with the toys and had a lot of fun. But then, she heard a loud noise outside. She looked out the window and saw a big, scary monster! The monster was very big and scary. Lily was scared and ran back to her room.
+
+**Diyalog formatı (sıcaklık 0,8):**
+
+> "Yes! I love to play with my car," Tommy said.
+> "But I need your toy car," Jane said.
+
+Model `<|endoftext|>` hikâye sınırını ve tırnaklı diyalog düzenini kendiliğinden öğrenmiş.
+
 ---
 
 ## 7. Ölçülen sonuçlar
@@ -364,7 +388,7 @@ Bu liste projenin en değerli kısmı: **her biri testlerle yakalandı.**
 - **fp32 eğitim** — bf16 yok; VRAM tavanını ~250 M'da tutuyor.
 - **Gradyan checkpointing yok** — aktivasyonlar saklanır, daha büyük model için gerekli.
 - **Tek thread CPU yolu** — `rayon` yok; CPU yolu referans/yedektir.
-- **Türkçe model 8,6 M token** görmüş (1,9 token/parametre) → doygunluk sınırında.
+- **Türkçe model 17 M token işledi** ama korpus yalnız 2,87 M token (3,4 benzersiz token/param) → çeşitlilik dar, epoch tekrarı yüksek.
 - **İngilizce model 450 M token** görmüş (1,9 token/parametre) → Chinchilla'nın 1/10'u, yani **yetersiz eğitilmiş**.
 - **SFT/DPO yok** → model asistan davranışı göstermez.
 - **İngilizce hat için val/generation aracı henüz yok** (`en-eval`, `en-gen` yol haritasında).

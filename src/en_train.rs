@@ -291,6 +291,201 @@ pub fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f
     max_lr * (min_ratio + (1.0 - min_ratio) * cos)
 }
 
+// ============================================================
+// eval: valid korpusu üzerinde kayıp + perplexity + BPC
+// ============================================================
+
+/// Değerlendirme. Döner: (val loss nat/token, perplexity, BPC, örneklenen token).
+pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f64, u64) {
+    let _ = load_bpe(&format!("{corpus}.bpe")).expect("BPE yüklenemedi");
+    let mut data = TokenDataset::open(&format!("{corpus}.valid.bin")).expect("valid cache yok");
+    let state = state_path.to_string();
+
+    // Model boyutunu state dosyasından oku (config başlığın içinde)
+    let cfg = read_state_cfg(&state).expect("state dosyası okunamadı");
+    let batch = 8usize;
+    let seq = cfg.max_seq_len;
+    let mut model = GpuGpt::new_random(cfg, batch, seq, 1);
+    let t = model.load_state(&state).expect("ağırlıklar yüklenemedi");
+    println!(
+        "Model: d={}, layers={}, heads={}, ctx={}, vocab={} (adım {t})",
+        cfg.d_model, cfg.n_layers, cfg.n_heads, cfg.max_seq_len, cfg.vocab_size
+    );
+
+    let per_batch = (batch * seq) as u64;
+    let n_batches = ((data.len().saturating_sub(1)) / per_batch) as usize;
+    let n_batches = n_batches.min(max_batches.max(1));
+
+    let mut x = vec![0u16; seq];
+    let mut y = vec![0u16; seq];
+    let mut x_i = vec![0i32; batch * seq];
+    let mut y_i = vec![0i32; batch * seq];
+    let mut sum = 0.0f64;
+    let t0 = std::time::Instant::now();
+
+    for b in 0..n_batches {
+        for k in 0..batch {
+            let start = (b * batch + k) as u64 * seq as u64;
+            data.fill_pair(start, seq, &mut x, &mut y).expect("cache");
+            let off = k * seq;
+            for j in 0..seq {
+                x_i[off + j] = x[j] as i32;
+                y_i[off + j] = y[j] as i32;
+            }
+        }
+        sum += model.forward_loss(&x_i, &y_i) as f64;
+        if (b + 1) % 50 == 0 {
+            println!(
+                "  {}/{} batch  (ortalama loss {:.4}, {:.0} tok/s)",
+                b + 1,
+                n_batches,
+                sum / (b + 1) as f64,
+                ((b + 1) as u64 * per_batch) as f64 / t0.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    let loss = sum / n_batches.max(1) as f64;
+    let ppl = loss.exp();
+    // BPC: karakter başına bit. chars/token = valid.txt bayt / valid.bin token
+    let chars_per_token = {
+        let txt = std::fs::metadata("data/en/valid.txt")
+            .map(|m| m.len() as f64)
+            .unwrap_or(0.0);
+        let tokens = data.len() as f64;
+        if tokens > 0.0 {
+            txt / tokens
+        } else {
+            4.7
+        }
+    };
+    let bpc = loss / (std::f64::consts::LN_2 * chars_per_token);
+    (loss, ppl, bpc, n_batches as u64 * per_batch)
+}
+
+/// State dosyasının başlığından config oku (ağırlıkları yüklemeden).
+fn read_state_cfg(path: &str) -> std::io::Result<GptConfig> {
+    let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut magic = [0u8; 8];
+    r.read_exact(&mut magic)?;
+    if &magic != b"SFEN001\0" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state dosyası tanınmadı",
+        ));
+    }
+    let mut u4 = [0u8; 4];
+    r.read_exact(&mut u4)?; // sürüm
+    let mut c = [0usize; 5];
+    for v in c.iter_mut() {
+        r.read_exact(&mut u4)?;
+        *v = u32::from_le_bytes(u4) as usize;
+    }
+    Ok(GptConfig {
+        vocab_size: c[0],
+        max_seq_len: c[1],
+        d_model: c[2],
+        n_layers: c[3],
+        n_heads: c[4],
+    })
+}
+
+// ============================================================
+// generate: BPE + kayan pencere üretimi
+// ============================================================
+
+pub fn generate(
+    corpus: &str,
+    state_path: &str,
+    prompt: &str,
+    n_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+) {
+    let bpe = load_bpe(&format!("{corpus}.bpe")).expect("BPE yüklenemedi");
+    let state = state_path.to_string();
+    let cfg = read_state_cfg(&state).expect("state okunamadı");
+    let seq = cfg.max_seq_len;
+    let mut model = GpuGpt::new_random(cfg, 1, seq, 1);
+    model.load_state(&state).expect("ağırlıklar yüklenemedi");
+
+    let mut ids: Vec<u32> = bpe.encode(prompt);
+    if ids.is_empty() {
+        ids.push(bpe.encode(" ")[0]);
+    }
+    let ids_u16: Vec<u16> = ids
+        .iter()
+        .map(|&v| u16::try_from(v).unwrap_or(0))
+        .collect();
+    let _ = ids_u16;
+
+    let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+    print!("{prompt}");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
+    let mut printed = 0usize;
+    for _ in 0..n_tokens {
+        // kayan pencere: son `seq` token; `seq`'den kısaysa sağdan doldur.
+        // Nedensel attention sayesinde dolgu, gerçek token'ların konumlarını
+        // ve dolayısıyla logitlerini etkilemez.
+        let start = ids.len().saturating_sub(seq);
+        let real = &ids[start..];
+        let n_real = real.len();
+        let mut ctx: Vec<i32> = real.iter().map(|&v| v as i32).collect();
+        while ctx.len() < seq {
+            ctx.push(*ctx.last().unwrap());
+        }
+        let logits = model.forward_logits_at(&ctx, n_real - 1);
+
+        let next = if temperature <= 0.0 {
+            // açgözlü
+            let mut best = 0usize;
+            let mut bv = f32::NEG_INFINITY;
+            for (i, &v) in logits.iter().enumerate() {
+                if v > bv {
+                    bv = v;
+                    best = i;
+                }
+            }
+            best as u32
+        } else {
+            // top-k + sıcaklık
+            let mut idx: Vec<usize> = (0..logits.len()).collect();
+            let k = top_k.max(1).min(logits.len());
+            idx.sort_unstable_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
+            idx.truncate(k);
+            let mx = logits[idx[0]];
+            let mut probs: Vec<f32> = idx.iter().map(|&i| ((logits[i] - mx) / temperature).exp()).collect();
+            let sum: f32 = probs.iter().sum();
+            for p in probs.iter_mut() {
+                *p /= sum;
+            }
+            let r = (xorshift(&mut rng) >> 11) as f32 / (1u64 << 53) as f32;
+            let mut acc = 0.0f32;
+            let mut pick = idx[idx.len() - 1];
+            for (j, &i) in idx.iter().enumerate() {
+                acc += probs[j];
+                if r < acc {
+                    pick = i;
+                    break;
+                }
+            }
+            pick as u32
+        };
+
+        ids.push(next);
+        let piece = bpe.decode(&[next]);
+        print!("{piece}");
+        let _ = std::io::stdout().flush();
+        printed += 1;
+        if printed >= n_tokens {
+            break;
+        }
+    }
+    println!();
+}
+
 fn xorshift(s: &mut u64) -> u64 {
     *s ^= *s << 13;
     *s ^= *s >> 7;

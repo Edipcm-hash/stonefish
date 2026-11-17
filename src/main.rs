@@ -43,6 +43,9 @@ const MODES: &[(&str, &str)] = &[
     ("test-gpu-native", "GPU-native eğiticiyi ölç (device-resident, çekirdekler)"),
     ("en-prepare", "İngilizce korpus: BPE öğren + u16 token cache üret"),
     ("en-train", "İngilizce GPT eğit [token_sayısı] [d_model]"),
+    ("test-ffi", "Kendi CUDA FFI öz-testi (cudarc olmadan)"),
+    ("en-eval", "İngilizce modeli valid sette ölç (loss/perplexity/BPC)"),
+    ("en-gen", "İngilizce metin üret [prompt] [token] [sıcaklık]"),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
@@ -95,6 +98,9 @@ fn main() {
         "test-gpu-native" => test_gpu_native(rest),
         "en-prepare" => en_prepare(),
         "en-train" => en_train(rest),
+        "test-ffi" => test_ffi(),
+        "en-eval" => en_eval(rest),
+        "en-gen" => en_gen(rest),
         other => {
             eprintln!("Bilinmeyen mod: {}", other);
             eprintln!(
@@ -1058,6 +1064,47 @@ fn en_train(args: &[String]) {
 #[cfg(not(feature = "cuda"))]
 fn en_train(_args: &[String]) {
     println!("❌ en-train CUDA gerektirir (--no-default-features ile derlendi).");
+}
+
+#[cfg(feature = "cuda")]
+fn test_ffi() {
+    stonefish_ai::sys::selftest::run();
+}
+
+#[cfg(not(feature = "cuda"))]
+fn test_ffi() {
+    println!("❌ CUDA kapalı.");
+}
+
+#[cfg(feature = "cuda")]
+fn en_eval(args: &[String]) {
+    let max_batches: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(500);
+    println!("🐟 İngilizce model değerlendirmesi\n");
+    let (loss, ppl, bpc, tokens) = stonefish_ai::en_train::eval("data/en/tiny", "stonefish_en.state", max_batches);
+    println!("\n--- SONUÇ ---");
+    println!("Örneklenen     : {tokens} token");
+    println!("val loss       : {loss:.4} nat/token");
+    println!("perplexity     : {ppl:.2}");
+    println!("BPC            : {bpc:.4} bit/karakter");
+    println!("\nReferans: rastgele tahmin = ln({}) = {:.2}", 16384, (16384f64).ln());
+}
+
+#[cfg(not(feature = "cuda"))]
+fn en_eval(_args: &[String]) {
+    println!("❌ en-eval CUDA gerektirir.");
+}
+
+#[cfg(feature = "cuda")]
+fn en_gen(args: &[String]) {
+    let prompt = args.first().cloned().unwrap_or_else(|| "Once upon a time".into());
+    let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(200);
+    let temp: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.8);
+    stonefish_ai::en_train::generate("data/en/tiny", "stonefish_en.state", &prompt, n, temp, 40);
+}
+
+#[cfg(not(feature = "cuda"))]
+fn en_gen(_args: &[String]) {
+    println!("❌ en-gen CUDA gerektirir.");
 }
 
 // ============================================================
