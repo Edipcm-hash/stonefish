@@ -30,6 +30,8 @@ pub mod gpu_train;
 pub mod en_train;
 #[cfg(feature = "cuda")]
 pub mod demo;
+#[cfg(feature = "cuda")]
+pub mod kv_cache;
 pub mod loss;
 pub mod nn;
 pub mod optim;

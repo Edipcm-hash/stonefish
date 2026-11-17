@@ -647,3 +647,65 @@ extern "C" __global__ void embedding_backward_tok(float* dtok, const float* dout
     int c = idx % cols;
     atomicAdd(&dtok[(long long)ids[r] * cols + c], dout[idx]);
 }
+
+// ============================================================
+// KV-cache üretimi için yardımcılar
+// ============================================================
+
+// Tek satır softmax (maske yok — cache'teki tüm konumlar geçmiştedir).
+extern "C" __global__ void softmax_vec(float* out, const float* x, int n) {
+    extern __shared__ float sh[];
+    int t = threadIdx.x;
+    float mx = -INFINITY;
+    for (int i = t; i < n; i += blockDim.x) mx = fmaxf(mx, x[i]);
+    sh[t] = mx;
+    __syncthreads();
+    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
+        if (t < st) sh[t] = fmaxf(sh[t], sh[t + st]);
+        __syncthreads();
+    }
+    float m = sh[0];
+    __syncthreads();
+    float s = 0.0f;
+    for (int i = t; i < n; i += blockDim.x) s += expf(x[i] - m);
+    sh[t] = s;
+    __syncthreads();
+    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
+        if (t < st) sh[t] += sh[t + st];
+        __syncthreads();
+    }
+    float denom = 1.0f / sh[0];
+    for (int i = t; i < n; i += blockDim.x) out[i] = expf(x[i] - m) * denom;
+}
+
+// Tek konum için RoPE (üretimde position = cache uzunluğu).
+extern "C" __global__ void rope_forward_pos(float* out, const float* x,
+                                           const float* cos_t, const float* sin_t,
+                                           int n_heads, int d_head, int pos) {
+    int half = d_head / 2;
+    int total = n_heads * half;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+    int j = idx % half;
+    int h = idx / half;
+    long long base = (long long)h * d_head + 2 * j;
+    float c = cos_t[pos * half + j];
+    float sn = sin_t[pos * half + j];
+    float x0 = x[base], x1 = x[base + 1];
+    out[base] = x0 * c - x1 * sn;
+    out[base + 1] = x0 * sn + x1 * c;
+}
+
+// Cache'e yaz. Yerleşim: [head][capacity][d_head]
+// k/v: (n_heads × d_head) — tek token'ın head dilimleri.
+extern "C" __global__ void kv_store(float* cache_k, float* cache_v,
+                                   const float* k, const float* v,
+                                   int n_heads, int d_head, int pos, int capacity) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_heads * d_head) return;
+    int h = idx / d_head;
+    int c = idx % d_head;
+    long long off = ((long long)h * capacity + pos) * d_head + c;
+    cache_k[off] = k[idx];
+    cache_v[off] = v[idx];
+}

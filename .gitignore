@@ -1,5 +1,6 @@
 # Rust build çıktıları
 /target/
+target2/
 
 # Model checkpoint'leri ve türev artifact'lar (yeniden üretilebilir, repoda tutulmaz)
 *.bin

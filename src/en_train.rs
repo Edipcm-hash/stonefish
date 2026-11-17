@@ -510,38 +510,36 @@ pub fn generate(
 
     let mut ids: Vec<u32> = bpe.encode(prompt);
     if ids.is_empty() {
-        ids.push(bpe.encode(" ")[0]);
+        ids = bpe.encode(" ");
     }
-    let ids_u16: Vec<u16> = ids
-        .iter()
-        .map(|&v| u16::try_from(v).unwrap_or(0))
-        .collect();
-    let _ = ids_u16;
 
-    let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+    // KV-cache: her token için tüm bağlamı yeniden hesaplamak yerine K/V
+    // saklanır. Üretim bu yüzden O(n²) yerine O(n) iş yapar.
+    let mut ctx = crate::kv_cache::CachedModel::new(&mut model, seq);
+    let t0 = std::time::Instant::now();
+
+    // --- prompt'u işle (cache'i doldur) ---
+    let mut last_logits = Vec::new();
+    for (pos, &t) in ids.iter().enumerate() {
+        if pos >= seq {
+            break;
+        }
+        last_logits = ctx.step(t, pos);
+    }
+
     print!("{prompt}");
     use std::io::Write;
     let _ = std::io::stdout().flush();
 
-    let mut printed = 0usize;
-    for _ in 0..n_tokens {
-        // kayan pencere: son `seq` token; `seq`'den kısaysa sağdan doldur.
-        // Nedensel attention sayesinde dolgu, gerçek token'ların konumlarını
-        // ve dolayısıyla logitlerini etkilemez.
-        let start = ids.len().saturating_sub(seq);
-        let real = &ids[start..];
-        let n_real = real.len();
-        let mut ctx: Vec<i32> = real.iter().map(|&v| v as i32).collect();
-        while ctx.len() < seq {
-            ctx.push(*ctx.last().unwrap());
-        }
-        let logits = model.forward_logits_at(&ctx, n_real - 1);
+    let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+    let mut pos = ids.len().min(seq);
+    let t_gen = std::time::Instant::now();
 
+    for _ in 0..n_tokens {
         let next = if temperature <= 0.0 {
-            // açgözlü
             let mut best = 0usize;
             let mut bv = f32::NEG_INFINITY;
-            for (i, &v) in logits.iter().enumerate() {
+            for (i, &v) in last_logits.iter().enumerate() {
                 if v > bv {
                     bv = v;
                     best = i;
@@ -549,13 +547,15 @@ pub fn generate(
             }
             best as u32
         } else {
-            // top-k + sıcaklık
-            let mut idx: Vec<usize> = (0..logits.len()).collect();
-            let k = top_k.max(1).min(logits.len());
-            idx.sort_unstable_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
+            let mut idx: Vec<usize> = (0..last_logits.len()).collect();
+            let k = top_k.max(1).min(last_logits.len());
+            idx.sort_unstable_by(|&a, &b| last_logits[b].partial_cmp(&last_logits[a]).unwrap());
             idx.truncate(k);
-            let mx = logits[idx[0]];
-            let mut probs: Vec<f32> = idx.iter().map(|&i| ((logits[i] - mx) / temperature).exp()).collect();
+            let mx = last_logits[idx[0]];
+            let mut probs: Vec<f32> = idx
+                .iter()
+                .map(|&i| ((last_logits[i] - mx) / temperature).exp())
+                .collect();
             let sum: f32 = probs.iter().sum();
             for p in probs.iter_mut() {
                 *p /= sum;
@@ -574,17 +574,34 @@ pub fn generate(
         };
 
         ids.push(next);
-        let piece = bpe.decode(&[next]);
-        print!("{piece}");
+        print!("{}", bpe.decode(&[next]));
         let _ = std::io::stdout().flush();
-        printed += 1;
-        if printed >= n_tokens {
-            break;
+
+        if pos >= seq {
+            // pencere doldu: cache'i sıfırla ve kayan pencereyi yeniden işle
+            ctx.reset();
+            let start = ids.len().saturating_sub(seq);
+            let window: Vec<u32> = ids[start..].to_vec();
+            for (p, &t) in window.iter().enumerate() {
+                last_logits = ctx.step(t, p);
+            }
+            pos = window.len();
+        } else {
+            last_logits = ctx.step(next, pos);
+            pos += 1;
         }
     }
     println!();
+    let dt = t_gen.elapsed().as_secs_f64();
+    if n_tokens > 0 {
+        println!(
+            "  ({n_tokens} token, {:.2} s, {:.1} token/s — KV-cache)",
+            dt,
+            n_tokens as f64 / dt
+        );
+    }
+    let _ = t0;
 }
-
 fn xorshift(s: &mut u64) -> u64 {
     *s ^= *s << 13;
     *s ^= *s >> 7;

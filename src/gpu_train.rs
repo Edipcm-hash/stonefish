@@ -119,7 +119,7 @@ impl Param {
 // Blok / aktivasyon
 // ============================================================
 
-struct GpuBlock {
+pub struct GpuBlock {
     /// RMSNorm gama (beta yok)
     norm1_g: Param,
     wq: Param,
@@ -135,6 +135,36 @@ struct GpuBlock {
     ff_down: Param,
 }
 
+impl GpuBlock {
+    // KV-cache üretim yolu için salt-okunur erişimciler.
+    pub fn gamma1(&self) -> &DevBuf {
+        &self.norm1_g.data
+    }
+    pub fn gamma2(&self) -> &DevBuf {
+        &self.norm2_g.data
+    }
+    pub fn wq(&self) -> &DevBuf {
+        &self.wq.data
+    }
+    pub fn wk(&self) -> &DevBuf {
+        &self.wk.data
+    }
+    pub fn wv(&self) -> &DevBuf {
+        &self.wv.data
+    }
+    pub fn wo(&self) -> &DevBuf {
+        &self.wo.data
+    }
+    pub fn ff_gate(&self) -> &DevBuf {
+        &self.ff_gate.data
+    }
+    pub fn ff_up(&self) -> &DevBuf {
+        &self.ff_up.data
+    }
+    pub fn ff_down(&self) -> &DevBuf {
+        &self.ff_down.data
+    }
+}
 /// Katman başına geri yayılım için saklanan ara sonuçlar.
 struct Acts {
     x1: DevBuf,     // RMSNorm1 çıktısı
@@ -446,6 +476,23 @@ impl GpuGpt {
             ones: upload(&vec![1.0f32; bs]),
             adam_t: 0,
         }
+    }
+
+    /// KV-cache üretim yolu için salt-okunur erişimciler.
+    pub fn tok_emb_ref(&self) -> &Param {
+        &self.tok_emb
+    }
+    pub fn lnf_g_ref(&self) -> &DevBuf {
+        &self.lnf_g.data
+    }
+    pub fn block_ref(&self, l: usize) -> &GpuBlock {
+        &self.blocks[l]
+    }
+    pub fn rope_cos_ref(&self) -> &DevBuf {
+        &self.rope_cos
+    }
+    pub fn rope_sin_ref(&self) -> &DevBuf {
+        &self.rope_sin
     }
 
     pub fn dims(&self) -> Dims {

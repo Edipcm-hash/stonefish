@@ -490,3 +490,61 @@ pub fn embedding_backward_tok(dtok: &impl DevPtr, dout: &impl DevPtr, ids: &impl
     k.buf(dtok).buf(dout).buf(ids).i32(rows as i32).i32(cols as i32);
     gpu::launch("embedding_backward_tok", cfg_1d(rows * cols), 0, &mut k);
 }
+
+// ============================================================
+// KV-cache üretimi
+// ============================================================
+
+/// Tek satır softmax (maske yok).
+pub fn softmax_vec(out: &impl DevPtr, x: &impl DevPtr, n: usize) {
+    let threads = 128u32;
+    let mut k = Kargs::new();
+    k.buf(out).buf(x).i32(n as i32);
+    gpu::launch("softmax_vec", ((1, 1, 1), (threads, 1, 1)), threads * 4, &mut k);
+}
+
+/// Belirli bir konum için RoPE (tek token).
+pub fn rope_forward_pos(
+    out: &impl DevPtr,
+    x: &impl DevPtr,
+    cos_t: &impl DevPtr,
+    sin_t: &impl DevPtr,
+    n_heads: usize,
+    d_head: usize,
+    pos: usize,
+) {
+    let total = n_heads * (d_head / 2);
+    let mut k = Kargs::new();
+    k.buf(out)
+        .buf(x)
+        .buf(cos_t)
+        .buf(sin_t)
+        .i32(n_heads as i32)
+        .i32(d_head as i32)
+        .i32(pos as i32);
+    gpu::launch("rope_forward_pos", cfg_1d(total), 0, &mut k);
+}
+
+/// k/v vektörünü cache'e yaz (yerleşim: [head][capacity][d_head]).
+#[allow(clippy::too_many_arguments)]
+pub fn kv_store(
+    cache_k: &impl DevPtr,
+    cache_v: &impl DevPtr,
+    k: &impl DevPtr,
+    v: &impl DevPtr,
+    n_heads: usize,
+    d_head: usize,
+    pos: usize,
+    capacity: usize,
+) {
+    let mut a = Kargs::new();
+    a.buf(cache_k)
+        .buf(cache_v)
+        .buf(k)
+        .buf(v)
+        .i32(n_heads as i32)
+        .i32(d_head as i32)
+        .i32(pos as i32)
+        .i32(capacity as i32);
+    gpu::launch("kv_store", cfg_1d(n_heads * d_head), 0, &mut a);
+}

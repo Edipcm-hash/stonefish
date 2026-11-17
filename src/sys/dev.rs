@@ -329,6 +329,25 @@ impl DevBufI32 {
         self.len == 0
     }
 
+    /// Mevcut tampona host verisini yaz (yeni tahsis yok).
+    pub fn upload(&mut self, v: &[i32]) {
+        assert!(v.len() <= self.len, "upload: tampon çok küçük");
+        if v.is_empty() {
+            return;
+        }
+        ctx();
+        unsafe {
+            cuda::check(
+                cuda::cuMemcpyHtoD_v2().expect("HtoD")(
+                    self.ptr,
+                    v.as_ptr() as *const c_void,
+                    v.len() * 4,
+                ),
+                "cuMemcpyHtoD",
+            );
+        }
+    }
+
     pub fn to_host(&self) -> Vec<i32> {
         ctx();
         let mut out = vec![0i32; self.len];
