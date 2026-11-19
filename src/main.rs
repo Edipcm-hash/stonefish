@@ -1299,17 +1299,29 @@ fn en_tokenize(_args: &[String]) {
 
 #[cfg(feature = "cuda")]
 fn en_eval(args: &[String]) {
+    // en-eval [max_batches] [corpus_prefix] [state]
+    // The corpus is a prefix: {prefix}.bpe + {prefix}.valid.bin. A probe written
+    // by n-tokenize is evaluated exactly like the training validation set.
     let max_batches: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(500);
+    let corpus = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "data/en/tiny".to_string());
+    let state = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| "stonefish_en.state".to_string());
     println!("🐟 English model evaluation\n");
-    let (loss, ppl, bpc, tokens) =
-        stonefish_ai::en_train::eval("data/en/tiny", "stonefish_en.state", max_batches);
+    println!("Corpus : {corpus}");
+    println!("State  : {state}\n");
+    let (loss, ppl, bpc, tokens) = stonefish_ai::en_train::eval(&corpus, &state, max_batches);
     println!("\n--- RESULT ---");
     println!("Sampled        : {tokens} tokens");
     println!("val loss       : {loss:.4} nat/token");
     println!("perplexity     : {ppl:.2}");
     println!("BPC            : {bpc:.4} bit/karakter");
     println!(
-        "\nReferans: rastgele tahmin = ln({}) = {:.2}",
+        "\nReference: random guess = ln({}) = {:.2}",
         16384,
         (16384f64).ln()
     );
