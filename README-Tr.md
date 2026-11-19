@@ -367,6 +367,11 @@ Model `<|endoftext|>` hikâye sınırını ve tırnaklı diyalog düzenini kendi
 
 ## 7. Ölçülen sonuçlar
 
+> **Ölçüm koşulları.** Aşağıdaki sayıların hepsi **boş kartta** alındı: RTX 5070
+> (12 GB), sürücü 621.24, fp32, TF32 kapalı. Kartı başka bir CUDA süreciyle
+> paylaşmak ölçümü bozar — bir matmul 0,19 ms yerine 2,99 ms görünür ve GPU,
+> CPU'dan *yavaş* çıkar. Her satırın komutu `docs/REPRODUCING.md`'de.
+
 ### 7.1 MNIST MLP (784→128→10)
 
 ```bash

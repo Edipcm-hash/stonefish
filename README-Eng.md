@@ -367,6 +367,12 @@ The model learned the `<|endoftext|>` story boundary and quoted dialogue formatt
 
 ## 7. Measured results
 
+> **Measurement conditions.** Every number below was taken on an **idle card**:
+> RTX 5070 (12 GB), driver 621.24, fp32, TF32 off. Sharing the card with another
+> CUDA process corrupts the measurement - the same matmul reads 2.99 ms instead of
+> 0.19 ms, and the GPU appears *slower* than the CPU. The command for each row is
+> in `docs/REPRODUCING.md`.
+
 ### 7.1 MNIST MLP (784→128→10)
 
 ```bash
