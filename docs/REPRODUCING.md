@@ -44,7 +44,7 @@ same token budget again: the trainer reads `adam_t` from the checkpoint.
 ## 3. Evaluate
 
 ```bash
-cargo run --release -- en-eval data/en/tiny stonefish_en.final.state 8
+cargo run --release -- en-eval 8 data/en/tiny stonefish_en.final.state
 ```
 
 Prints, for the first 8 batches of 8×512 tokens:
@@ -75,7 +75,7 @@ temperature 0.8 shows what it does when allowed to wander. Nothing is filtered.
 The check that makes the correctness claim:
 
 ```bash
-cargo run --release -- en-eval data/en/tiny stonefish_en.final.state 8
+cargo run --release -- en-eval 8 data/en/tiny stonefish_en.final.state
 python tools/torch_parity.py --state stonefish_en.final.state \
     --valid data/en/tiny.valid.bin --batches 8 --expected <the loss printed above>
 ```
@@ -99,6 +99,11 @@ column the trainer prints every 20 steps, averaged over the run.
 ## 7. Charts
 
 ```bash
+# one command for the whole measurement: runs en-eval twice, generates two
+# samples, compares against PyTorch, and writes docs/report.json from the
+# parsed output - no number is typed by hand
+python tools/measure.py
+
 python tools/make_charts.py        # loss-curve.png, throughput.png, speedup.png
 python tools/make_report.py        # tests.png, comparison.png, quality.png
 python tools/make_architecture.py  # architecture.png

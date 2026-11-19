@@ -1327,7 +1327,7 @@ fn en_eval(args: &[String]) {
     println!("Sampled        : {tokens} tokens");
     println!("val loss       : {loss:.4} nat/token");
     println!("perplexity     : {ppl:.2}");
-    println!("BPC            : {bpc:.4} bit/karakter");
+    println!("BPC            : {bpc:.4} bits/character");
     println!(
         "\nReference: random guess = ln({}) = {:.2}",
         16384,

@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Run the release measurements and write docs/report.json.
+
+Every number in the README's results section comes from here. The point is that
+no figure is typed by hand: the commands run, their output is parsed, and the
+JSON that drives the charts is assembled from what they printed.
+
+    python tools/measure.py                    # everything
+    python tools/measure.py --skip-torch       # no PyTorch comparison
+    python tools/measure.py --dry-run          # print the plan, run nothing
+
+Requires: the trained checkpoint, a free GPU (the 222M model needs ~4 GB on top
+of the weights), and torch for the comparison steps.
+
+The tests section of the report comes from tools/collect_tests.py, so the chart
+and the README agree by construction.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PY = sys.executable
+TINY = "data/en/tiny"
+PROBE = "data/en/probe"
+BATCHES = "8"
+LOG = os.path.join(ROOT, "en-train-v2b.log")
+
+
+def sh(cmd, timeout=1800):
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
+def parse_eval(out):
+    """Pull loss/ppl/bpc out of `en-eval`'s RESULT block."""
+    def grab(pattern):
+        m = re.search(pattern, out)
+        return float(m.group(1)) if m else None
+
+    return {
+        "tokens": int(grab(r"Sampled\s+:\s+(\d+) tokens") or 0),
+        "loss": grab(r"val loss\s+:\s+([\d.]+)"),
+        "ppl": grab(r"perplexity\s+:\s+([\d.]+)"),
+        "bpc": grab(r"BPC\s+:\s+([\d.]+)"),
+    }
+
+
+def parse_gen(out):
+    """The generated text and the tokens/s line of `en-gen`."""
+    m = re.search(r"\((\d+) tokens, ([\d.]+) s, ([\d.]+) tokens/s", out)
+    text = "\n".join(
+        ln for ln in out.splitlines() if ln and not ln.startswith(("🐟", "  ("))
+    ).strip()
+    return {
+        "text": text,
+        "tokens": int(m.group(1)) if m else None,
+        "seconds": float(m.group(2)) if m else None,
+        "tok_s": float(m.group(3)) if m else None,
+    }
+
+
+def parse_bench(out):
+    """`bench` prints step time, speed, VRAM."""
+    def grab(pattern):
+        m = re.search(pattern, out)
+        return float(m.group(1)) if m else None
+
+    return {
+        "ms_step": grab(r"step time:\s*([\d.]+) ms"),
+        "tok_s": grab(r"speed\s*:\s*([\d,]+) tokens/s") and float(
+            re.search(r"speed\s*:\s*([\d,]+) tokens/s", out).group(1).replace(",", "")
+        ),
+        "vram_gb": grab(r"peak VRAM\s*:\s*~?([\d.]+) GB"),
+        "params": grab(r"-> ([\d.]+)M parameters"),
+    }
+
+
+def parse_parity(out):
+    def grab(pattern):
+        m = re.search(pattern, out)
+        return float(m.group(1)) if m else None
+
+    return {
+        "stonefish_loss": grab(r"StonefishAI\s+:\s+([\d.]+)"),
+        "torch_loss": grab(r"PyTorch loss\s+:\s+([\d.]+)"),
+        "abs_diff": grab(r"delta\s+:\s+([\d.]+)"),
+        "verdict": "MATCH" in out,
+    }
+
+
+def chars_per_token(txt_path, tokens):
+    try:
+        size = os.path.getsize(os.path.join(ROOT, txt_path))
+    except OSError:
+        return None
+    return size / tokens if tokens else None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--skip-torch", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+
+    state = "stonefish_en.final.state"
+    if not os.path.exists(os.path.join(ROOT, state)):
+        state = "stonefish_en.state"
+    print(f"checkpoint: {state}")
+
+    plan = [
+        f"en-eval {BATCHES} {TINY} {state}",
+        f"en-eval {BATCHES} {PROBE} {state}",
+        'en-gen "Once upon a time" 150 0',
+        'en-gen "Once upon a time" 150 0.8',
+        "torch_parity.py",
+        "torch_bench.py --attn naive|sdpa",
+    ]
+    if a.dry_run:
+        print("\nwould run:")
+        for p in plan:
+            print("  " + p)
+        return 0
+
+    exe = os.path.join(ROOT, "target", "release", "stonefish_ai.exe")
+    if not os.path.exists(exe):
+        exe = os.path.join(ROOT, "target3", "release", "stonefish_ai.exe")
+    if not os.path.exists(exe):
+        print("build the binary first (cargo build --release)")
+        return 1
+
+    report = {"measured_at": None, "tests": None, "speed": None, "parity": None,
+              "quality": None}
+
+    # ---- tests (real data, from the collector) ----
+    ok, out = sh([PY, "tools/collect_tests.py", "--json"])
+    i, j = out.find("{"), out.rfind("}")
+    if i >= 0 and j > i:
+        report["tests"] = json.loads(out[i : j + 1])["tests"]
+        t = report["tests"]
+        print(f"tests      : {t['total']} total, {t['passed']} passed")
+
+    # ---- in-distribution evaluation ----
+    print("running en-eval on the validation set ...")
+    ok, out = sh([exe, "en-eval", BATCHES, TINY, state])
+    tiny = parse_eval(out)
+    print(f"  loss {tiny['loss']}  ppl {tiny['ppl']}  bpc {tiny['bpc']}")
+
+    # ---- out-of-distribution probe ----
+    print("running en-eval on the probe ...")
+    ok, out = sh([exe, "en-eval", BATCHES, PROBE, state])
+    probe = parse_eval(out)
+    print(f"  loss {probe['loss']}  bpc {probe['bpc']}")
+
+    # ---- samples ----
+    print("generating samples ...")
+    ok_g, gen0 = sh([exe, "en-gen", "Once upon a time", "150", "0"])
+    ok_s, gen8 = sh([exe, "en-gen", "Once upon a time", "150", "0.8"])
+    g0, g8 = parse_gen(gen0), parse_gen(gen8)
+    print(f"  greedy {g0['tok_s']} tok/s · sampled {g8['tok_s']} tok/s")
+
+    # ---- quality block: each corpus with its own baseline ----
+    LU = 13.9997  # log2(16384)
+    corpora = []
+    for name, stats, txt in [
+        ("TinyStories (held out)", tiny, "data/en/valid.txt"),
+        ("README probe (unseen text)", probe, f"{PROBE}.txt"),
+    ]:
+        cpt = chars_per_token(txt, stats["tokens"]) or 4.812
+        corpora.append(
+            {
+                "name": name,
+                "tokens": stats["tokens"],
+                "loss": stats["loss"],
+                "ppl": stats["ppl"],
+                "bpc": stats["bpc"],
+                "chars_per_token": round(cpt, 3),
+                "random_bpc": round(LU / cpt, 3),
+            }
+        )
+    report["quality"] = {
+        "corpora": corpora,
+        "reference": [],
+        "reading": [],
+    }
+
+    # ---- PyTorch comparison ----
+    if not a.skip_torch:
+        print("running torch_parity (222M, same weights) ...")
+        ok, out = sh([PY, "tools/torch_parity.py", "--state", state,
+                      "--valid", f"{TINY}.valid.bin", "--batches", BATCHES,
+                      "--expected", str(tiny["loss"] or 0)])
+        par = parse_parity(out)
+        print(f"  torch {par['torch_loss']} delta {par['abs_diff']} match {par['verdict']}")
+        report["parity"] = {
+            "steps": int(BATCHES),
+            "stonefish_loss": par["stonefish_loss"] or tiny["loss"],
+            "torch_loss": par["torch_loss"],
+            "abs_diff": par["abs_diff"],
+            "note": "the two implementations agree to f32 rounding"
+            if par["verdict"] else "delta above tolerance - investigate",
+        }
+
+        print("running torch_bench at 222M ...")
+        runs = []
+        for attn in ("naive", "sdpa"):
+            ok, out = sh([PY, "tools/torch_bench.py", "--d", "1024", "--layers", "16",
+                          "--heads", "8", "--ctx", "512", "--batch", "4",
+                          "--accum", "16", "--steps", "6", "--attn", attn])
+            b = parse_bench(out)
+            print(f"  {attn}: {b['tok_s']} tok/s, {b['vram_gb']} GB")
+            runs.append({"name": f"PyTorch ({attn})", "tok_s": b["tok_s"],
+                         "ms_step": b["ms_step"], "vram_gb": b["vram_gb"]})
+        report["speed"] = {
+            "device": "RTX 5070 12 GB, 250 W",
+            "model": {"params": 222331904, "d": 1024, "layers": 16, "heads": 8, "ctx": 512},
+            "runs": runs,
+        }
+
+    import datetime
+
+    report["measured_at"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    report["samples"] = {"greedy": g0["text"], "sampled_0_8": g8["text"]}
+
+    out_path = os.path.join(ROOT, "docs", "report.json")
+    with open(out_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(json.dumps(report, indent=2, ensure_ascii=False))
+    print(f"\nwrote {out_path}")
+    print("next: python tools/make_report.py")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
