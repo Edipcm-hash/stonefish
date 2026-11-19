@@ -186,13 +186,22 @@ def chart_quality(data, out):
     # log2(vocab)/2, not log2(vocab)/4.8. Comparing a 2-char/token BPC against a
     # 4.8-char/token baseline is the classic way to make a model look worse than
     # random when it is not.
+    # Rows are built so that a reference model sits directly under the corpus it
+    # was measured on: the first corpus is the held-out validation set and the
+    # reference was evaluated on the same data, so putting it after the
+    # out-of-distribution probe would read as a separate category.
     rows = []
-    for c in corpora:
+    references = list(q.get("reference", []))
+    for idx, c in enumerate(corpora):
         cpt = c.get("chars_per_token", 4.812)
         base = c.get("random_bpc", 13.9997 / cpt)
         rows.append((c["name"], c["bpc"], BLUE, f"loss {c['loss']:.4f} · ppl {c['ppl']:.2f} · {cpt:.2f} chars/token"))
         rows.append(("  random baseline", base, MUTED, f"log2(16384) / {cpt:.2f}"))
-    for r in q.get("reference", []):
+        if idx == 0:
+            for r in references:
+                rows.append((r["name"], r["bpc"], PURPLE, r.get("note", "")))
+            references = []
+    for r in references:
         rows.append((r["name"], r["bpc"], PURPLE, r.get("note", "")))
 
     top = 150
