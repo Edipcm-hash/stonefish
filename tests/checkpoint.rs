@@ -42,7 +42,7 @@ fn roundtrip_preserves_everything() {
 
     let (loaded, tok2) = checkpoint::load_gpt(p).expect("load");
 
-    assert_eq!(loaded.config, cfg, "config geri gelmedi");
+    assert_eq!(loaded.config, cfg, "config did not round-trip");
     assert_eq!(tok2.vocab_size, tok.vocab_size, "vocab size");
     assert!(tok2.same_vocab(&tok), "the vocab mapping broke");
 

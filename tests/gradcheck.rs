@@ -384,7 +384,7 @@ fn gpu_matmul_matches_cpu() {
         max_diff < 1e-4,
         "GPU matmul does not match the CPU: max diff {max_diff}"
     );
-    println!("  ✅ gpu matmul == cpu matmul (max fark {max_diff:.2e})");
+    println!("  ✅ gpu matmul == cpu matmul (max diff {max_diff:.2e})");
 }
 
 // ------------------------------------------------------------

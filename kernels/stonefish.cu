@@ -58,7 +58,7 @@ extern "C" __global__ void gelu_forward(float* out, const float* x, int n) {
     }
 }
 
-// GELU geri: dx = dy * d/dx[0.5x(1+tanh(inner))]
+// GELU backward: dx = dy * d/dx[0.5x(1+tanh(inner))]
 extern "C" __global__ void gelu_backward(float* dx, const float* dy,
                                          const float* x, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -249,7 +249,7 @@ extern "C" __global__ void masked_softmax_forward(float* w, const float* scores,
     }
 }
 
-// softmax geri (nedensel): ds = w * (dw - Σ_j' w·dw)
+// softmax backward (causal): ds = w * (dw - Σ_j' w·dw)
 extern "C" __global__ void masked_softmax_backward(
     float* ds, const float* w, const float* dw, int seq, int n_heads, int batch,
     float scale) {

@@ -102,7 +102,7 @@ fn gpu_trainer_matches_cpu_gradients() {
     let loss_gpu = gpu.forward_backward(&c.ids, &c.targets);
 
     let d_loss = (loss_gpu - loss_cpu).abs();
-    println!("  loss: cpu={loss_cpu:.6} gpu={loss_gpu:.6} fark={d_loss:.2e}");
+    println!("  loss: cpu={loss_cpu:.6} gpu={loss_gpu:.6} diff={d_loss:.2e}");
     assert!(d_loss < LOSS_TOL, "loss diff {d_loss}");
 
     let mut worst = 0.0f32;
@@ -150,7 +150,7 @@ fn gpu_trainer_matches_cpu_loss_curve() {
         gpu.step(lr, 0.0);
 
         let d = (loss_gpu - loss_cpu).abs();
-        println!("  step {step}: cpu={loss_cpu:.6} gpu={loss_gpu:.6} fark={d:.2e}");
+        println!("  step {step}: cpu={loss_cpu:.6} gpu={loss_gpu:.6} diff={d:.2e}");
         assert!(
             d < LOSS_TOL * (1.0 + step as f32),
             "step {step} loss diff {d} (may accumulate)"

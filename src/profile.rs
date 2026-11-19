@@ -6,8 +6,8 @@
 // Measured buckets:
 //   matmul  : total time inside gpu::matmul_gpu (including transfer)
 //   transfer: the CPU->GPU + GPU->CPU copies inside it
-//   attn_fwd / attn_bwd : Op::CausalAttention ileri/geri
-// Geri kalan = elementwise (LN, GELU, softmax, CE) + optimizer + paketleme.
+//   attn_fwd / attn_bwd : Op::CausalAttention forward/backward
+// The rest = elementwise (LN, GELU, softmax, CE) + optimizer + packing.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

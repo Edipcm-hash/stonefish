@@ -71,13 +71,13 @@ fn gelu_kernels_match_cpu() {
     y.sum().backward();
     let dx_cpu = x.grad.borrow().data.clone();
 
-    // GPU ileri
+    // GPU forward
     let x_dev = up(&x_host);
     let y_dev = zeros(n);
     k::gelu_forward(&y_dev, &x_dev, n);
     let d_fwd = max_diff(&down(&y_dev), &y_cpu);
 
-    // GPU geri
+    // GPU backward
     let dy_dev = up(&vec![1.0f32; n]);
     let dx_dev = zeros(n);
     k::gelu_backward(&dx_dev, &dy_dev, &x_dev, n);
@@ -85,7 +85,7 @@ fn gelu_kernels_match_cpu() {
 
     assert!(d_fwd < TOL, "gelu forward diff {d_fwd}");
     assert!(d_bwd < TOL, "gelu backward diff {d_bwd}");
-    println!("  ✅ gelu: ileri {d_fwd:.2e}, geri {d_bwd:.2e}");
+    println!("  ✅ gelu: fwd {d_fwd:.2e}, bwd {d_bwd:.2e}");
 }
 
 // ------------------------------------------------------------
@@ -186,7 +186,7 @@ fn masked_softmax_kernels_match_cpu() {
     let d_fwd = max_diff(&down(&w_dev), &w_cpu);
     assert!(d_fwd < TOL, "masked softmax forward diff {d_fwd}");
 
-    // Geri: ds = w*(dw - Σ w·dw)*scale
+    // backward: ds = w*(dw - Σ w·dw)*scale
     let dw_host = rand_vec(bh * seq * seq, 2.0, &mut s);
     let mut ds_cpu = vec![0.0f32; bh * seq * seq];
     for b in 0..bh {
@@ -340,7 +340,7 @@ fn adam_kernel_matches_cpu() {
     }
     let d = max_diff(&down(&p_dev), &p_cpu);
     assert!(d < 1e-6, "adam diff {d}");
-    println!("  ✅ adam: max fark {d:.2e}");
+    println!("  ✅ adam: max diff {d:.2e}");
 }
 
 // ------------------------------------------------------------
@@ -596,7 +596,7 @@ fn attention_backward_composition_matches_cpu() {
     let mut dk = zeros(bs * d);
     let mut dv = zeros(bs * d);
 
-    // ileri: skorlar + softmax
+    // forward: scores + softmax
     for h in 0..nh {
         let off = h * dh;
         let q_view = q_dev.slice(off..);
@@ -648,7 +648,7 @@ fn attention_backward_composition_matches_cpu() {
         );
     }
 
-    // geri: dV
+    // backward: dV
     for h in 0..nh {
         let off = h * dh;
         let w_view = w.slice(h * b * seq * seq..);

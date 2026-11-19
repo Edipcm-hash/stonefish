@@ -904,7 +904,7 @@ fn compare_matmul(n: usize) -> (std::time::Duration, std::time::Duration, f32) {
 fn test_gpu_matmul() {
     println!("🐟 GPU matmul test\n");
     let (cpu, gpu_t, diff) = compare_matmul(64);
-    println!("CPU: {:?}, GPU: {:?}, max fark: {:.3e}", cpu, gpu_t, diff);
+    println!("CPU: {:?}, GPU: {:?}, max diff: {:.3e}", cpu, gpu_t, diff);
     if diff < 1e-4 {
         println!("✅ GPU matmul is correct!");
     } else {
@@ -920,7 +920,7 @@ fn test_gpu_bench() {
         "CPU: {:?}\nGPU (transfer+matmul+transfer): {:?}",
         cpu, gpu_t
     );
-    println!("Max fark: {:.3e}", diff);
+    println!("Max diff: {:.3e}", diff);
     println!("Speed-up: {:.2}x", cpu.as_secs_f64() / gpu_t.as_secs_f64());
 }
 
@@ -931,7 +931,7 @@ fn test_gpu_bench_big() {
         let (cpu, gpu_t, diff) = compare_matmul(n);
         println!("CPU: {:?}", cpu);
         println!("GPU (transfer+matmul+transfer): {:?}", gpu_t);
-        println!("Max fark: {:.3e}", diff);
+        println!("Max diff: {:.3e}", diff);
         println!(
             "Speed-up: {:.2}x\n",
             cpu.as_secs_f64() / gpu_t.as_secs_f64()

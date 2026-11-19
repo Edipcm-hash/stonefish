@@ -766,7 +766,7 @@ impl GpuGpt {
             self.zero_grads();
         }
 
-        // ---- ileri ----
+        // ---- forward ----
         self.head_forward(&ids_dev, &dm);
         k::zero_fill(&self.loss, 1);
         k::ce_forward(
@@ -779,7 +779,7 @@ impl GpuGpt {
         );
         let loss = self.loss.to_host()[0];
 
-        // ---- geri ----
+        // ---- backward ----
         k::ce_backward(
             &self.dlogits,
             &self.probs,
@@ -1124,7 +1124,7 @@ impl GpuGpt {
             d,
             GemmMode::Tn,
         );
-        // SwiGLU geri: dgate → tmp_fb, dup → tmp_fc
+        // SwiGLU backward: dgate -> tmp_fb, dup -> tmp_fc
         k::silu_mul_backward(tmp_fb, tmp_fc, tmp_fa, &a.gate, &a.up, bs * f);
 
         // dff_gate = x2ᵀ·dgate (D,F) ; dff_up = x2ᵀ·dup
@@ -1184,7 +1184,7 @@ impl GpuGpt {
             GemmMode::Nt,
         );
 
-        // ---- RMSNorm 2 geri ----
+        // ---- RMSNorm 2 backward ----
         {
             let g = alloc(d);
             k::rmsnorm_param_grad(&g, tmp_b, &a.xhat2, bs, d);
@@ -1404,7 +1404,7 @@ impl GpuGpt {
             GemmMode::Tn,
         );
 
-        // ---- RMSNorm 1 geri ----
+        // ---- RMSNorm 1 backward ----
         {
             let g = alloc(d);
             k::rmsnorm_param_grad(&g, tmp_b, &a.xhat1, bs, d);
