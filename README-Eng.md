@@ -203,7 +203,7 @@ compile load).
 | [src/demo.rs](src/demo.rs) | 203 | One-command demo, CPU or GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Tokenize unseen text so `en-eval` can score it |
 | [src/profile.rs](src/profile.rs) | 133 | Lightweight profiling counters |
-| [src/main.rs](src/main.rs) | 1612 | CLI (25 modes), the training loops, the smoke tests |
+| [src/main.rs](src/main.rs) | 1612 | CLI (27 modes), the training loops, the smoke tests |
 | [src/sys/mod.rs](src/sys/mod.rs) | 202 | Dynamic loader (LoadLibraryW / dlopen) |
 | [src/sys/cuda.rs](src/sys/cuda.rs) | 202 | CUDA driver API |
 | [src/sys/cublas.rs](src/sys/cublas.rs) | 85 | cuBLAS bindings |

@@ -199,7 +199,7 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | [src/demo.rs](src/demo.rs) | 203 | Tek komut demo, CPU veya GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Görülmemiş metni `en-eval` için tokenize et |
 | [src/profile.rs](src/profile.rs) | 133 | Hafif profil sayaçları |
-| [src/main.rs](src/main.rs) | 1612 | CLI (25 mod), eğitim döngüleri, duman testleri |
+| [src/main.rs](src/main.rs) | 1612 | CLI (27 mod), eğitim döngüleri, duman testleri |
 | [src/sys/mod.rs](src/sys/mod.rs) | 202 | Dinamik kütüphane yükleyici (LoadLibraryW / dlopen) |
 | [src/sys/cuda.rs](src/sys/cuda.rs) | 202 | CUDA sürücü API'si |
 | [src/sys/cublas.rs](src/sys/cublas.rs) | 85 | cuBLAS bağları |

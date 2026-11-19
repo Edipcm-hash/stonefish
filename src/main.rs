@@ -88,6 +88,14 @@ const MODES: &[(&str, &str)] = &[
         "en-gen",
         "generate English text [prompt] [tokens] [temperature]",
     ),
+    (
+        "bench",
+        "time training steps of a given config [--d --layers --heads --ctx --batch --accum --steps]",
+    ),
+    (
+        "help",
+        "print this message",
+    ),
 ];
 
 fn arg_usize(args: &[String], i: usize, default: usize) -> usize {
