@@ -750,7 +750,7 @@ StonefishAI/
 │   └── ...               # tensor, transformer, trainer, checkpoint, corpus
 ├── tests/                # 6 dosya, 75 test (2.322 satır)
 ├── examples/             # bpe_bench.rs, grad_probe.rs
-├── tools/                # 14 Python aracı: ölçüm, grafik, koruma, yayın kapısı
+├── tools/                # 15 Python aracı: ölçüm, grafik, koruma, yayın kapısı
 ├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, HF kartı, 4 grafik
 ├── .github/workflows/    # CI: 5 iş (CPU, CUDA, sıfır bağımlılık, doküman, dil)
 ├── data/                 # (git dışı) MNIST + korpuslar
