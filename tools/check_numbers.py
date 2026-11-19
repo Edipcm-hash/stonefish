@@ -118,6 +118,41 @@ def main() -> int:
     except OSError:
         skip("token budget", "data/en/*.bin missing")
 
+    # --- the changelog repeats some of the same numbers, so audit it too ---
+    changelog = io.open("CHANGELOG.md", encoding="utf-8", errors="replace").read()
+    m = re.search(r"\| Rust \| ([\d,]+) lines in src/ \(([\d,]+) with tests", changelog)
+    if m:
+        ok("CHANGELOG src lines", int(m.group(1).replace(",", "")), lines)
+        with_ex = lines + sum(
+            sum(1 for _ in io.open(f, encoding="utf-8", errors="replace"))
+            for f in glob.glob("tests/*.rs") + glob.glob("examples/*.rs")
+        )
+        ok("CHANGELOG total lines", int(m.group(2).replace(",", "")), with_ex)
+    m = re.search(r"(\d+) numerical gradient checks", changelog)
+    if m:
+        grad = io.open("tests/gradcheck.rs", encoding="utf-8", errors="replace").read()
+        ok("CHANGELOG gradient checks", int(m.group(1)), len(re.findall(r"#\[test\]", grad)))
+    if os.path.exists("data/en/tiny.bpe"):
+        m = re.search(r"\(([\d,]+) merges", changelog)
+        if m:
+            ok("CHANGELOG BPE merges", int(m.group(1).replace(",", "")), merges)
+
+    # --- CI job count, from the workflow itself ---
+    try:
+        import yaml
+
+        wf = yaml.safe_load(io.open(".github/workflows/ci.yml", encoding="utf-8"))
+        jobs = len(wf["jobs"])
+        words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+        m = re.search(r"CI\*\*: (\w+) jobs", changelog)
+        if m:
+            claimed_jobs = words.get(m.group(1).lower())
+            ok("CI jobs (CHANGELOG)", claimed_jobs, jobs)
+        else:
+            skip("CI jobs", "no claim found in CHANGELOG")
+    except Exception as exc:  # noqa: BLE001 - yaml may be absent
+        skip("CI jobs", f"{type(exc).__name__}")
+
     print()
     if failures:
         print(f"{failures} claim(s) disagree with their artifact")

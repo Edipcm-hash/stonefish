@@ -19,13 +19,13 @@ a 222M-parameter model trained on 2.05B tokens on a single consumer GPU.
 | Dependencies | **0** (`cargo tree` is one line) |
 | Tests | **75** |
 | Training speed | ~10,700 tokens/s on one RTX 5070 at 250 W |
-| Rust | 9,890 lines in src/ (11,362 with tests and examples) |
+| Rust | 10,328 lines in src/ (12,800 with tests and examples) |
 | CUDA | 711 lines |
 
 ### Added
 
 - **Autograd**: reverse-mode over a 19-variant `Op` enum, topological
-  `backward()`, 29 numerical gradient checks covering every differentiable op.
+  `backward()`, 32 numerical gradient checks covering every differentiable op.
 - **Batching without a 3D tensor**: `(B,S,D)` is packed into rows of `(B*S,D)`,
   so every linear layer is one GEMM and the attention kernel handles the
   batch/head strides itself.
@@ -38,7 +38,8 @@ a 222M-parameter model trained on 2.05B tokens on a single consumer GPU.
 - **GPU-native trainer**: parameters, gradients and optimizer state stay on the
   device for the whole run. One step = forward + backward + Adam + clipping
   without a single host round trip.
-- **Byte-level BPE tokenizer** (16,384 merges) with a `u16` disk cache, a
+- **Byte-level BPE tokenizer** (16,128 merges over the 256 byte values, so a
+  16,384-token vocabulary) with a `u16` disk cache, a
   windowed reader so a 4 GB corpus never has to fit in RAM, and a word cache
   during encoding (148 MB/s).
 - **KV-cache generation**: O(n) instead of O(n²), verified against the full
@@ -51,8 +52,8 @@ a 222M-parameter model trained on 2.05B tokens on a single consumer GPU.
   architecture in PyTorch, speed), `tools/torch_parity.py` (same weights, loss
   parity), `tools/make_charts.py` and `tools/make_report.py` (the README charts,
   drawn from the real logs).
-- **CI**: four jobs — CPU-only build and tests, CUDA-flagged build, zero-dependency
-  verification, and a language guard.
+- **CI**: five jobs — CPU-only build and tests, CUDA-flagged build,
+  zero-dependency verification, documentation checks, and a language guard.
 
 ### Changed from v0.6
 
