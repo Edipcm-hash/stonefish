@@ -28,7 +28,7 @@ pub fn run() -> bool {
     };
     let (name, maj, min, total_mem) = info;
     println!("Cihaz      : {name} (sm_{maj}{min})");
-    println!("Bellek     : {:.1} GB", total_mem as f64 / (1 << 30) as f64);
+    println!("Memory     : {:.1} GB", total_mem as f64 / (1 << 30) as f64);
 
     unsafe {
         // ---- 2) Context ----
@@ -43,7 +43,7 @@ pub fn run() -> bool {
         cuda::check(cu_ctx_create(&mut ctx, 0, 0), "cuCtxCreate");
         println!("Context    : created");
 
-        // ---- 3) Bellek + kopyalama ----
+        // ---- 3) Memory + copy ----
         let n = 1024usize;
         let a_host: Vec<f32> = (0..n).map(|i| i as f32 * 0.5).collect();
         let b_host: Vec<f32> = (0..n).map(|i| 1.0 - i as f32 * 0.25).collect();

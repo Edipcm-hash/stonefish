@@ -41,9 +41,9 @@ const MODES: &[(&str, &str)] = &[
         "gpt-gen",
         "generate text with the saved GPT  [prompt] [tokens] [temperature]",
     ),
-    ("test-ops", "op duman testi"),
-    ("test-embed", "embedding duman testi"),
-    ("test-attn", "attention duman testi"),
+    ("test-ops", "op smoke test"),
+    ("test-embed", "embedding smoke test"),
+    ("test-attn", "attention smoke test"),
     ("test-cuda", "can a CUDA context be created"),
     ("test-gpu-matmul", "GPU matmul == CPU matmul"),
     ("test-gpu-bench", "256² matmul: CPU vs GPU"),
@@ -343,7 +343,7 @@ fn gpt_train(args: &[String]) {
             epoch_secs,
             grad_norm_sum / n_steps as f64,
             100.0 * clipped as f64 / n_steps as f64,
-            if improved { "  ✅ yeni en iyi" } else { "" }
+            if improved { "  ✅ new best" } else { "" }
         );
 
         if improved {
@@ -684,7 +684,7 @@ fn train() {
     }
     println!("\nModel kaydediliyor → {}", MODEL_PATH);
     save_model(MODEL_PATH, &[&l1, &l2]).expect("save failed");
-    println!("✅ Kaydedildi.");
+    println!("✅ Saved.");
     let acc = evaluate(&x_test, &y_test_raw, &l1, &l2);
     println!("\n🐟 Final test acc = %{:.2}", acc);
 }
@@ -785,7 +785,7 @@ fn test_ops() {
 }
 
 fn test_embed() {
-    println!("🐟 Embedding testi\n");
+    println!("🐟 Embedding test\n");
     let mut seed = 42u64;
     let (vocab, seq_len, d_model) = (10, 4, 8);
     let emb = transformer::Embedding::new(vocab, d_model, &mut seed);
@@ -813,7 +813,7 @@ fn test_embed() {
 }
 
 fn test_attn() {
-    println!("🐟 Attention testi\n");
+    println!("🐟 Attention test\n");
     let mut seed = 42u64;
     let (d_model, seq_len, n_heads) = (8, 4, 2);
     let attn = transformer::MultiHeadSelfAttention::new(d_model, n_heads, &mut seed);
@@ -855,7 +855,7 @@ fn test_attn() {
 // on it is a genuine early exit, so the lint is a false positive here.
 #[allow(clippy::needless_return)]
 fn test_cuda() {
-    println!("🐟 CUDA testi\n");
+    println!("🐟 CUDA test\n");
     if !gpu::HAS_CUDA {
         println!("❌ CUDA is off in this build (--no-default-features).");
         return;
@@ -865,7 +865,7 @@ fn test_cuda() {
         let (name, total) = stonefish_ai::sys::dev::device_info();
         let (maj, min) = stonefish_ai::sys::dev::compute_capability();
         println!("GPU: {} (sm_{}{})", name, maj, min);
-        println!("Bellek: {:.1} GB", total as f64 / (1u64 << 30) as f64);
+        println!("Memory: {:.1} GB", total as f64 / (1u64 << 30) as f64);
         println!("✅ CUDA works! (our own FFI, no external crates)");
     }
 }
@@ -892,7 +892,7 @@ fn compare_matmul(n: usize) -> (std::time::Duration, std::time::Duration, f32) {
 }
 
 fn test_gpu_matmul() {
-    println!("🐟 GPU matmul testi\n");
+    println!("🐟 GPU matmul test\n");
     let (cpu, gpu_t, diff) = compare_matmul(64);
     println!("CPU: {:?}, GPU: {:?}, max fark: {:.3e}", cpu, gpu_t, diff);
     if diff < 1e-4 {
@@ -1106,7 +1106,7 @@ fn test_gpt_gpu(args: &[String]) {
         (step_t - fwd) * 1e3,
         (step_t - fwd) / step_t * 100.0
     );
-    println!("Ortalama loss: {:.4}", total / steps as f32);
+    println!("Average loss: {:.4}", total / steps as f32);
     println!("✅ GPT speed test complete!");
 }
 
@@ -1203,7 +1203,7 @@ fn bench(args: &[String]) {
         stonefish_ai::sys::dev::device_info().0
     );
     println!(
-        "model: d={d} layers={layers} heads={heads} ctx={ctx} vocab={vocab} -> {:.1}M parametre",
+        "model: d={d} layers={layers} heads={heads} ctx={ctx} vocab={vocab} -> {:.1}M parameters",
         n_params as f64 / 1e6
     );
     println!("batch: {batch} x accum {accum} = {tps} tokens/step");
@@ -1390,7 +1390,7 @@ fn test_gpu_native(args: &[String]) {
         per_step * 1e3,
         tokens as f64 / per_step
     );
-    println!("Ortalama loss: {:.4}", total_loss / steps as f32);
+    println!("Average loss: {:.4}", total_loss / steps as f32);
     println!("\nComparison (CPU+cuBLAS path): ~120 ms/step, ~8,500 tok/s");
     println!("Speed-up: {:.1}x", 0.120 / per_step);
 }

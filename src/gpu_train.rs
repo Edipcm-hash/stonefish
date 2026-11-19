@@ -42,7 +42,7 @@ fn dtod(dst: &mut DevBuf, src: &impl DevPtr) {
 }
 
 // ============================================================
-// Parametre
+// Parameters
 // ============================================================
 
 pub struct Param {
@@ -57,7 +57,7 @@ pub struct Param {
 
 impl Param {
     fn from_host(rows: usize, cols: usize, name: &'static str, host: &[f32]) -> Self {
-        assert_eq!(host.len(), rows * cols, "parametre boyutu: {name}");
+        assert_eq!(host.len(), rows * cols, "parameter size: {name}");
         let n = rows * cols;
         Self {
             data: upload(host),

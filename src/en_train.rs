@@ -267,7 +267,7 @@ pub fn train(a: &EnTrainArgs) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.1);
     let n_params: usize = model.params_mut().iter().map(|p| p.n()).sum();
-    println!("Parametre : {n_params} ({:.0} M)", n_params as f64 / 1e6);
+    println!("Parameters: {n_params} ({:.0} M)", n_params as f64 / 1e6);
 
     // resume
     let ckpt = format!("{}.state", a.out_prefix);

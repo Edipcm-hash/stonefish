@@ -169,7 +169,10 @@ mod tests {
         assert!((g.get(0, 0) - 0.6).abs() < 1e-6, "g0={}", g.get(0, 0));
         assert!((g.get(0, 1) - 0.8).abs() < 1e-6, "g1={}", g.get(0, 1));
         let new_norm = (0.6f32 * 0.6 + 0.8 * 0.8).sqrt();
-        assert!((new_norm - 1.0).abs() < 1e-5, "yeni norm {new_norm}");
+        assert!(
+            (new_norm - 1.0).abs() < 1e-5,
+            "norm after renormalisation {new_norm}"
+        );
     }
 
     #[test]

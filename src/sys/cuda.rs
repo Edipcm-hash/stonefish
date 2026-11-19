@@ -70,7 +70,7 @@ cuda_fn!(
     unsafe extern "system" fn(CUcontext) -> CUresult
 );
 
-// ---- Bellek ----
+// ---- Memory ----
 cuda_fn!(
     cuMemAlloc_v2,
     unsafe extern "system" fn(*mut CUdeviceptr, usize) -> CUresult

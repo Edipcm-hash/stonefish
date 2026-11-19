@@ -11,7 +11,7 @@ fn main() {
     let bytes = std::fs::read(&path).expect("could not read file");
     let text = String::from_utf8_lossy(&bytes).into_owned();
     println!(
-        "dosya: {path} ({:.1} MB)",
+        "file: {path} ({:.1} MB)",
         bytes.len() as f64 / (1 << 20) as f64
     );
 

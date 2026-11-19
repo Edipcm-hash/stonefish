@@ -148,7 +148,7 @@ def main():
     )
     print(
         f"model: d={a.d} layers={a.layers} heads={a.heads} ctx={a.ctx} vocab={a.vocab}"
-        f" -> {n_params/1e6:.1f}M parametre"
+        f" -> {n_params/1e6:.1f}M parameters"
     )
     print(f"batch: {a.batch} x accum {a.accum} = {tokens_per_step} tokens/step")
     print(f"tf32: {torch.backends.cuda.matmul.allow_tf32}")

@@ -51,7 +51,7 @@ impl Bpe {
             return;
         }
         loop {
-            let mut best: Option<(u32, usize)> = None; // (yeni id, konum)
+            let mut best: Option<(u32, usize)> = None; // (new id, position)
             for i in 0..symbols.len() - 1 {
                 if let Some(&id) = self.lookup.get(&(symbols[i], symbols[i + 1])) {
                     match best {

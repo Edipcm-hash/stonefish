@@ -17,7 +17,7 @@ use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 pub struct TokenDataset {
     file: File,
     n_tokens: u64,
-    /// Bellek penceresi (token cinsinden)
+    /// Read window, in tokens
     buf: Vec<u16>,
     buf_start: u64,
 }

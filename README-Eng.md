@@ -658,7 +658,7 @@ Despite a vocabulary more than twice as large, the loss nearly caught up with Sh
 ```
 Prompt: "Aksham" (evening)
 Aksham dikleri, camib irerde / Korkmalar cemlatlayacaksin, yashim"nemeder, aldir,
-Gulumse con susuzlugu / Sonra ve daha boyle intirili birakmaketli chikraliyor shehri...
+Gulumse con susuzlugu / Sonra ve daha boyle intirili birakmaketli chikraliyor shehri... <!-- tr:sample -->
 ```
 
 Meaningless, but **structurally Turkish**: suffixes, stems and punctuation are right.
