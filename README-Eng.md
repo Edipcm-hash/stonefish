@@ -577,8 +577,7 @@ These ran without crashing and produced **wrong numbers**. None of them raised a
 
 | # | Finding | Effect |
 |---|---|---|
-| 23 | IObit Uninstaller had **three kernel drivers** filtering file/process/registry calls system-wide | CPU 89 % → **17 %**; drivers stopped and removed |
-| 24 | The machine has **no antivirus** (Ghost Spectre image) | Known, accepted risk - documented in the README |
+| 23 | The machine has **no antivirus** (Ghost Spectre image) | Known, accepted risk - documented in the README |
 
 ---
 
@@ -988,7 +987,7 @@ train loss": the training mix is ~77 % Gutenberg, validation is TinyStories only
 | Largest model | 842 K parameters | **222 M** |
 | Training speed | 5,714 tok/s | **244,698 tok/s** (43×) |
 | Data | 2.87 M characters | **2.05 billion tokens** |
-| Findings | — | **24** — 19 code defects and 5 process/infrastructure problems, each caught by a test, a profile or a measurement |
+| Findings | — | **23** — 19 code defects and 4 process/infrastructure problems, each caught by a test, a profile or a measurement |
 | Turkish lines (excl. README-Tr) | — | **0** |
 
 

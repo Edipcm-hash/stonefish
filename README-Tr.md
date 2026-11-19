@@ -573,8 +573,7 @@ Bu bölüm projenin en değerli kısmı: **her hata gerçekti, çoğu testlerle 
 
 | # | Bulgu | Etki |
 |---|---|---|
-| 23 | IObit Uninstaller **3 çekirdek sürücüsü** sistem genelinde dosya/süreç/registry filtreliyordu | CPU %89 → **%17**; sürücüler durdurulup silindi |
-| 24 | Makinede **antivirüs yok** (Ghost Spectre imajı) | Bilinen ve kabul edilen risk — README'de yazılı |
+| 23 | Makinede **antivirüs yok** (Ghost Spectre imajı) | Bilinen ve kabul edilen risk — README'de yazılı |
 
 ---
 
@@ -983,7 +982,7 @@ karışımının ~%77'si Gutenberg, validasyon yalnız TinyStories.
 | En büyük model | 842 bin parametre | **222 milyon** |
 | Eğitim hızı | 5.714 tok/s | **244.698 tok/s** (43×) |
 | Veri | 2,87 M karakter | **2,05 milyar token** |
-| Bulunan bulgu | — | **24** — 19'u kod hatası, 5'i süreç/altyapı; hepsi test, profilleme ya da ölçümle yakalandı |
+| Bulunan bulgu | — | **23** — 19'u kod hatası, 4'ü süreç/altyapı; hepsi test, profilleme ya da ölçümle yakalandı |
 | Türkçe satır (README-Tr hariç) | — | **0** |
 
 
