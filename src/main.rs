@@ -77,6 +77,10 @@ const MODES: &[(&str, &str)] = &[
         "self-test of our own CUDA FFI (driver, cuBLAS, NVRTC)",
     ),
     (
+        "en-tokenize",
+        "tokenize a text file with the model's BPE so en-eval can score it (probe)",
+    ),
+    (
         "en-eval",
         "evaluate the English model on the validation set (loss/perplexity/BPC)",
     ),
@@ -97,8 +101,11 @@ fn arg_f32(args: &[String], i: usize, default: f32) -> f32 {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rest: &[String] = if args.len() > 2 { &args[2..] } else { &[] };
+    // No argument prints the menu. It used to default to "train", which meant
+    // running the binary to see the options started a six-epoch MNIST run and
+    // wrote a model file - a surprise nobody wants from --help-less usage.
     let mode = if args.len() < 2 {
-        "train"
+        "help"
     } else {
         args[1].as_str()
     };
@@ -107,7 +114,7 @@ fn main() {
         "help" | "-h" | "--help" => {
             println!("🐟 StonefishAI v{}", stonefish_ai::VERSION);
             println!(
-                "GPU yolu: {}",
+                "GPU path: {}",
                 if gpu::HAS_CUDA {
                     "available (CUDA)"
                 } else {
@@ -142,6 +149,7 @@ fn main() {
         "demo" => demo(rest),
         "bench" => bench(rest),
         "test-ffi" => test_ffi(),
+        "en-tokenize" => en_tokenize(rest),
         "en-eval" => en_eval(rest),
         "en-gen" => en_gen(rest),
         other => {
@@ -683,7 +691,7 @@ fn train() {
             println!();
         }
     }
-    println!("\nModel kaydediliyor → {}", MODEL_PATH);
+    println!("\nSaving model -> {}", MODEL_PATH);
     save_model(MODEL_PATH, &[&l1, &l2]).expect("save failed");
     println!("✅ Saved.");
     let acc = evaluate(&x_test, &y_test_raw, &l1, &l2);
@@ -1270,6 +1278,22 @@ fn test_ffi() {
 #[cfg(not(feature = "cuda"))]
 fn test_ffi() {
     println!("❌ CUDA is off.");
+}
+
+#[cfg(feature = "cuda")]
+fn en_tokenize(args: &[String]) {
+    let prefix = args.first().map(|s| s.as_str()).unwrap_or("data/en/probe");
+    println!("🐟 Tokenize for evaluation: {prefix}\n");
+    match stonefish_ai::probe::tokenize(prefix) {
+        Ok(n) if n > 0 => println!("\n✅ {n} tokens ready"),
+        Ok(_) => println!("\n⚠️  the file produced no tokens"),
+        Err(e) => println!("❌ {e}"),
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn en_tokenize(_args: &[String]) {
+    println!("❌ en-tokenize needs the CUDA build (it feeds en-eval).");
 }
 
 #[cfg(feature = "cuda")]

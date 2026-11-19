@@ -32,6 +32,8 @@ pub mod kv_cache;
 pub mod loss;
 pub mod nn;
 pub mod optim;
+#[cfg(feature = "cuda")]
+pub mod probe;
 pub mod profile;
 #[cfg(feature = "cuda")]
 pub mod sys;
