@@ -2,6 +2,12 @@
 
 **Sıfırdan yazılmış bir autograd motoru ve dil modeli altyapısı — Rust, SIFIR bağımlılık.**
 
+> **Bu nedir:** sıfırdan yazılmış bir dil modeli motoru — autograd, tokenizer, transformer,
+> CUDA çekirdekleri — tek bir tüketici GPU'sunda, hiçbir bağımlılık olmadan eğitilip çalışıyor.
+>
+> **Bu ne değildir:** sohbet asistanı değil. 222 M model İngilizce metin devam ettirir;
+> soru cevaplamaz ve uydurduğu bilgileri kendinden emin bir şekilde yazar.
+
 ```console
 $ cargo tree
 stonefish_ai v1.0.0

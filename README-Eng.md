@@ -2,6 +2,13 @@
 
 **A from-scratch autograd engine and language-model stack in Rust — ZERO dependencies.**
 
+> **What this is:** a language-model engine written from scratch - autograd, tokenizer,
+> transformer, CUDA kernels - that trains and runs on one consumer GPU with zero
+> dependencies.
+>
+> **What this is not:** a chat assistant. The 222M model continues English text; it does
+> not answer questions, and it states invented facts with confidence.
+
 ```console
 $ cargo tree
 stonefish_ai v1.0.0
