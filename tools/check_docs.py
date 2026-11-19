@@ -162,10 +162,28 @@ def main() -> int:
             lines = fh.readlines()
 
         headings = set()
-        for line in lines:
+        seen_headings = {}
+        in_fence = False
+        for lineno, line in enumerate(lines, 1):
+            # A line starting with # inside a fenced block is a shell comment, not a
+            # heading - counting those would both invent anchors and hide real
+            # duplicates.
+            if line.lstrip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
             m = HEADING.match(line)
-            if m:
-                headings.add(github_slug(m.group(2)))
+            if not m:
+                continue
+            slug = github_slug(m.group(2))
+            if slug in seen_headings:
+                # GitHub renames the second one to "slug-1", so an anchor link to
+                # the bare slug silently jumps to the first - worth reporting.
+                broken.append((f"{rel}:{lineno}", f"duplicate heading '{m.group(2).strip()}'"))
+            else:
+                seen_headings[slug] = lineno
+            headings.add(slug)
 
         for lineno, line in enumerate(lines, 1):
             for target in LINK.findall(line):
