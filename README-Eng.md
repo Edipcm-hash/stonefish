@@ -402,21 +402,63 @@ cargo test --release --no-default-features  # CPU path
 
 ## 10. Bugs found during development
 
-This list is the most valuable part of the project: **every one was caught by a test.**
+This section is the most valuable part of the project: **every bug was real, most were caught by tests, all were fixed.** Some cost hours; one (the head stride) cost a day.
 
-| # | Bug | How it was found |
+### 10.1 Silent numerical bugs - the dangerous class
+
+These ran without crashing and produced **wrong numbers**. None of them raised an error; all were exposed by gradient checks.
+
+| # | Symptom | Root cause | Fix | How it was caught |
+|---|---|---|---|---|
+| 1 | Attention gradients looked plausible but the loss would not fall | Backward used `q` instead of `dOut` for `dW` | Rewritten as `dWq = dOutᵀ·x̂` | **3 gradient tests red** after vectorisation |
+| 2 | Attention scores always 0 → softmax 0.5/0.5 | Batched score buffer offset assumed `h·S²`, correct is **`h·B·S²`** | Stride corrected | `test-attn` output: every row identical |
+| 3 | `dAttn/dWo` wrong from the start | Residual gradient: the attention branch's upstream is `dOut + dx_ln2`, not `dOut` | Both branches summed | 6 of 32 gradient tests red |
+| 4 | GPU GEMM results accumulated between steps | `dev_gemm` passed `beta = 1.0` (C = αAB + βC) instead of 0.0 | `beta = 0.0` | `GemmMode` test: multiplying the same matrix twice gave 4× |
+| 5 | `test-gpt-profile` reported **0 ms** for the two largest buckets | The FFI migration dropped `matmul_gpu`'s profiling hooks (`t_start`/`transfer_ns` gone) | Hooks restored, upload/download measured separately | The profile table did not match the README's numbers |
+
+### 10.2 Bugs in the tests themselves - traps that send you the wrong way
+
+| # | Symptom | Root cause | Fix |
+|---|---|---|---|
+| 6 | `mask_causal` gradient test permanently red | The mask was `-1e9` → loss ≈ 1e9 → `f32` ulp(1e9) ≈ 64 **swallows** `ΔL ≈ 1e-3` | Masked weights zeroed; the test now checks itself |
+| 7 | Linearity broke in gradcheck | `eps` calibration: embedding init 0.02 + LayerNorm → `eps = 1e-3` is 10 % of a row | Inputs scaled ×50; `grad_probe` for parameter-wise measurement |
+| 8 | Batch gradient never equalled the sum of single-sequence gradients | Wrong factor (**B³**) in the test | Derived `L_batch = (1/B)·ΣL_b`, test fixed |
+
+### 10.3 Performance bugs - correct but slow
+
+| # | Symptom | Root cause | Fix | Gain |
+|---|---|---|---|---|
+| 9 | Tokenization "hung" (minutes per 64 MB) | Every merge scanned the whole buffer → **O(n²)** | Word-based encode + word cache | **148 MB/s** |
+| 10 | A training step did ~4 GB of disk I/O | The data window read 64 MB per miss | Window = `len·8` (4 KB – 1 MB) | **5,679 → 9,966 tok/s** (+75 %) |
+| 11 | RoPE called `powf`/`cos`/`sin` per element | No table | cos/sin table cached | Measurable step-time drop |
+| 12 | `rmsnorm_param_grad` used one thread per column | No `atomicAdd` race, but no parallelism either | Row chunking + atomic accumulation | Norm gradient ~4× |
+| 13 | A training step took 177 ms | Profile: **75 matmuls per step**, real GEMM 1 ms | Removed upstream clones, added `matmul_bt/ta`, vectorised attention backward | **177 → 120 ms** (+47 %) |
+
+### 10.4 Architecture bugs
+
+| # | Symptom | Root cause | Fix |
+|---|---|---|---|
+| 14 | KV-cache generation did not match the full forward pass (**4e-2** off) | The cache path forgot the **attention scale** (1/√d_head) | Scale added → difference **5e-8** |
+| 15 | The FFN was needlessly wide in tiny models | `swiglu_hidden` rounded every size up to 256 | Size-dependent step (8/64/256) |
+| 16 | A checkpoint could be corrupted by a power cut | Written directly to the target file | **tmp → `sync_all` → `rename`** (atomic) |
+
+### 10.5 Process and tooling bugs
+
+| # | Symptom | Root cause | Fix |
+|---|---|---|---|
+| 17 | Two processes wrote the same cache → "Access denied" | A killed job's child process survived | Process inventory + single-writer rule |
+| 18 | An **orphan training process** from 13:33 would have overwritten the checkpoint with the old (v1) format | Two trainings running at once | Process check, separate `out_prefix` |
+| 19 | `cargo clippy --fix` rewrote all of `data.rs` | Line endings (CRLF→LF) | Reverted; `.gitattributes` added |
+| 20 | **The tree did not build after the translation** (3 errors) | A lost comma in a `panic!` format string; the head of a `gpu.rs` hook missing; `corpus.rs`'s `Seek` import removed as "unused" | All three fixed - **caught before publishing** |
+| 21 | The language guard said "OK" while **42 lines of Turkish** remained | The guard only looked for the six Turkish-specific letters; diacritic-free Turkish (the smoke-test and memory labels) slipped through | Second pass: a Turkish-only word list with no English homographs |
+| 22 | `target3/` tried to enter git | `.gitignore` only had `/target/` and `target2/` | `/target*/` + `__pycache__/` |
+
+### 10.6 Outside the project, found the same day
+
+| # | Finding | Effect |
 |---|---|---|
-| 1 | `mask_causal` test: `-1e9` mask pushed the loss to ~1e9; `f32` ulp(1e9)≈64 swallowed `ΔL≈1e-3` | Gradient test (the *test* was wrong) |
-| 2 | `eps` calibration in gradcheck: embedding init 0.02 + LayerNorm → `eps=1e-3` is 10 % of a row, breaking linearity | Parameter-wise measurement with `grad_probe` |
-| 3 | Wrong factor in the batch-gradient identity (B³) | Derived `L_batch = (1/B)·ΣL_b` and fixed |
-| 4 | Attention backward used `q` instead of `dOut` for `dW` | 3 gradient tests turned red after vectorization |
-| 5 | **Head stride**: score-buffer offset assumed `h·S²`, correct is `h·B·S²` | Scores came out zero → softmax 0.5/0.5 |
-| 6 | **Residual gradient**: attention branch upstream is `dOut + dx_ln2`, not `dOut` (`res1 = x + proj`) | dAttn/dWo were wrong from the start |
-| 7 | `dev_gemm` passed `beta=1.0` instead of `0.0` → results accumulated | GEMM mode test |
-| 8 | BPE encode processed the whole 64 MB chunk at once (full vector scan per merge → O(n²)) | Tokenization appeared to hang; fixed with a word cache |
-| 9 | Two processes writing the same output file ("Access denied") | A killed job's child process survived |
-| 10 | An **orphan training process** started at 13:33 would have overwritten the checkpoint in the old (v1) format | Process inventory |
-| 11 | `cargo clippy --fix` rewrote all of `data.rs` due to line endings | Reverted; `.gitattributes` (LF) added |
+| 23 | IObit Uninstaller had **three kernel drivers** filtering file/process/registry calls system-wide | CPU 89 % → **17 %**; drivers stopped and removed |
+| 24 | The machine has **no antivirus** (Ghost Spectre image) | Known, accepted risk - documented in the README |
 
 ---
 

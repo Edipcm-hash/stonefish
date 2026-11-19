@@ -407,23 +407,66 @@ cargo test --release --no-default-features  # CPU yolu
 
 ## 10. Geliştirme sırasında bulunan hatalar
 
-Bu liste projenin en değerli kısmı: **her biri testlerle yakalandı.**
+Bu bölüm projenin en değerli kısmı: **her hata gerçekti, çoğu testlerle yakalandı, hepsi düzeltildi.** Bazıları saatler, biri (head adımı) bir gün kaybettirdi.
 
-| # | Hata | Nasıl bulundu |
+### 10.1 Sessiz sayısal hatalar — en tehlikeli sınıf
+
+Çalışan ama **yanlış sayı üreten** hatalar. Hiçbiri çökme vermedi; hepsi gradyan testleriyle ortaya çıktı.
+
+| # | Belirti | Kök neden | Düzeltme | Nasıl yakalandı |
+|---|---|---|---|---|
+| 1 | Attention gradyanları "makul" görünüyordu ama loss düşmüyordu | Backward'da `dW` hesabında `dOut` yerine `q` kullanılmış | `dWq = dOutᵀ·x̂` ile yeniden yazıldı | Vektörleştirme sonrası **3 gradyan testi birden kırmızı** |
+| 2 | Attention skorları hep 0 → softmax 0,5/0,5 | Batch'li skor buffer'ında offset `h·S²` sanıldı, doğrusu **`h·B·S²`** | Stride düzeltildi | `test-attn` çıktısı: tüm satırlar eşit |
+| 3 | `dAttn/dWo` baştan yanlış | Residual gradyanı: attention dalının yukarı akışı `dOut` değil **`dOut + dx_ln2`** (`res1 = x + proj`) | İki dalın gradyanı toplandı | 32 gradyan testi: 6'sı kırmızı |
+| 4 | GPU GEMM sonuçları iki adım arasında birikiyordu | `dev_gemm`'de `beta` yanlışlıkla **1,0** (C = αAB + βC), doğrusu 0,0 | `beta = 0.0` | `GemmMode` testi: aynı matris iki kez çarpılınca sonuç 4× |
+| 5 | `test-gpt-profile` iki en büyük kalem için **0 ms** gösteriyordu | FFI geçişinde `matmul_gpu`'nun profil hook'ları kayboldu (`t_start`/`transfer_ns` yoktu) | Hook geri kondu, upload/download ayrı ölçülüyor | Profil tablosu README'deki sayılarla uyuşmuyordu |
+
+### 10.2 Testlerin kendi hataları — düzeltmeyi yanlış yönde arayan tuzaklar
+
+| # | Belirti | Kök neden | Düzeltme |
+|---|---|---|---|
+| 6 | `mask_causal` gradyan testi hep kırmızı | Maske `-1e9` → loss ≈ 1e9 → `f32` ulp(1e9) ≈ 64, `ΔL ≈ 1e-3` **yutuluyor** | Maskeli ağırlıklar sıfırlandı, test kendi kendini doğrular hale geldi |
+| 7 | Gradyan testinde doğrusallık çöküyordu | `eps` kalibrasyonu: embedding init 0,02 + LayerNorm → `eps = 1e-3` satırın %10'u | Girdiler ×50 ölçeklendi; `grad_probe` ile parametre bazlı ölçüm |
+| 8 | Batch gradyanı tek dizi gradyanlarının toplamına eşit çıkmıyordu | Testte yanlış faktör (**B³**) | `L_batch = (1/B)·ΣL_b` türetildi, test düzeltildi |
+
+### 10.3 Performans hataları — çalışıyordu ama yavaştı
+
+| # | Belirti | Kök neden | Düzeltme | Kazanç |
+|---|---|---|---|---|
+| 9 | Tokenize "donuyordu" (64 MB'ta dakikalar) | Tüm yığın her merge'de taranıyordu → **O(n²)** | Kelime bazlı encode + kelime önbelleği | **148 MB/s** |
+| 10 | Eğitim adımı ~4 GB disk trafiği yapıyordu | Veri penceresi her istekte 64 MB okuyordu | Pencere `len·8` (4 KB – 1 MB arası) | **5.679 → 9.966 tok/s** (+%75) |
+| 11 | RoPE her elemanda `powf`/`cos`/`sin` çağırıyordu | Tablo yoktu | cos/sin tablosu önbelleğe alındı | Adım süresinde ölçülebilir düşüş |
+| 12 | `rmsnorm_param_grad` tek thread/kolon | `atomicAdd` yarışı yok ama paralellik de yok | Satır parçalama + atomik toplama | Norm gradyanı ~4× |
+| 13 | Eğitim adımı 177 ms | Profil: her adımda **75 matmul**, gerçek GEMM 1 ms | Upstream klonu kaldırıldı, `matmul_bt/ta` eklendi, attention backward vektörleştirildi | **177 → 120 ms** (+%47) |
+
+### 10.4 Mimari hatalar
+
+| # | Belirti | Kök neden | Düzeltme |
+|---|---|---|---|
+| 14 | KV-cache'li üretim tam ileri geçişle uyuşmuyordu (**4e-2** fark) | Cache yolunda **attention ölçeği** (1/√d_head) unutulmuş | Ölçek eklendi → fark **5e-8** |
+| 15 | Küçük modellerde FFN gereksiz büyüktü | `swiglu_hidden` her boyutu 256'ya yuvarlıyordu | Boyuta bağlı adım (8/64/256) |
+| 16 | Checkpoint elektrik kesintisinde bozulabiliyordu | Doğrudan hedef dosyaya yazılıyordu | **tmp → `sync_all` → `rename`** (atomik) |
+
+### 10.5 Süreç ve araç hataları
+
+| # | Belirti | Kök neden | Düzeltme |
+|---|---|---|---|
+| 17 | İki süreç aynı cache'e yazdı → "Access denied" | Öldürülen işin çocuk süreci yaşıyordu | Süreç envanteri + tek yazıcı kuralı |
+| 18 | 13:33'te başlamış **yetim eğitim süreci**, bitince checkpoint'i eski (v1) formatla ezecekti | İki eğitim aynı anda | Süreç kontrolü, `out_prefix` ayrımı |
+| 19 | `cargo clippy --fix` tüm `data.rs`'i yeniden yazdı | Satır sonu (CRLF→LF) farkı | Geri alındı, `.gitattributes` eklendi |
+| 20 | **Çeviriden sonra kod derlenmiyordu** (3 hata) | `panic!` format string'inde virgül kaybı; `gpu.rs`'de hook'un başı eksik; `corpus.rs`'de `Seek` importu gereksiz sanılıp silinmiş | Üçü de düzeltildi — **yayından önce yakalandı** |
+| 21 | Dil koruması "OK" diyordu ama kodda **42 satır Türkçe** vardı | Koruma yalnızca çı/ğ/ı/ş/ü/ö harflerini arıyordu; "CUDA testi", "Bellek" gibi harfsiz Türkçe kaçıyordu | İkinci geçiş: Türkçe'ye özgü kelime listesi (İngilizce karşılığı olmayanlar) |
+| 22 | `target3/` git'e girmeye çalıştı | `.gitignore`'da yalnızca `/target/` ve `target2/` vardı | `/target*/` + `__pycache__/` |
+
+### 10.6 Proje dışı ama aynı gün bulundu
+
+| # | Bulgu | Etki |
 |---|---|---|
-| 1 | `mask_causal` testi: `-1e9` maskesi loss'u 1e9'a çıkarıyor, `f32` ulp(1e9)≈64 `ΔL≈1e-3`'ü yutuyor | Gradyan testi (testin kendisi hatalıydı) |
-| 2 | Gradyan testinde `eps` kalibrasyonu: embedding init 0,02 + LayerNorm → `eps=1e-3` satırın %10'u, doğrusallık çöküyor | `grad_probe` ile parametre bazlı ölçüm |
-| 3 | Batch gradyan kimliğinde yanlış faktör (B³) | `L_batch = (1/B)·ΣL_b` türetilip düzeltildi |
-| 4 | Attention backward'ında `dW` için `dOut` yerine `q` kullanılmış | Vektörleştirme sonrası 3 gradyan testi kırmızı |
-| 5 | **Head adımı**: skor buffer'ında offset `h·S²` olmalı sanıldı, doğrusu `h·B·S²` | Skorlar 0 çıkıyordu → softmax 0,5/0,5 |
-| 6 | **Residual gradyanı**: attention dalının yukarı akışı `dOut` değil `dOut + dx_ln2` (`res1 = x + proj`) | dAttn/dWo baştan yanlıştı |
-| 7 | `dev_gemm`'de `beta` yanlışlıkla 1,0 → sonuç önceki içerikle toplanıyor | GEMM mod testi |
-| 8 | BPE encode tüm 64 MB yığını işliyordu (her merge'de tüm vektör → O(n²)) | Tokenize "donuyordu"; kelime önbelleğine çevrildi |
-| 9 | İki süreç aynı çıktı dosyasına yazıyordu ("Access denied") | Öldürülen işin çocuk süreci yaşamıştı |
-| 10 | 13:33'te başlamış **yetim eğitim süreci**, bitince checkpoint'i eski (v1) formatla ezecekti | Süreç envanteri |
-| 11 | `cargo clippy --fix` tüm `data.rs`'i satır sonu değişikliği yüzünden yeniden yazdı | Geri alındı, `.gitattributes` (LF) eklendi |
+| 23 | IObit Uninstaller **3 çekirdek sürücüsü** sistem genelinde dosya/süreç/registry filtreliyordu | CPU %89 → **%17**; sürücüler durdurulup silindi |
+| 24 | Makinede **antivirüs yok** (Ghost Spectre imajı) | Bilinen ve kabul edilen risk — README'de yazılı |
 
 ---
+
 
 ## 11. Bilinen sınırlar
 
