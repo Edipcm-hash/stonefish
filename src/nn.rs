@@ -100,7 +100,7 @@ pub fn load_model(path: &str, n_layers: usize) -> std::io::Result<Vec<Linear>> {
     assert_eq!(&magic, MAGIC, "wrong magic - this is not a Stonefish model");
 
     let version = read_u32(&mut r)?;
-    assert_eq!(version, VERSION, "desteklenmeyen versiyon: {}", version);
+    assert_eq!(version, VERSION, "unsupported version: {}", version);
 
     let saved_layers = read_u32(&mut r)? as usize;
     assert_eq!(

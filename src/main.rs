@@ -240,7 +240,7 @@ fn gpt_train(args: &[String]) {
     let total_steps = steps_per_epoch * epochs;
 
     println!(
-        "Veri    : {} karakter → {} sequence (train {}, val {}), seq_len {}",
+        "Data    : {} characters -> {} sequences (train {}, val {}), seq_len {}",
         all_ids.len(),
         seqs.len(),
         n_train,
@@ -401,7 +401,7 @@ fn gpt_train(args: &[String]) {
     );
 
     println!(
-        "En iyi model : epoch {} (val CE = {:.4}) → {}",
+        "Best model   : epoch {} (val CE = {:.4}) -> {}",
         best_epoch, best_val, GPT_PATH
     );
     println!("Final model  : {}", final_path);

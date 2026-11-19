@@ -49,7 +49,7 @@ mod imp {
         .0
     }
 
-    /// Tek (batch'siz) cihaz GEMM'i.
+    /// Single (unbatched) device GEMM.
     #[allow(clippy::too_many_arguments)]
     pub fn dev_gemm<A, B, C>(
         c: &mut C,
@@ -70,7 +70,7 @@ mod imp {
         dev_gemm_batched(c, a, b, m, n, k, a_row, b_row, c_row, 0, 0, 0, 1, 0.0, mode);
     }
 
-    /// Strided-batched cihaz GEMM'i: C_i = op(A_i)·op(B_i).
+    /// Strided-batched device GEMM: C_i = op(A_i)*op(B_i).
     #[allow(clippy::too_many_arguments)]
     pub fn dev_gemm_batched<A, B, C>(
         c: &mut C,

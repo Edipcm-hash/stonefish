@@ -61,6 +61,8 @@ WORDS = [
     "kullanil", "calis", "degistir", "kaldir", "acikla", "uyar", "mesaj",
     "sifir", "dolu", "yolu", "fark", "ileri", "geri", "gerektir", "degildir", "yapilir",
     "tahmin", "testleri", "nihai", "edilemedi", "dogruluk", "siniflandir",
+    "analitik", "beklenen", "bozuk", "cihaz", "desteklenmeyen", "numerik",
+    "versiyon",
 ]
 # Deliberately absent: short particles that live inside identifiers or English
 # words (ve, bir, bu, ne, cok, bos, son, on, bin, en, az).

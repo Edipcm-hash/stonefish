@@ -1,5 +1,5 @@
 // src/tokenizer.rs
-// Karakter seviyesi tokenizer. Metin <-> ID.
+// Character-level tokenizer: text <-> ID.
 //
 // The vocab is the character set of the training corpus (sorted). Because it is
 // embedded in the checkpoint the ids never shift even if the corpus file

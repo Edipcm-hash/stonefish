@@ -165,7 +165,7 @@ pub fn check(res: CUresult, what: &str) {
             }
         }) {
             Some(s) => s,
-            None => format!("kod {res}"),
+            None => format!("code {res}"),
         }
     };
     panic!("CUDA error ({what}): {name}");

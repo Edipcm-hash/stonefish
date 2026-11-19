@@ -118,7 +118,7 @@ pub fn sync() {
 }
 
 // ============================================================
-// Cihaz tamponu
+// Device buffer
 // ============================================================
 
 /// Owned buffer in device memory (f32).
@@ -158,7 +158,7 @@ impl DevBuf {
         }
     }
 
-    /// Host verisinden kopyala.
+    /// Copy from host data.
     pub fn from_host(v: &[f32]) -> Self {
         ctx();
         let len = v.len().max(1);

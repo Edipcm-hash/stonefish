@@ -36,7 +36,7 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
     ids.truncate(batch * seq);
     tgt.truncate(batch * seq);
 
-    // analitik
+    // analytic
     for p in &params {
         p.zero_grad();
     }
@@ -82,7 +82,7 @@ fn probe(label: &str, batch: usize, seq: usize, skip_attention: bool, emb_scale:
             let rel = (analytic[k] - numeric).abs() / analytic[k].abs().max(numeric.abs()).max(1.0);
             if rel > worst {
                 worst = rel;
-                worst_detail = format!("k={k} analitik={:.6} numerik={:.6}", analytic[k], numeric);
+                worst_detail = format!("k={k} analytic={:.6} numeric={:.6}", analytic[k], numeric);
             }
         }
         let flag = if worst > 2e-2 { "❌" } else { "✅" };

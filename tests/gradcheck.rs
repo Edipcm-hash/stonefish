@@ -38,7 +38,7 @@ fn gradient_check<F>(name: &str, params: &[Tensor], build: F)
 where
     F: Fn() -> Tensor,
 {
-    // --- analitik ---
+    // --- analytic ---
     for p in params {
         p.zero_grad();
     }
@@ -50,7 +50,7 @@ where
         .map(|p| p.grad.borrow().data.clone())
         .collect();
 
-    // --- numerik ---
+    // --- numeric ---
     let mut worst_rel = 0.0f32;
     let mut worst_msg = String::new();
     for (pi, p) in params.iter().enumerate() {

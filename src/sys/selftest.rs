@@ -27,7 +27,7 @@ pub fn run() -> bool {
         }
     };
     let (name, maj, min, total_mem) = info;
-    println!("Cihaz      : {name} (sm_{maj}{min})");
+    println!("Device     : {name} (sm_{maj}{min})");
     println!("Memory     : {:.1} GB", total_mem as f64 / (1 << 30) as f64);
 
     unsafe {

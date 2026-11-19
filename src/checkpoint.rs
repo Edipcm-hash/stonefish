@@ -9,7 +9,7 @@
 //   magic        : 8 bayt  b"SFGPT002"
 //   version      : u32
 //   config       : vocab_size, max_seq_len, d_model, n_layers, n_heads  (5 × u32)
-//   vocab        : n_chars u32 + n_chars × u32 (char kodu)
+//   vocab        : n_chars u32 + n_chars x u32 (char code)
 //   n_tensors    : u32
 //   tensors      : n x (rows u32, cols u32, rows*cols x f32)
 //
@@ -96,7 +96,7 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
     let version = read_u32(&mut r)?;
     if version != VERSION {
         return Err(invalid(format!(
-            "desteklenmeyen checkpoint versiyonu: {version} (beklenen {VERSION})"
+            "unsupported checkpoint version: {version} (expected {VERSION})"
         )));
     }
 
@@ -109,7 +109,7 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
     };
     if config.n_heads == 0 || config.d_model % config.n_heads != 0 {
         return Err(invalid(format!(
-            "bozuk config: d_model={} n_heads={}",
+            "corrupt config: d_model={} n_heads={}",
             config.d_model, config.n_heads
         )));
     }
