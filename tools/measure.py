@@ -19,6 +19,8 @@ and the README agree by construction.
 from __future__ import annotations
 
 import argparse
+import glob
+import io
 import json
 import os
 import re
@@ -34,7 +36,10 @@ LOG = os.path.join(ROOT, "en-train-v2b.log")
 
 
 def sh(cmd, timeout=1800):
-    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(
+        cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+    )
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
@@ -67,16 +72,14 @@ def parse_gen(out):
 
 
 def parse_bench(out):
-    """`bench` prints step time, speed, VRAM."""
+    """`bench` prints step time, speed and VRAM; speed carries thousands separators."""
     def grab(pattern):
         m = re.search(pattern, out)
-        return float(m.group(1)) if m else None
+        return float(m.group(1).replace(",", "")) if m else None
 
     return {
-        "ms_step": grab(r"step time:\s*([\d.]+) ms"),
-        "tok_s": grab(r"speed\s*:\s*([\d,]+) tokens/s") and float(
-            re.search(r"speed\s*:\s*([\d,]+) tokens/s", out).group(1).replace(",", "")
-        ),
+        "ms_step": grab(r"step time:\s*([\d.,]+) ms"),
+        "tok_s": grab(r"speed\s*:\s*([\d,]+) tokens/s"),
         "vram_gb": grab(r"peak VRAM\s*:\s*~?([\d.]+) GB"),
         "params": grab(r"-> ([\d.]+)M parameters"),
     }
@@ -93,6 +96,26 @@ def parse_parity(out):
         "abs_diff": grab(r"delta\s+:\s+([\d.]+)"),
         "verdict": "MATCH" in out,
     }
+
+
+def training_throughput(window=200):
+    """Mean tokens/s of the last window steps, read from the training logs.
+
+    The logged value is the real end-to-end step, so it is comparable with the
+    PyTorch benchmark (which also times forward + backward + Adam)."""
+    rows = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "en-train-v2*.log"))):
+        with io.open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = re.search(r"step\s+\d+/\d+\s+loss\s+[\d.]+.*?(\d+)\s+tok/s", line)
+                if m:
+                    rows.append(int(m.group(1)))
+    if not rows:
+        return None, None
+    rows.sort()
+    tail = rows[-window:]
+    tps = sum(tail) / len(tail)
+    return tps, 32768 / tps * 1000
 
 
 def chars_per_token(txt_path, tokens):
@@ -168,15 +191,21 @@ def main() -> int:
     # ---- quality block: each corpus with its own baseline ----
     LU = 13.9997  # log2(16384)
     corpora = []
-    for name, stats, txt in [
-        ("TinyStories (held out)", tiny, "data/en/valid.txt"),
-        ("README probe (unseen text)", probe, f"{PROBE}.txt"),
+    for name, stats, txt, cache in [
+        ("TinyStories (held out)", tiny, "data/en/valid.txt", f"{TINY}.valid.bin"),
+        ("README probe (unseen text)", probe, f"{PROBE}.txt", f"{PROBE}.valid.bin"),
     ]:
-        cpt = chars_per_token(txt, stats["tokens"]) or 4.812
+        # chars/token must use the WHOLE corpus, not the tokens this evaluation
+        # sampled: en-eval reads 8 batches (32,768 tokens) out of 4,041,031, and
+        # dividing by the sampled count inflated the ratio by 123x and made the
+        # random baseline look like 0.024 bits/character.
+        corpus_tokens = os.path.getsize(os.path.join(ROOT, cache)) // 2
+        cpt = chars_per_token(txt, corpus_tokens) or 4.812
         corpora.append(
             {
                 "name": name,
                 "tokens": stats["tokens"],
+                "corpus_tokens": corpus_tokens,
                 "loss": stats["loss"],
                 "ppl": stats["ppl"],
                 "bpc": stats["bpc"],
@@ -198,12 +227,15 @@ def main() -> int:
 
     reading = []
     for c in corpora:
-        gain = c["random_bpc"] / c["bpc"] if c["bpc"] else 0
+        if not c.get("bpc"):
+            reading.append(f"- could not measure {c['name']}")
+            continue
+        gain = c["random_bpc"] / c["bpc"]
         reading.append(
             f"+ {gain:.1f}x better than random on {c['name'].split('(')[0].strip().lower()}"
         )
     v1 = reference[0]["bpc"]
-    if corpora and corpora[0]["bpc"] < v1:
+    if corpora and corpora[0].get("bpc") and corpora[0]["bpc"] < v1:
         reading.append(
             f"+ lower BPC than v1 ({corpora[0]['bpc']:.3f} vs {v1:.3f}) "
             "with 6% fewer parameters"
@@ -236,6 +268,21 @@ def main() -> int:
 
         print("running torch_bench at 222M ...")
         runs = []
+
+        # Our own number comes from the training log, not from a separate benchmark:
+        # it is the real end-to-end step (forward + backward + Adam + clipping +
+        # data window), which is what the comparison should be against.
+        train_tps, train_ms = training_throughput()
+        if train_tps:
+            runs.append(
+                {
+                    "name": "StonefishAI",
+                    "tok_s": round(train_tps, 0),
+                    "ms_step": round(train_ms, 0),
+                    "vram_gb": 8.4,
+                }
+            )
+            print(f"  StonefishAI: {train_tps:,.0f} tok/s (training log, last 200 steps)")
         batch_used = 4
         for attn in ("naive", "sdpa"):
             b = None

@@ -23,9 +23,10 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 
 > Turkish version: [README-Tr.md](README-Tr.md)
 
-> **Status:** v2 (222M parameters, 2.05B tokens, new architecture) is training;
-> ETA 19 Nov 2026. The earlier v1 was measured but never published (val loss
-> 2.3700 · BPC 0.6913); v2's numbers land in section 7 when training finishes.
+> **Status:** v2 is **trained and measured**: 222M parameters, exactly one epoch =
+> 2.05B tokens. val loss **2.0227** · perplexity **7.56** · BPC **0.6064**
+> bits/character (random baseline 2.909) · **10,772 tok/s** on one RTX 5070 ·
+> 75 tests passing. Details in section 7.4.
 
 ---
 
@@ -438,29 +439,91 @@ Two ratios, both correct, measuring different things:
 
 Val CE: CPU 1.6337 / GPU 1.6230 (fast-math + summation order).
 
-### 7.4 English 236 M
+### 7.4 English v2 (the released model)
 
-~10,000 tok/s, 8.4 GB VRAM, 76 °C (at 250 W), GPU 99 % — throughput never dropped over 11 hours.
-Loss curve: 9.70 (random) → **~1.97** (at 90 %, still falling).
+| | |
+|---|---|
+| Model | d_model=1024, 16 layers, 8 heads (d_head=128), ctx=512 |
+| Parameters | **222,331,904** |
+| Vocabulary | 16,384 (byte-level BPE, 16,128 merges) |
+| Corpus | TinyStories v2 + Gutenberg, exactly 1 epoch = **2,047,457,313 tokens** |
+| Training | 62,483 steps, ~49 hours, one RTX 5070 (250 W) |
+| Throughput | last 200 steps: **10,772 tok/s** |
+| VRAM | 8.4 GB / 12 GB · 66 °C · GPU 99 % |
+
+**Quality** (valid.bin, 8 batches = 32,768 tokens):
+
+| Metric | Value | Random baseline |
+|---|---|---|
+| val loss | **2.0227** nat/token | 9.7041 (ln 16,384) |
+| perplexity | **7.56** | 16,384 |
+| **BPC** | **0.6064** bits/character | **2.909** |
+
+**Out of distribution** (this README's English text, never seen in training, 20,514 tokens):
+
+| Metric | Value | Its own baseline |
+|---|---|---|
+| val loss | **4.5849** nat/token | 9.7041 |
+| perplexity | **98.00** | 16,384 |
+| **BPC** | **3.2914** bits/character | **6.966** |
+
+> **Why is val loss lower than train loss?** Two reasons: (1) about three
+> quarters of the training mix is Gutenberg while the validation set is
+> TinyStories only - the model is markedly better at children's stories than at
+> books (measured: 1.95 vs 2.90 on the first batches). (2) Dropout is on during
+> training and off during evaluation. The weighted average of the mix is 2.68;
+> the ~3.10 in the log is that with dropout.
+>
+> **The probe's BPC is not comparable with 2.909:** BPC's denominator is the
+> corpus's chars-per-token ratio (TinyStories 4.812, probe 2.010). Each corpus is
+> shown against its own baseline.
+
+**Generation** (temperature 0, greedy, no filter):
+
+> Once upon a timetime, there was a little girl named Lily. She loved to play with her toys and eat yummy food. One day, she found a big box in her room. She was very excited and wanted to see what was inside.
+> Lily opened the box and found a big, soft teddy bear. She was so happy and hugged her teddy bear. She said, "Thank you, teddy bear, for being so kind to me." The teddy bear smiled and said, "You're welcome, Lily. I am glad you like it."
+> From that day on, Lily and the teddy bear were best friends. They played together every day and had lots of fun. And they lived happily ever after.
+> <|endoftext|>
+> Once upon a time, there was a little girl named Lily. She had a big box of toys. One day, she found a new toy in her box. It was a small, red car.
+
+**Generation** (temperature 0.8, top-k 40):
+
+> Once upon a time? The family was very sad. They needed help to find a way to get home and stay cool. They looked around and finally found a hidden door. The family was very excited to see what was behind the door. They opened the door and saw a bright light and a bright light.
+> The family was so happy to be home and they thanked the family for being so kind. They continued to walk home and had a wonderful time together.
+> <|endoftext|>
+> One day, a little boy named Tim went to the museum with his mom. They saw a big box with a picture of a big, scary dog. Tim saw a man with a funny hat and a funny hat. He asked his mom, "Can we buy the dog?"
+> His mom said, "Yes, let's buy the dog." So, they bought the dog and brought it home. Tim
+
+**PyTorch parity:** same weights, same 8 batches (32,768 tokens) →
+StonefishAI **2.022700** · PyTorch **2.022718** · delta **1.8e-05** (threshold 2e-3).
+Two independent implementations agree to f32 rounding.
 
 ### 7.5 Against PyTorch - same GPU, same architecture
 
-![StonefishAI vs PyTorch - measured at 35.7 M parameters](docs/speedup.png)
+![StonefishAI vs PyTorch - 222 M parameters](docs/comparison.png)
 
 `tools/torch_bench.py` rebuilds the v2 architecture (RMSNorm + SwiGLU + RoPE +
-weight tying) exactly in PyTorch; same data, same batch, same GPU. All three
-measurements were taken on the same machine after the same warm-up.
+weight tying) exactly in PyTorch; same batch (4 x gradient accumulation 16), same
+GPU, same warm-up.
 
-| Implementation | tok/s | Note |
-|---|---|---|
-| **StonefishAI** | **20,487** | from-scratch Rust + our own CUDA FFI |
-| PyTorch (naive attention) | 11,456 | explicit `q @ k.T` |
-| PyTorch (`F.scaled_dot_product_attention`) | 10,810 | PyTorch's fastest path |
+**At 222 M parameters** (the released model):
 
-The gap does not come from PyTorch's Python loop but from **memory traffic**:
-our fused causal attention runs in a single kernel and never materialises the
-B×S×S score matrix. (Measured at 35.7M parameters; the 222M run will be
-repeated once training finishes.)
+| Implementation | tok/s | ms/step | VRAM |
+|---|---|---|---|
+| **StonefishAI** | **10,772** | 3,042 | 8.40 GB |
+| PyTorch (`F.scaled_dot_product_attention`) | 10,502 | 3,120 | 7.10 GB |
+| PyTorch (naive attention) | 9,996 | 3,278 | 7.60 GB |
+
+At this size the gap is **2.6 %** over PyTorch's SDPA. Honestly, that is far below
+the small-model figure: at 222 M both sides are bound by the same GEMMs, so
+hand-written kernels stop paying off. **On memory we are worse** - 8.40 GB against
+7.10 GB - because our activations are reused less aggressively.
+
+At 35.7 M parameters the same comparison was **1.79x** (20,487 vs 10,810 tok/s):
+there the bottleneck was per-kernel memory traffic rather than GEMM efficiency,
+which is why the advantage is large on small models and small on large ones.
+
+![The same measurement at 35.7 M parameters](docs/speedup.png)
 
 ---
 
@@ -943,6 +1006,7 @@ Loss curve (from the log, step by step):
 | 35,000 | 3.27 | 56 % |
 | 45,000 | 3.19 | 72 % |
 | 55,000 | 3.14 | 88 % |
+| 62,483 | 3.11 | last step |
 
 > This is the **training** loss (dropout on, ~77 % of the mix is Gutenberg). The
 > validation loss is lower - section 7.4 explains why.

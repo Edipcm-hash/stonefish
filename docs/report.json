@@ -1,0 +1,133 @@
+{
+  "measured_at": "2026-11-19T23:31:36+03:00",
+  "tests": {
+    "total": 75,
+    "passed": 75,
+    "failed": 0,
+    "ignored": 0,
+    "areas": [
+      {
+        "name": "numerical gradient checks",
+        "file": "tests/gradcheck.rs",
+        "count": 32,
+        "failed": 0,
+        "what": "analytic backward() vs finite differences"
+      },
+      {
+        "name": "CUDA kernels vs CPU",
+        "file": "tests/gpu_kernels.rs",
+        "count": 16,
+        "failed": 0,
+        "what": "every kernel against its reference"
+      },
+      {
+        "name": "checkpoint safety",
+        "file": "tests/checkpoint.rs",
+        "count": 5,
+        "failed": 0,
+        "what": "truncated, wrong magic, vocab drift"
+      },
+      {
+        "name": "GPU trainer equivalence",
+        "file": "tests/gpu_train_equiv.rs",
+        "count": 2,
+        "failed": 0,
+        "what": "device trainer vs CPU autograd"
+      },
+      {
+        "name": "KV-cache",
+        "file": "tests/kv_cache.rs",
+        "count": 2,
+        "failed": 0,
+        "what": "cached generation vs full forward"
+      },
+      {
+        "name": "unit tests (BPE, tokenizer, optim, corpus)",
+        "file": "src/lib.rs",
+        "count": 18,
+        "failed": 0,
+        "what": "round-trips and edge cases"
+      }
+    ]
+  },
+  "speed": {
+    "device": "RTX 5070 12 GB, 250 W",
+    "model": {
+      "params": 222331904,
+      "d": 1024,
+      "layers": 16,
+      "heads": 8,
+      "ctx": 512
+    },
+    "batch": 4,
+    "runs": [
+      {
+        "name": "StonefishAI",
+        "tok_s": 10772.0,
+        "ms_step": 3042.0,
+        "vram_gb": 8.4
+      },
+      {
+        "name": "PyTorch (naive)",
+        "tok_s": 9996.0,
+        "ms_step": 3278.0,
+        "vram_gb": 7.6
+      },
+      {
+        "name": "PyTorch (sdpa)",
+        "tok_s": 10502.0,
+        "ms_step": 3120.0,
+        "vram_gb": 7.1
+      }
+    ]
+  },
+  "parity": {
+    "steps": 8,
+    "stonefish_loss": 2.0227,
+    "torch_loss": 2.022718,
+    "abs_diff": 1.8e-05,
+    "note": "the two implementations agree to f32 rounding"
+  },
+  "quality": {
+    "corpora": [
+      {
+        "name": "TinyStories (held out)",
+        "tokens": 32768,
+        "loss": 2.0227,
+        "ppl": 7.56,
+        "bpc": 0.6064,
+        "chars_per_token": 4.812,
+        "random_bpc": 2.909,
+        "corpus_tokens": 4041031
+      },
+      {
+        "name": "README probe (unseen text)",
+        "tokens": 20480,
+        "loss": 4.5849,
+        "ppl": 98.0,
+        "bpc": 3.2914,
+        "chars_per_token": 2.01,
+        "random_bpc": 6.966,
+        "corpus_tokens": 20514
+      }
+    ],
+    "reference": [
+      {
+        "name": "v1 model (236M, TinyStories only)",
+        "bpc": 0.691,
+        "note": "same metric, 450M tokens of training"
+      }
+    ],
+    "reading": [
+      "+ 4.8x better than random on tinystories",
+      "+ 2.1x better than random on readme probe",
+      "+ lower BPC than v1 (0.606 vs 0.691) with 6% fewer parameters",
+      "- Not a chatbot: it continues text, it does not answer",
+      "- 9.2 tokens per parameter, below the 20 that scaling work recommends"
+    ]
+  },
+  "samples": {
+    "greedy": "Once upon a timetime, there was a little girl named Lily. She loved to play with her toys and eat yummy food. One day, she found a big box in her room. She was very excited and wanted to see what was inside.\nLily opened the box and found a big, soft teddy bear. She was so happy and hugged her teddy bear. She said, \"Thank you, teddy bear, for being so kind to me.\" The teddy bear smiled and said, \"You're welcome, Lily. I am glad you like it.\"\nFrom that day on, Lily and the teddy bear were best friends. They played together every day and had lots of fun. And they lived happily ever after.\n<|endoftext|>\nOnce upon a time, there was a little girl named Lily. She had a big box of toys. One day, she found a new toy in her box. It was a small, red car.",
+    "sampled_0_8": "Once upon a time? The family was very sad. They needed help to find a way to get home and stay cool. They looked around and finally found a hidden door. The family was very excited to see what was behind the door. They opened the door and saw a bright light and a bright light.\nThe family was so happy to be home and they thanked the family for being so kind. They continued to walk home and had a wonderful time together.\n<|endoftext|>\nOne day, a little boy named Tim went to the museum with his mom. They saw a big box with a picture of a big, scary dog. Tim saw a man with a funny hat and a funny hat. He asked his mom, \"Can we buy the dog?\"\nHis mom said, \"Yes, let's buy the dog.\" So, they bought the dog and brought it home. Tim"
+  }
+}

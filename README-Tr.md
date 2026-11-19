@@ -22,9 +22,9 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 
 > English version: [README-Eng.md](README-Eng.md)
 
-> **Durum:** v2 (222 M parametre, 2,05 B token, yeni mimari) eğitiliyor; 19 Kasım
-> 2026'da bitecek. Önceki v1 ölçüldü ama yayınlanmadı (val loss 2,3700 · BPC 0,6913);
-> v2'nin sayıları eğitim bitince §7'ye yazılacak.
+> **Durum:** v2 **eğitildi ve ölçüldü**: 222 M parametre, tam 1 epoch = 2,05 B token.
+> val loss **2,0227** · perplexity **7,56** · BPC **0,6064** bit/karakter (rastgele
+> taban 2,909) · **10.772 tok/s** tek RTX 5070'de · 75 test geçiyor. Ayrıntılar §7.4.
 
 ---
 
@@ -352,7 +352,7 @@ yukarıdaki tablonun son satırı.
 | Korpus | TinyStories, 450,9 M token | **TinyStories + Gutenberg, 2.047.457.313 token** |
 | Token/parametre | 1,9 | **9,2** |
 | Eğitim | 13.732 adım, 745 dk | 62.483 adım, ~56 saat |
-| Durum | **tamamlandı, ölçüldü** | 2026-11-19'da bitecek |
+| Durum | **tamamlandı, ölçüldü** (v2: BPC 0,6064) | **tamamlandı, ölçüldü** |
 
 #### v1 (yayınlanmış) — ölçülen
 
@@ -435,29 +435,91 @@ SGD lr=0,5, batch 64, 20 epoch → **%98,14** test doğruluğu (10.000 görünt�
 
 Val CE: CPU 1,6337 / GPU 1,6230 (fast-math + toplama sırası).
 
-### 7.4 İngilizce 236 M
+### 7.4 İngilizce v2 (yayınlanan model)
 
-~10.000 tok/s, 8,4 GB VRAM, 76 °C (250 W limitinde), GPU %99 — 11 saat boyunca hız düşmedi.
-Kayıp eğrisi: 9,70 (rastgele) → **~1,97** (%90'da, hâlâ düşüyor).
+| | |
+|---|---|
+| Model | d_model=1024, 16 katman, 8 head (d_head=128), ctx=512 |
+| Parametre | **222.331.904** |
+| Vocab | 16.384 (byte-level BPE, 16.128 merge) |
+| Korpus | TinyStories v2 + Gutenberg, tam 1 epoch = **2.047.457.313 token** |
+| Eğitim | 62.483 adım, ~49 saat, tek RTX 5070 (250 W) |
+| Throughput | son 200 adım ortalaması **10.772 tok/s** |
+| VRAM | 8,4 GB / 12 GB · 66 °C · GPU %99 |
+
+**Kalite** (valid.bin, 8 batch = 32.768 token):
+
+| Metrik | Değer | Rastgele taban |
+|---|---|---|
+| val loss | **2,0227** nat/token | 9,7041 (ln 16.384) |
+| perplexity | **7,56** | 16.384 |
+| **BPC** | **0,6064** bit/karakter | **2,909** |
+
+**Dağılım dışı** (bu README'nin İngilizce metni, eğitimde görülmemiş, 20.514 token):
+
+| Metrik | Değer | Kendi tabanı |
+|---|---|---|
+| val loss | **4,5849** nat/token | 9,7041 |
+| perplexity | **98,00** | 16.384 |
+| **BPC** | **3,2914** bit/karakter | **6,966** |
+
+> **Neden val loss, train loss'tan düşük?** İki sebep: (1) eğitim karışımının
+> yaklaşık dörtte üçü Gutenberg, validasyon seti ise yalnız TinyStories — model
+> çocuk hikâyelerinde kitaplardan belirgin biçimde daha iyi (ölçüldü: 1,95 vs
+> 2,90 ilk batch'lerde). (2) Eğitim loss'unda dropout açık, validasyonda kapalı.
+> Karışımın ağırlıklı ortalaması 2,68; logdaki ~3,10 bunun dropout'lu hâli.
+>
+> **Probe'un BPC'si 2,909 ile kıyaslanmaz:** BPC'nin paydası korpusun
+> karakter/token oranıdır (TinyStories 4,812; probe 2,010). Her korpus kendi
+> tabanıyla gösterilir.
+
+**Üretim** (sıcaklık 0, açgözlü, filtre yok):
+
+> Once upon a timetime, there was a little girl named Lily. She loved to play with her toys and eat yummy food. One day, she found a big box in her room. She was very excited and wanted to see what was inside.
+> Lily opened the box and found a big, soft teddy bear. She was so happy and hugged her teddy bear. She said, "Thank you, teddy bear, for being so kind to me." The teddy bear smiled and said, "You're welcome, Lily. I am glad you like it."
+> From that day on, Lily and the teddy bear were best friends. They played together every day and had lots of fun. And they lived happily ever after.
+> <|endoftext|>
+> Once upon a time, there was a little girl named Lily. She had a big box of toys. One day, she found a new toy in her box. It was a small, red car.
+
+**Üretim** (sıcaklık 0,8, top-k 40):
+
+> Once upon a time? The family was very sad. They needed help to find a way to get home and stay cool. They looked around and finally found a hidden door. The family was very excited to see what was behind the door. They opened the door and saw a bright light and a bright light.
+> The family was so happy to be home and they thanked the family for being so kind. They continued to walk home and had a wonderful time together.
+> <|endoftext|>
+> One day, a little boy named Tim went to the museum with his mom. They saw a big box with a picture of a big, scary dog. Tim saw a man with a funny hat and a funny hat. He asked his mom, "Can we buy the dog?"
+> His mom said, "Yes, let's buy the dog." So, they bought the dog and brought it home. Tim
+
+**PyTorch doğruluğu:** aynı ağırlıklar, aynı 8 batch (32.768 token) →
+StonefishAI **2,022700** · PyTorch **2,022718** · fark **1,8e-05** (eşik 2e-3).
+İki bağımsız uygulama f32 yuvarlaması içinde aynı sonucu veriyor.
 
 ### 7.5 PyTorch ile karşılaştırma — aynı GPU, aynı mimari
 
-![StonefishAI vs PyTorch - 35,7 M parametreyle olculdu](docs/speedup.png)
+![StonefishAI vs PyTorch - 222 M parametre](docs/comparison.png)
 
 `tools/torch_bench.py` v2 mimarisini (RMSNorm + SwiGLU + RoPE + weight tying)
-birebir PyTorch'a kurar; aynı veri, aynı batch, aynı GPU. Üç ölçüm de aynı
-makinede, aynı ısınma turundan sonra alındı.
+birebir PyTorch'a kurar; aynı batch (4 × gradyan biriktirme 16), aynı GPU, aynı
+ısınma turu.
 
-| Uygulama | tok/s | Not |
-|---|---|---|
-| **StonefishAI** | **20.487** | sıfırdan Rust + kendi CUDA FFI'miz |
-| PyTorch (naive attention) | 11.456 | `q @ k.T` açıkça |
-| PyTorch (`F.scaled_dot_product_attention`) | 10.810 | PyTorch'un en hızlı yolu |
+**222 M parametrede** (yayınlanan model):
 
-Fark, PyTorch'un Python döngüsünden değil, **bellek trafiğinden** geliyor:
-fused causal attention tek çekirdekte çalışıp B×S×S skor matrisini diske hiç
-yazmıyor. (35,7 M parametreyle ölçüldü; 222 M ile ölçüm eğitim bitince
-tekrarlanacak ve `docs/comparison.png` olarak yayınlanacak.)
+| Uygulama | tok/s | Adım | VRAM |
+|---|---|---|---|
+| **StonefishAI** | **10.772** | 3.042 ms | 8,40 GB |
+| PyTorch (`scaled_dot_product_attention`) | 10.502 | 3.120 ms | 7,10 GB |
+| PyTorch (naive attention) | 9.996 | 3.278 ms | 7,60 GB |
+
+Bu boyutta fark **%2,6** — PyTorch'un SDPA'sına karşı. Dürüst olmak gerekirse
+bu, küçük modeldeki farkın çok altında: 222 M'de her iki taraf da aynı GEMM'lerle
+sınırlı, el yazımı çekirdeklerin kazancı kayboluyor. **VRAM'de ise StonefishAI
+daha kötü** (8,40 GB'a karşı 7,10 GB): aktivasyonları daha az agresif yeniden
+kullanıyor.
+
+35,7 M parametrede aynı karşılaştırma **1,79×** idi (20.487 vs 10.810 tok/s) —
+orada darboğaz GEMM değil, çekirdek başına bellek trafiğiydi. Fark bu yüzden
+küçük modelde büyük, büyük modelde küçüktür.
+
+![Aynı ölçüm 35,7 M parametrede](docs/speedup.png)
 
 ---
 
@@ -938,6 +1000,7 @@ Kayıp eğrisi (logdan, adım adım):
 | 35.000 | 3,27 | %56 |
 | 45.000 | 3,19 | %72 |
 | 55.000 | 3,14 | %88 |
+| 62.483 | 3,11 | son adım |
 
 > Bu tablo **eğitim loss**'udur (dropout açık, karışımın ~%77'si Gutenberg).
 > Validasyon loss'u bundan düşüktür — sebebi §7.4'te.
