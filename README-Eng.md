@@ -318,7 +318,11 @@ Training curve (GPU-native, 70 seconds):
 | 4 | 1.5591 | 1.6309 |
 | 5 | **1.5215** | **1.6230** |
 
-Reproducibility: hyperparameters + seeds + per-epoch metrics are written to `runs/<ts>.json`.
+Reproducibility: hyperparameters + seeds + per-epoch metrics are written to a
+`runs/<ts>.json` manifest. The two manifests in the repository confirm it: `run`
+holds `model_seed: 0xDEADBEEF`, `shuffle_seed: 0xA5A51234`, `wall_seconds: 69.6`;
+`epochs` holds each epoch's train/val CE; and `best_val_ce: 1.622985` is the last
+row of the table above.
 
 ### 6.2 English (BPE-16k) — **active development**
 

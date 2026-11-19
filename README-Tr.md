@@ -313,7 +313,11 @@ Eğitim eğrisi (GPU-native, 70 saniye):
 | 4 | 1,5591 | 1,6309 |
 | 5 | **1,5215** | **1,6230** |
 
-Tekrar üretilebilirlik: hiperparametreler + seed'ler + epoch metrikleri `runs/<ts>.json` manifestine yazılır.
+Tekrar üretilebilirlik: hiperparametreler + seed'ler + epoch metrikleri `runs/<ts>.json`
+manifestine yazılır. Depodaki iki manifest bunu doğruluyor: `run` içinde
+`model_seed: 0xDEADBEEF`, `shuffle_seed: 0xA5A51234`, `wall_seconds: 69.6`;
+`epochs` dizisinde her epoch'un train/val CE'si; `best_val_ce: 1.622985`, yani
+yukarıdaki tablonun son satırı.
 
 ### 6.2 İngilizce (BPE-16k)
 
