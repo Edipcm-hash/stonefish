@@ -77,28 +77,30 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 # Build (on a machine without CUDA: --no-default-features)
 cargo build --release
 
-# List all modes
+# List every mode
 ./target/release/stonefish_ai help
 
-# ⚡ ONE-COMMAND DEMO — no downloads, trains from scratch in 90 s and generates text
+# ⚡ ONE-COMMAND DEMO - trains from scratch and generates in 90 s, no downloads
 ./target/release/stonefish_ai demo 90
 
 # --- MNIST MLP ---
-./target/release/stonefish_ai train          # train (20 epochs)
-./target/release/stonefish_ai eval           # measure on test set → 98.12 %
+./target/release/stonefish_ai train 20 0.5   # epochs, lr -> 98.14 %
+./target/release/stonefish_ai eval           # measure on the test set
 
-# --- Turkish GPT (character level) ---
-./target/release/stonefish_ai gpt-train 6 8                        # epochs, batch
-./target/release/stonefish_ai gpt-gen "evening falls early" 300 0.8   # prompt, tokens, temperature
+# --- Turkish GPT (character level, historical) ---
+./target/release/stonefish_ai gpt-train 6 8                       # epochs, batch
+./target/release/stonefish_ai gpt-gen "Aksham erken iner" 300 0.8 # prompt, tokens, temp
 
-# --- English GPT (BPE-16k, 236 M) ---
-./target/release/stonefish_ai en-prepare           # learn BPE + build u16 cache
-./target/release/stonefish_ai en-train 450000000   # token budget
+# --- English GPT (BPE-16k, 222 M) ---
+./target/release/stonefish_ai en-prepare             # learn BPE + build the u16 cache
+./target/release/stonefish_ai en-train 2047457313    # token budget (~56 h, one GPU)
+./target/release/stonefish_ai en-eval 8 data/en/tiny # loss / perplexity / BPC
+./target/release/stonefish_ai en-gen "Once upon a time" 150 0.8
 
 # --- Measurement ---
-./target/release/stonefish_ai test-gpt-profile   # where does the time go
-./target/release/stonefish_ai test-gpu-native    # GPU-native trainer speed
-./target/release/stonefish_ai test-matmul-bench  # CPU vs GPU at real shapes
+./target/release/stonefish_ai test-gpt-profile  # where the time goes
+./target/release/stonefish_ai test-gpu-native   # GPU-native trainer speed
+./target/release/stonefish_ai test-matmul-bench # CPU vs GPU at real shapes
 ./target/release/stonefish_ai test-gpu-bench-big
 ```
 

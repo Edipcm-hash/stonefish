@@ -83,16 +83,18 @@ cargo build --release
 ./target/release/stonefish_ai demo 90
 
 # --- MNIST MLP ---
-./target/release/stonefish_ai train          # eğit (20 epoch)
-./target/release/stonefish_ai eval           # test setinde ölç → %98,12
+./target/release/stonefish_ai train 20 0.5   # epoch, lr -> %98,14
+./target/release/stonefish_ai eval           # test setinde ölç
 
-# --- Türkçe GPT (karakter seviyesi) ---
-./target/release/stonefish_ai gpt-train 6 8                    # epoch, batch
+# --- Türkçe GPT (karakter seviyesi, tarihsel) ---
+./target/release/stonefish_ai gpt-train 6 8                        # epoch, batch
 ./target/release/stonefish_ai gpt-gen "Akşam erken iner" 300 0.8   # prompt, token, sıcaklık
 
-# --- İngilizce GPT (BPE-16k, 236 M) ---
-./target/release/stonefish_ai en-prepare        # BPE öğren + u16 cache üret
-./target/release/stonefish_ai en-train 450000000   # token hedefi
+# --- İngilizce GPT (BPE-16k, 222 M) ---
+./target/release/stonefish_ai en-prepare              # BPE öğren + u16 cache üret
+./target/release/stonefish_ai en-train 2047457313     # token hedefi (~56 saat, tek GPU)
+./target/release/stonefish_ai en-eval 8 data/en/tiny  # loss / perplexity / BPC
+./target/release/stonefish_ai en-gen "Once upon a time" 150 0.8
 
 # --- Ölçüm ---
 ./target/release/stonefish_ai test-gpt-profile  # zaman nereye gidiyor
