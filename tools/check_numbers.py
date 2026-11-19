@@ -19,6 +19,7 @@ import io
 import os
 import re
 import struct
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,6 +42,13 @@ def skip(what, why):
     global skipped
     skipped += 1
     print(f"  skip  {what:34s} {why}")
+
+
+def fail(what, detail):
+    """A claim that is broken without a numeric comparison to make."""
+    global failures
+    failures += 1
+    print(f"  FAIL  {what:34s} {detail}")
 
 
 def claim(pattern, path):
@@ -136,6 +144,21 @@ def main() -> int:
         m = re.search(r"\(([\d,]+) merges", changelog)
         if m:
             ok("CHANGELOG BPE merges", int(m.group(1).replace(",", "")), merges)
+
+    # --- the tree marks data/ and runs/ as "not in git", so git had better agree ---
+    # check_docs skips those two entries because they are absent in a fresh clone;
+    # this is the other half of the claim: they must actually be ignored, or a
+    # later .gitignore edit could quietly start committing a 4 GB token cache.
+    for d in ("data", "runs"):
+        p = subprocess.run(
+            ["git", "check-ignore", "-q", d], capture_output=True
+        )
+        if p.returncode == 0:
+            print(f"  OK    {d + '/ is gitignored':34s} yes")
+        elif p.returncode == 1:
+            fail(f"{d}/ is gitignored", "NOT ignored - a later .gitignore edit")
+        else:
+            skip(f"{d}/ is gitignored", "not a git checkout")
 
     # --- CI job count, from the workflow itself ---
     try:
