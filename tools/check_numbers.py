@@ -145,36 +145,40 @@ def main() -> int:
         if m:
             ok("CHANGELOG BPE merges", int(m.group(1).replace(",", "")), merges)
 
-    # --- the tree marks data/ and runs/ as "not in git", so git had better agree ---
+    # --- the tree marks data/ and runs/ as "not in git", so .gitignore must say so ---
     # check_docs skips those two entries because they are absent in a fresh clone;
     # this is the other half of the claim: they must actually be ignored, or a
     # later .gitignore edit could quietly start committing a 4 GB token cache.
+    #
+    # Deliberately textual rather than `git check-ignore`: in CI neither directory
+    # exists, and a "/data/" pattern (directory-only) cannot match a path git cannot
+    # prove is a directory - the real check failed there for exactly that reason.
+    ignore = io.open(".gitignore", encoding="utf-8", errors="replace").read()
+    patterns = {
+        line.strip().rstrip("/").lstrip("/")
+        for line in ignore.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
     for d in ("data", "runs"):
-        p = subprocess.run(
-            ["git", "check-ignore", "-q", d], capture_output=True
-        )
-        if p.returncode == 0:
+        if d in patterns:
             print(f"  OK    {d + '/ is gitignored':34s} yes")
-        elif p.returncode == 1:
-            fail(f"{d}/ is gitignored", "NOT ignored - a later .gitignore edit")
         else:
-            skip(f"{d}/ is gitignored", "not a git checkout")
+            fail(f"{d}/ is gitignored", "no pattern in .gitignore")
 
-    # --- CI job count, from the workflow itself ---
-    try:
-        import yaml
-
-        wf = yaml.safe_load(io.open(".github/workflows/ci.yml", encoding="utf-8"))
-        jobs = len(wf["jobs"])
-        words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
-        m = re.search(r"CI\*\*: (\w+) jobs", changelog)
-        if m:
-            claimed_jobs = words.get(m.group(1).lower())
-            ok("CI jobs (CHANGELOG)", claimed_jobs, jobs)
-        else:
-            skip("CI jobs", "no claim found in CHANGELOG")
-    except Exception as exc:  # noqa: BLE001 - yaml may be absent
-        skip("CI jobs", f"{type(exc).__name__}")
+    # --- CI job count, from the workflow itself (no yaml: CI has no PyYAML) ---
+    # `jobs:` is the last top-level key, so everything after it is the job block.
+    # A column-0 comment before the final job (the "Language guard" note) ends a
+    # naive block match, which is why the comment lines are dropped first.
+    wf = io.open(".github/workflows/ci.yml", encoding="utf-8", errors="replace").read()
+    after = wf[wf.index("\njobs:") :] if "\njobs:" in wf else ""
+    body = "\n".join(ln for ln in after.splitlines() if not ln.startswith("#"))
+    jobs = len(re.findall(r"^  [a-z][\w-]*:$", body, re.M))
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+    mc = re.search(r"CI\*\*: (\w+) jobs", changelog)
+    if mc:
+        ok("CI jobs (CHANGELOG)", words.get(mc.group(1).lower()), jobs)
+    else:
+        skip("CI jobs", "no claim found in CHANGELOG")
 
     print()
     if failures:
