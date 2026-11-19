@@ -99,7 +99,7 @@ tests, and a loss that matches PyTorch to 1.8e-05.
 
 ### Where to start reading
 
-10,328 lines is intimidating; in the right order, five files are enough.
+10,349 lines is intimidating; in the right order, five files are enough.
 
 | # | File | What it teaches |
 |---|---|---|
@@ -206,10 +206,20 @@ each claim on your own machine.
 | `en-gen` works without a GPU | `cargo run --release --no-default-features -- en-gen "Once upon a time" 10 0` | text comes out (~3 tok/s) |
 | The charts come from this data | `python tools/make_charts.py` | `docs/*.png` rewritten |
 
-**Note:** `demo 90` also runs on the CPU (a 12K-character slice, ~11,000 tok/s).
-On a GPU the 90-second budget assumes an **idle card**: sharing it with another
-training run drops the measured rate from 352,000 to ~12,000 tok/s and the text
-gets rough.
+**Measured (idle RTX 5070):** 18,907 steps in 99 s · **389,304 tok/s** · final loss
+**0.71** · 1,783,680 parameters · output: *"I thank you, gentle lady; and so indeed it
+with his new doublet in true arms?"*
+
+**Honest warning - this is an engine demo, not a model claim.** 18,907 steps x 2,048
+tokens = 38.7 M tokens, which is **~54 epochs** of the 716,800-character Shakespeare
+slice. The model is fluent here because it largely **memorises** the corpus. That the
+text looks like Shakespeare shows the engine works; it does not show that the model
+generalises. The real model (section 7.4) was trained on 2 billion tokens, seeing each
+piece of text once.
+
+**Note:** it also runs on the CPU (a 12K-character slice, ~11,000 tok/s). The budget
+assumes an **idle card**: sharing it with another training run drops the rate from
+389,000 to ~12,000 tok/s and the text gets rough.
 `test-ffi` and the GPU tests need the CUDA build; `--no-default-features` skips them. With
 `--no-default-features` everything runs on the CPU and the GPU tests are
 skipped.
@@ -266,7 +276,7 @@ compile load).
 | [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT trainer (the fast path) |
 | [src/en_train.rs](src/en_train.rs) | 596 | English pipeline: `prepare`, `train`, `eval`, `generate` |
 | [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache generation (O(n) until the context fills) |
-| [src/demo.rs](src/demo.rs) | 203 | One-command demo, CPU or GPU |
+| [src/demo.rs](src/demo.rs) | 224 | One-command demo, CPU or GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Tokenize unseen text so `en-eval` can score it |
 | [src/profile.rs](src/profile.rs) | 133 | Lightweight profiling counters |
 | [src/main.rs](src/main.rs) | 1739 | CLI (27 modes), the training loops, the smoke tests |
@@ -278,7 +288,7 @@ compile load).
 | [src/sys/selftest.rs](src/sys/selftest.rs) | 238 | `test-ffi`: alloc, copy, PTX, kernel, cuBLAS |
 | [kernels/stonefish.cu](kernels/stonefish.cu) | 711 | CUDA kernels |
 
-Measured total: **10,328 lines of Rust** (`src/`) + 2,322 lines of tests + 150 of examples + **711 lines of CUDA**, **0 dependencies**.
+Measured total: **10,349 lines of Rust** (`src/`) + 2,322 lines of tests + 150 of examples + **711 lines of CUDA**, **0 dependencies**.
 
 ---
 
@@ -784,7 +794,7 @@ StonefishAI/
 ├── README.md             # language picker
 ├── kernels/
 │   └── stonefish.cu      # 711 lines, 33 CUDA kernels (compiled by NVRTC)
-├── src/                  # 28 files, 10,328 lines
+├── src/                  # 28 files, 10,349 lines
 │   ├── autograd.rs       # 19 ops, topological backward()
 │   ├── sys/              # our own CUDA FFI (1,415 lines)
 │   ├── gpu_train.rs      # GPU-native trainer

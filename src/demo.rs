@@ -14,7 +14,8 @@ use crate::transformer::{GptConfig, GPT};
 /// Steps run before the time budget is extrapolated. Five is enough to smooth
 /// out the first-step cost (allocation, first kernel load) and cheap enough that
 /// it does not eat the budget.
-const PROBE_STEPS: usize = 5;
+const WARMUP_STEPS: usize = 12;
+const PROBE_STEPS: usize = 12;
 
 pub fn run(seconds: u64) {
     println!("🐟 StonefishAI - one-command demo\n");
@@ -97,8 +98,14 @@ pub fn run(seconds: u64) {
     let mut loss_avg = 0.0f64;
     let mut loss_n = 0usize;
     let mut last_report = std::time::Instant::now();
-    let mut total_steps: usize = PROBE_STEPS;
+
+    // Warm up before measuring. The first steps pay for NVRTC compilation of the
+    // kernels (and, on the CPU path, for the first autograd graph), so measuring
+    // them understated the rate by 5x on the GPU - the demo planned for 2,517
+    // steps, ran them at 386,000 tok/s and finished in 13 s of a 90 s budget.
     let mut step = 0usize;
+    let mut total_steps: usize = WARMUP_STEPS + PROBE_STEPS;
+    let mut probe_start: Option<std::time::Instant> = None;
 
     while step < total_steps {
         // random windows over the corpus
@@ -111,13 +118,27 @@ pub fn run(seconds: u64) {
                 targets[off + j] = ids[start + j + 1];
             }
         }
-        if step + 1 == PROBE_STEPS {
-            let rate = ((step + 1) * tokens_per_step) as f64 / t0.elapsed().as_secs_f64();
-            let left = (seconds as f64 - t0.elapsed().as_secs_f64()).max(1.0);
-            total_steps = PROBE_STEPS + (left * rate / tokens_per_step as f64) as usize;
+        // Start the clock only after the warm-up, so the measurement is of steady
+        // state rather than of kernel compilation.
+        if step == WARMUP_STEPS {
+            probe_start = Some(std::time::Instant::now());
+        }
+        if step + 1 == WARMUP_STEPS + PROBE_STEPS {
+            let dt = probe_start
+                .map(|t| t.elapsed().as_secs_f64())
+                .unwrap_or_else(|| t0.elapsed().as_secs_f64());
+            let rate = (PROBE_STEPS * tokens_per_step) as f64 / dt.max(1e-6);
+            let elapsed = t0.elapsed().as_secs_f64();
+            let left = (seconds as f64 - elapsed).max(1.0);
+            total_steps = step + 1 + (left * rate / tokens_per_step as f64) as usize;
+            let epochs = (total_steps * tokens_per_step) as f64 / ids.len() as f64;
             println!(
-                "  measured {:.0} tok/s -> {} steps fit in the budget\n",
-                rate, total_steps
+                "  measured {:.0} tok/s (after {} warm-up steps) -> {} steps, ~{:.0} epochs of the {} char corpus\n",
+                rate,
+                WARMUP_STEPS,
+                total_steps,
+                epochs,
+                ids.len()
             );
             last_report = std::time::Instant::now();
         }

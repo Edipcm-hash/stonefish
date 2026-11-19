@@ -96,7 +96,7 @@ sökülmüş parçalardan gerçekten oynanan bir tahta çıktı — 2 milyar tok
 
 ### Kodu okumaya nereden başlamalı
 
-10.328 satır göz korkutucu; ama sıra doğruysa beş dosya yeter.
+10.349 satır göz korkutucu; ama sıra doğruysa beş dosya yeter.
 
 | # | Dosya | Ne öğretir |
 |---|---|---|
@@ -203,9 +203,19 @@ komutlar her iddiayı kendi makinenizde yeniden üretir.
 | `en-gen` GPU'suz da çalışır | `cargo run --release --no-default-features -- en-gen "Once upon a time" 10 0` | metin üretir (~3 tok/s) |
 | Grafikler bu verilerden üretiliyor | `python tools/make_charts.py` | `docs/*.png` yeniden yazılır |
 
-**Not:** `demo 90` CPU'da da çalışır (12 bin karakterlik bir dilimle, ~11.000 tok/s).
-GPU'da 90 saniyelik bütçe **boş kart** varsayar: kartı başka bir eğitimle paylaşırsan
-ölçülen hız 352.000 yerine ~12.000 tok/s olur ve üretilen metin kaba kalır.
+**Ölçülen (boş RTX 5070):** 99 s'de 18.907 adım · **389.304 tok/s** · son loss **0,71** ·
+1.783.680 parametre · çıktı: *"I thank you, gentle lady; and so indeed it with his
+new doublet in true arms?"*
+
+**Dürüst uyarı — bu bir motor demosu, model iddiası değil.** 90 saniyede 18.907 adım
+× 2.048 token = 38,7 M token, yani 716.800 karakterlik Shakespeare diliminin
+**~54 epoch'u**. Model bu yüzden akıcı: corpus'u büyük ölçüde **ezberliyor**. Metnin
+Shakespeare'e benzemesi motorun doğru çalıştığını gösterir; genelleme yaptığını
+göstermez. Gerçek model (§7.4) 2 milyar token'la, her metni bir kez görerek eğitildi.
+
+**Not:** CPU'da da çalışır (12 bin karakterlik dilim, ~11.000 tok/s). Bütçe **boş
+kart** varsayar: kartı başka bir eğitimle paylaşırsan hız 389.000 yerine ~12.000 tok/s
+olur ve metin kaba kalır.
 `test-ffi` ve GPU testleri için CUDA'lı derleme gerekir; `--no-default-features` ile onlar atlanır.
 
 ---
@@ -260,7 +270,7 @@ ayrıca karta yapılan başka işler (demo, MNIST, GPU testleri) hızı geçici 
 | [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT eğiticisi (hızlı yol) |
 | [src/en_train.rs](src/en_train.rs) | 596 | İngilizce hat: `prepare`, `train`, `eval`, `generate` |
 | [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache üretimi (bağlam dolana kadar O(n)) |
-| [src/demo.rs](src/demo.rs) | 203 | Tek komut demo, CPU veya GPU |
+| [src/demo.rs](src/demo.rs) | 224 | Tek komut demo, CPU veya GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Görülmemiş metni `en-eval` için tokenize et |
 | [src/profile.rs](src/profile.rs) | 133 | Hafif profil sayaçları |
 | [src/main.rs](src/main.rs) | 1739 | CLI (27 mod), eğitim döngüleri, duman testleri |
@@ -272,7 +282,7 @@ ayrıca karta yapılan başka işler (demo, MNIST, GPU testleri) hızı geçici 
 | [src/sys/selftest.rs](src/sys/selftest.rs) | 238 | `test-ffi`: tahsis, kopyalama, PTX, çekirdek, cuBLAS |
 | [kernels/stonefish.cu](kernels/stonefish.cu) | 711 | CUDA çekirdekleri |
 
-Ölçülen toplam: **10.328 satır Rust** (`src/`) + 2.322 satır test + 150 satır örnek + **711 satır CUDA**, **0 bağımlılık**.
+Ölçülen toplam: **10.349 satır Rust** (`src/`) + 2.322 satır test + 150 satır örnek + **711 satır CUDA**, **0 bağımlılık**.
 
 ---
 
@@ -771,7 +781,7 @@ StonefishAI/
 ├── README.md             # dil seçimi
 ├── kernels/
 │   └── stonefish.cu      # 711 satır, 33 CUDA çekirdeği (NVRTC ile derlenir)
-├── src/                  # 28 dosya, 10.328 satır
+├── src/                  # 28 dosya, 10.349 satır
 │   ├── autograd.rs       # 19 op, topolojik backward()
 │   ├── sys/              # kendi CUDA FFI'miz (1.415 satır)
 │   ├── gpu_train.rs      # GPU-native eğitici
@@ -1048,8 +1058,8 @@ doğrulanır**, "yazıldı" olması yetmez. Bulunanlar:
 | MNIST doğruluğu | %98,12 | **%94,51** aynı hiperparametrelerle — `1/batch` düzeltmesinden sonra lr 64× küçük kalmış; `lr=0,5` ile %98,14 |
 | §1 "Yapabildikleri" | "**KV-cache yok** → O(n²)" | KV-cache var, 2 testi geçiyor |
 | Hızlı başlangıç | `train` (%98,12), `en-train 450M`, "236 M" | `train 20 0.5`, `en-train 2047457313`, 222 M |
-| Mimari tablosu | 20 dosyada satır sayısı | hepsi yeniden ölçüldü (10.328 satır) |
-| §13 dizin ağacı | sürüm 0.7.0, "6.300 satır", "62 test" | 1.0.0, 10.328, 75 |
+| Mimari tablosu | 20 dosyada satır sayısı | hepsi yeniden ölçüldü (10.349 satır) |
+| §13 dizin ağacı | sürüm 0.7.0, "6.300 satır", "62 test" | 1.0.0, 10.349, 75 |
 | Model kartı | "~5,5 gün", held-out Gutenberg satırı, taban BPC 2,28 | ~54 saat, satır silindi, taban 2,909 |
 | §7.3 hızlanma | "46,7×" (tablo 28,9× veriyor) | adım başına **28,6×**, duvar saati **46,6×** — ikisi de yazıldı |
 | Veri tablosu | yalnız TinyStories | TinyStories **+ Gutenberg** (model ikisiyle eğitildi) |
