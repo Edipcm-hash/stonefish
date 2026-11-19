@@ -41,7 +41,7 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 9. [Testler](#9-testler)
 10. [Geliştirme sırasında bulunan hatalar](#10-geliştirme-sırasında-bulunan-hatalar)
 11. [Bilinen sınırlar](#11-bilinen-sınırlar)
-12. [Yol haritası — yapılacaklar](#12-yol-haritası--yapılacaklar)
+12. [Yol haritası — ne bitti, ne kaldı](#12-yol-haritası--ne-bitti-ne-kaldı)
 13. [Dizin yapısı](#13-dizin-yapısı)
 14. [Sıfır bağımlılık nasıl çalışıyor](#14-sıfır-bağımlılık-nasıl-çalışıyor)
 15. [**Kronoloji — 15 Haziran'dan bugüne**](#15-kronoloji--15-hazirandan-bugüne)
@@ -56,10 +56,11 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 |---|---|
 | El yazısı rakam sınıflandırma (MNIST) | **%98,14** test doğruluğu (`train 20 0.5`) |
 | İngilizce dil modeli (v2, yayınlanan) | **222,3 M parametre**, tam 1 epoch = **2,05 B token** |
+| Kalite | held-out **BPC 0,6064** (rastgele taban 2,909) · perplexity **7,56** |
 | İngilizce üretim | 512 token bağlam, sıcaklık/top-k, **KV-cache** ile O(n) |
 | Türkçe karakter modeli (v0.5, tarihsel) | 842 K parametre, val CE **1,6230** (taban 4,91) |
 | Gradyan doğrulama | **32 test**, merkezi farkla analitik ↔ numerik |
-| GPU eğitimi | device-resident; 222 M'de **10.732 tok/s** |
+| GPU eğitimi | device-resident; 222 M'de **10.772 tok/s** |
 | Checkpoint | config+vocab gömülü, **atomik** yazım, resume |
 
 ### ❌ Yapamadıkları (dürüst liste)
@@ -72,6 +73,42 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 - **Yalnız İngilizce.** Türkçe model karakter seviyesinde bir oyuncaktı, bu sürüme dahil değil.
 - **Bağlam 512 token.** Daha uzun metinde pencere kayar; model 512'nin ötesini görmedi.
 - **CPU'da yavaş.** `en-gen` GPU'suz çalışır ama ~3 token/s.
+- **PyTorch'tan belirgin biçimde hızlı değil.** 222 M'de %2,6 önde, VRAM'de 1,3 GB
+  geride. Kazanç hız değil; bkz. §7.5.
+
+### Neden var
+
+Aynı modeli PyTorch'ta ~10 satırda tanımlayabilirdim. Bunu yapmadım çünkü projenin
+sorusu "bir dil modeli eğitmek" değil, **"bir dil modelini çalıştıran katmanları
+anlamak"**:
+
+- `backward()` nasıl çalışıyor, gradyanlar nereden geliyor?
+- Bir CUDA çekirdeği yazmak, `cudarc` gibi bir sarmalayıcı olmadan neye benziyor?
+- 12 GB'lık bir karta 222 M parametre sığdırmak için hangi kararları vermek gerekiyor?
+- Sayı doğru mu, yoksa sadece "çalışıyor" mu?
+
+Bunların hiçbiri kütüphane kullanınca öğrenilmiyor. Projenin tamamı bu dört sorunun
+cevabı. Model, cevabın yan ürünü.
+
+Bir cümlede: **langırt tahtasını sökmek için yapıldı, oynamak için değil.** Ama
+sökülmüş parçalardan gerçekten oynanan bir tahta çıktı — 2 milyar token eğitilmiş,
+75 testten geçen, PyTorch ile 1,8e-05 içinde aynı sonucu veren bir model.
+
+### Kodu okumaya nereden başlamalı
+
+10.328 satır göz korkutucu; ama sıra doğruysa beş dosya yeter.
+
+| # | Dosya | Ne öğretir |
+|---|---|---|
+| 1 | `src/tensor.rs` | saf Rust 2D matris — matmul, transpose, dilim |
+| 2 | `src/autograd.rs` | `Op` enum'u ve topolojik `backward()`; 19 op'un gradyanı |
+| 3 | `src/transformer.rs` | RMSNorm, SwiGLU, RoPE, attention, GPT |
+| 4 | `src/gpu_train.rs` | cihazda kalan eğitici: ileri/geri elle yazılmış |
+| 5 | `src/sys/` | kendi CUDA FFI'miz — `LoadLibraryW`'dan `cublasSgemm`'e |
+
+Bunların hepsi testlerle çapraz kontrol edilmiş; `tests/gradcheck.rs` her op'un
+gradyanını merkezi farkla yeniden hesaplıyor. Kodu okurken bir yerde takılırsan
+muhtemelen o test sana cevabı verir.
 
 ---
 
@@ -97,7 +134,7 @@ cargo build --release
 
 # --- İngilizce GPT (BPE-16k, 222 M) ---
 ./target/release/stonefish_ai en-prepare              # BPE öğren + u16 cache üret
-./target/release/stonefish_ai en-train 2047457313     # token hedefi (~56 saat, tek GPU)
+./target/release/stonefish_ai en-train 2047457313     # token hedefi (~54 saat, tek GPU)
 ./target/release/stonefish_ai en-eval 8 data/en/tiny  # loss / perplexity / BPC
 ./target/release/stonefish_ai en-gen "Once upon a time" 150 0.8
 
@@ -182,7 +219,7 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | VRAM | 12 GB | fp32 eğiticisiyle **~250 M parametre** tavanı (v2: 222 M, 8,4 GB) |
 | RAM | 32 GB | Akışlı veri hattı olmadan 2 B token **sığmaz** (u16 + disk cache bunu çözer) |
 | Termal | SFF kasa, VBIOS tavanı 250 W | 250 W'da 76-80 °C, throttle yok. Bir deney olarak 210 W uygulandı (76 °C, hız %5 düştü); sürücü sıfırlayınca 250 W'a döndü ve orada bırakıldı |
-| Süre | tek GPU | **222 M model + 2,05 B token = 56 saat** (ölçüldü) |
+| Süre | tek GPU | **222 M model + 2,05 B token = 54 saat** saf hesaplama (duvar saati 60 saat; bir yeniden başlatma var) |
 
 Ölçülen eğitim hızları:
 
@@ -191,10 +228,11 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | 842 K (GPU-native) | 4,2 ms | **244.698 tok/s** |
 | 842 K (CPU+cuBLAS) | 120,8 ms | 8.476 tok/s |
 | 236 M, v1 (GPU-native) | ~3,27 s | ~10.000 tok/s |
-| **222 M, v2 (GPU-native)** | **3,05 s** | **10.732 tok/s** |
+| **222 M, v2 (GPU-native)** | **3,04 s** | **10.772 tok/s** |
 
-222 M satırı 62.483 adımın son 200 ölçümünün ortalamasıdır; tüm koşunun ortalaması
-10.558 tok/s (ilk saatlerde veri penceresi hatası ve derleme yükü vardı).
+222 M satırı 62.483 adımın **son 200 ölçümünün** ortalamasıdır. Tüm koşunun
+ortalaması 10.558 tok/s — ilk saatlerde veri penceresi hatası ve derleme yükü vardı,
+ayrıca karta yapılan başka işler (demo, MNIST, GPU testleri) hızı geçici düşürdü.
 
 ---
 
@@ -343,18 +381,24 @@ yukarıdaki tablonun son satırı.
 
 ### 6.2 İngilizce (BPE-16k)
 
-İki İngilizce model var: **yayınlanmış v1** (aşağıda ölçülmüş) ve **eğitimi süren v2**.
+İki İngilizce model var: **v1** (önceki sürüm, ölçüldü ama hiç yayınlanmadı) ve
+**v2** (bu sürümde yayınlanan model). İkisi aynı validasyon dosyasında ölçüldü, bu
+yüzden doğrudan kıyaslanabilir.
 
-| | **v1 — yayınlanmış** | **v2 — eğitimi sürüyor** |
+| | **v1 — önceki, yayınlanmadı** | **v2 — yayınlanan** |
 |---|---|---|
 | Mimari | LayerNorm + GELU + mutlak konum | **RMSNorm + SwiGLU + RoPE + weight tying + dropout** |
 | Parametre | 235.571.200 | **222.331.904** |
 | Korpus | TinyStories, 450,9 M token | **TinyStories + Gutenberg, 2.047.457.313 token** |
 | Token/parametre | 1,9 | **9,2** |
-| Eğitim | 13.732 adım, 745 dk | 62.483 adım, ~56 saat |
-| Durum | **tamamlandı, ölçüldü** (v2: BPC 0,6064) | **tamamlandı, ölçüldü** |
+| Eğitim | 13.732 adım, 745 dk | 62.483 adım, ~54 saat |
+| **BPC** | 0,6913 | **0,6064** |
+| Durum | tamamlandı, ölçüldü — **hiç yayınlanmadı** | **tamamlandı, ölçüldü, yayına hazır** |
 
-#### v1 (yayınlanmış) — ölçülen
+v2, **%6 daha az parametreyle** daha iyi BPC veriyor: mimari turu (RoPE, RMSNorm,
+SwiGLU, tying) ve 4,5× daha fazla veri birlikte.
+
+#### v1 (önceki sürüm, yayınlanmadı) — ölçülen
 
 | | |
 |---|---|
@@ -443,7 +487,7 @@ Val CE: CPU 1,6337 / GPU 1,6230 (fast-math + toplama sırası).
 | Parametre | **222.331.904** |
 | Vocab | 16.384 (byte-level BPE, 16.128 merge) |
 | Korpus | TinyStories v2 + Gutenberg, tam 1 epoch = **2.047.457.313 token** |
-| Eğitim | 62.483 adım, ~49 saat, tek RTX 5070 (250 W) |
+| Eğitim | 62.483 adım, **~54 saat** saf hesaplama, tek RTX 5070 (250 W) |
 | Throughput | son 200 adım ortalaması **10.772 tok/s** |
 | VRAM | 8,4 GB / 12 GB · 66 °C · GPU %99 |
 
@@ -665,67 +709,53 @@ eksikleri (RoPE, SwiGLU, RMSNorm, weight tying, `en-eval`, `en-gen`) v2'de kapan
   kabul edildi (her 500 adımda bir).
 - **Üretim tek örnek** — batch'li/speculative decoding yok.
 - **CPU üretimi yavaş** — `en-gen` GPU'suz da çalışır ama autograd yoluyla
-  ~3 token/s; GPU yolu aynı modelde ~100 token/s üzerinde.
+  ~3 token/s; GPU yolu aynı modelde **160–185 token/s** (ölçüldü).
 
 ---
 
-## 12. Yol haritası — yapılacaklar
+## 12. Yol haritası — ne bitti, ne kaldı
 
-### Faz A — İngilizce modeli doğrula *(bitişte, ~1 saat)*
+Bu bölüm eskiden "yapılacaklar" listesiydi ve zamanla yanlışlandı: içindeki üç fazın
+tamamı v1.0'da bitti. Aşağısı bugünkü gerçek durum.
 
-- [ ] **A1 `en-eval`**: `valid.bin` (3,9 M token) üzerinde val loss, **perplexity**, **BPC**
-  - BPC = loss[token] / (ln2 × karakter/token) → tokenizer'dan bağımsız tek karşılaştırma metriği
-  - Trend: 450 M token'dan sonra `loss 1,7–2,0` bandında bekleniyor
-- [ ] **A2 `en-gen`**: BPE encode → kayan pencere forward → sıcaklık/top-k → decode
-- [ ] **A3 örnek rapor**: ham üretim çıktıları (temperature 0 ve 0,8)
+### 12.1 Bitti (v1.0'da)
 
-### Faz B — Veri büyütme *(en yüksek getiri)*
+| Faz | Ne | Sonuç |
+|---|---|---|
+| **A — doğrulama** | `en-eval`, `en-gen`, örnek raporu | ✅ BPC **0,6064** · ppl **7,56** · OOD BPC **3,2914** · 7 örnek (`docs/SAMPLES.md`) |
+| **B — veri** | Project Gutenberg + TinyStories | ✅ **2,05 B token**, tam 1 epoch |
+| **C — mimari** | KV-cache, RoPE, RMSNorm, SwiGLU, weight tying, dropout | ✅ hepsi; KV-cache tam ileri geçişle **5e-8** içinde aynı |
+| **C — doğruluk** | PyTorch ile aynı ağırlıklar | ✅ loss farkı **1,8e-05** (eşik 2e-3) |
 
-- [ ] **B1** Project Gutenberg (~3-5 B token) indir + temizle (başlık/son söz ayıklama)
-- [ ] **B2** Karışım: %60 TinyStories + %40 Gutenberg → 2-4 B token
-- [ ] **B3** Yeniden tokenize → ~6-8 GB u16 cache
-- [ ] **B4** Aynı mimariyle 2-4 B token eğitimi (~2-3 gün)
-  - Hedef: 8-16 token/parametre → belirgin kalite sıçraması
+### 12.2 Sıradaki — öncelik sırasıyla
 
-### Faz C — Mimari iyileştirmeler
+| # | İş | Neden bu sırada | Beklenen etki |
+|---|---|---|---|
+| 1 | **bf16 karışık hassasiyet** | Aynı 12 GB'da ya 2× hız ya 2× model; kernel tarafında `__half` desteği gerekir | En yüksek getiri |
+| 2 | **Daha fazla veri** (4–8 B token) | 9,2 token/parametre → 20+; Chinchilla bölgesi | Kalite sıçraması |
+| 3 | **Gradyan checkpointing** | Aktivasyonları yeniden hesapla → 400 M modele yer | Orta |
+| 4 | **Halka tamponlu KV-cache** | 512 token dolduktan sonra üretim O(n·512) oluyor | Orta |
+| 5 | **Checkpoint v3** | BPE merge tablosunu da dosyaya göm → ağırlık tek dosya | Küçük, ama yayını kolaylaştırır |
+| 6 | **`en-eval`/`en-gen` otomatik testleri** | Şu an bu iki yol yalnız elle doğrulanıyor | CI kapsamı |
+| 7 | **ctx 1024** | Model 512'nin ötesini hiç görmedi | Orta |
+| 8 | **Flash-attention tarzı çekirdek** | 222 M'de fark yok; 400 M+ modelde bellek kazancı | Deneysel |
 
-- [ ] **C1 KV-cache**: üretimde 10-50× hızlanma (O(n²) → O(n))
-- [ ] **C2 RoPE**: öğrenilmiş mutlak konum yerine döner konum → uzun bağlam, konum kayması biter
-- [ ] **C3 RMSNorm** (LayerNorm yerine), **SwiGLU** (FFN), **weight tying** (gömme ↔ çıkış), **dropout**
-- [ ] **C4 bf16 karışık hassasiyet**: 2-3× hız + daha büyük model (çekirdeklerde `__half` desteği)
-- [ ] **C5 Bellek-verimli/birleşik attention** (flash-attention tarzı)
-- [ ] **C6 Gradyan checkpointing**: aktivasyonları yeniden hesapla → 300-500 M modele yer aç
+### 12.3 Bilinçli olarak **yapmadıklarım**
 
-### Faz D — Ölçek
-
-- [ ] **D1** 300 M (d=1024, L=20) denemesi — VRAM ölçümüyle
-- [ ] **D2** ctx 1024 (şu an 512)
-
-### Faz E — Hizalama (asistan davranışı)
-
-- [ ] **E1** SFT veri seti: 10-50 k `(talimat, cevap)` çifti *(asıl zor kısım)*
-- [ ] **E2** Chat şablonu (`<|user|>… <|assistant|>…`) + SFT ince ayarı
-- [ ] **E3** DPO / tercih eğitimi (üslup, yardımseverlik, reddetme)
-- [ ] **E4** Talimat takibi değerlendirme seti
-
-### Faz F — Mühendislik borcu
-
-- [ ] **F1** Checkpoint **v3**: BPE merge tablosunu da checkpoint'e göm (şu an `SFEN001` ayrı)
-- [ ] **F2** `en-eval`/`en-gen` için otomatik testler
-- [ ] **F3** Periyodik checkpoint'i Türkçe yola da ekle
-- [ ] **F4** README'leri Faz A-E ilerledikçe güncelle
-
-### Beklenti tablosu
-
-| Faz sonrası | Ne elde edilir |
+| Ne | Neden yapılmadı |
 |---|---|
-| A | Ölçülmüş kalite + ilk gerçek İngilizce örnekler |
-| B | Akıcı, tema tutarlı, 2-3 paragraf |
-| C | Aynı donanımda ~2× hız, uzun bağlam, daha az VRAM |
-| D | Kalite tavanı (donanım sınırı) |
-| E | **Soru-cevap yapan** asistan (bilgi yok, format var) |
+| **SFT / DPO / sohbet** | Bu projenin amacı asistan değil. SFT için 1 B+ parametre ve insan etiketli veri gerekir; 222 M'ye SFT yapmak, olmayan bilgiyi taklit ettirmek olur |
+| **Çoklu GPU** | Hedef tek tüketici kartıydı; veri paralel yolu bu hedefi değiştirirdi |
+| **Hazır modeli ince ayar** | Projenin tamamı "sıfırdan" iddiası üzerine kurulu; o adım iddiayı geçersiz kılardı |
+| **FlashAttention'ı kopyalamak** | Kendi fused attention'ımız var ve 222 M'de darboğaz değil; kopyalamak öğrenme değeri katmazdı |
 
-> **Dürüst uyarı:** Tek RTX 5070 ile ulaşılabilir son nokta ~250-300 M parametre ve ~4 B token'dır. Bu, "etkileyici bir sıfırdan-yazılmış motor + gerçek bir dil modeli" demektir; "kullanılabilir asistan" değil. Gerçek asistan için 1 B+ parametre ve ~20 B token gerekir → bulut GPU (8×A100 ile ~2 gün, ~$700) veya hazır bir temel modeli ince ayar.
+### 12.4 Gerçekçi tavan
+
+Tek RTX 5070 (12 GB, fp32) ile ulaşılabilir son nokta **~250–300 M parametre** ve
+**~4 B token**. Bu, "sıfırdan yazılmış gerçek bir motor + dürüst bir dil modeli"
+demektir; "kullanılabilir asistan" değil. Gerçek bir asistan için 1 B+ parametre ve
+~20 B token gerekir — bulut GPU (8×A100 ile ~2 gün) ya da hazır bir temel modeli
+ince ayar. İkisi de bu projenin iddiasının dışında.
 
 ---
 
@@ -743,7 +773,7 @@ StonefishAI/
 │   └── stonefish.cu      # 711 satır, 33 CUDA çekirdeği (NVRTC ile derlenir)
 ├── src/                  # 28 dosya, 10.328 satır
 │   ├── autograd.rs       # 19 op, topolojik backward()
-│   ├── sys/              # kendi CUDA FFI'miz (1.289 satır)
+│   ├── sys/              # kendi CUDA FFI'miz (1.415 satır)
 │   ├── gpu_train.rs      # GPU-native eğitici
 │   ├── en_train.rs       # İngilizce dil modeli eğitimi/değerlendirmesi
 │   ├── bpe.rs            # byte-level BPE-16k
@@ -751,7 +781,8 @@ StonefishAI/
 ├── tests/                # 6 dosya, 75 test (2.322 satır)
 ├── examples/             # bpe_bench.rs, grad_probe.rs
 ├── tools/                # 15 Python aracı: ölçüm, grafik, koruma, yayın kapısı
-├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, HF kartı, 4 grafik
+├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, SAMPLES,
+│                         #   HF kartı, report.json, 7 grafik
 ├── .github/workflows/    # CI: 5 iş (CPU, CUDA, sıfır bağımlılık, doküman, dil)
 ├── data/                 # (git dışı) MNIST + korpuslar
 └── runs/                 # (git dışı) eğitim manifestleri
@@ -982,7 +1013,7 @@ Model  : d=1024, 16 katman, 8 head (d_head=128), ctx=512, BPE-16.384
          → 222.331.904 parametre
 Batch  : 4 × gradyan biriktirme 16 = 32.768 token/adım
 Plan   : 62.483 adım · max_lr 4e-4 · 1000 adım warmup + cosine · clip 1,0
-Süre   : ~56 saat · 10.100 token/s · 8,2 GB VRAM · 76 °C · 250 W
+Süre   : ~54 saat · 10.562 token/s · 8,2 GB VRAM · 66-80 °C · 250 W
 ```
 
 ![Kayıp eğrisi ve öğrenme oranı programı](docs/loss-curve.png)
@@ -1019,7 +1050,7 @@ doğrulanır**, "yazıldı" olması yetmez. Bulunanlar:
 | Hızlı başlangıç | `train` (%98,12), `en-train 450M`, "236 M" | `train 20 0.5`, `en-train 2047457313`, 222 M |
 | Mimari tablosu | 20 dosyada satır sayısı | hepsi yeniden ölçüldü (10.328 satır) |
 | §13 dizin ağacı | sürüm 0.7.0, "6.300 satır", "62 test" | 1.0.0, 10.328, 75 |
-| Model kartı | "~5,5 gün", held-out Gutenberg satırı, taban BPC 2,28 | ~56 saat, satır silindi, taban 2,909 |
+| Model kartı | "~5,5 gün", held-out Gutenberg satırı, taban BPC 2,28 | ~54 saat, satır silindi, taban 2,909 |
 | §7.3 hızlanma | "46,7×" (tablo 28,9× veriyor) | adım başına **28,6×**, duvar saati **46,6×** — ikisi de yazıldı |
 | Veri tablosu | yalnız TinyStories | TinyStories **+ Gutenberg** (model ikisiyle eğitildi) |
 | README.md (giriş sayfası) | v1 sayıları | v2: 222 M, 2,05 B token, 75 test |
@@ -1038,6 +1069,28 @@ loss 1,947 · Gutenberg 2,898 · README probe 4,422. Üçü de kendi rastgele ta
 altında. Ayrıca "val loss < train loss" görüntüsünün sebebi bulundu: eğitim
 karışımının ~%77'si Gutenberg, validasyon yalnız TinyStories.
 
+### 19 Kasım 2026 · gece — eğitim bitti, ölçüm alındı
+
+62.483 adım 23:26'da tamamlandı; `stonefish_en.final.state` (848 MB) yazıldı. GPU
+boşaldıktan sonra ölçüm tek komutla alındı (`python tools/measure.py`):
+
+| Ölçüm | Sonuç |
+|---|---|
+| TinyStories (held out, 32.768 token) | loss **2,0227** · ppl **7,56** · BPC **0,6064** |
+| README probe (OOD, 20.514 token) | loss **4,5849** · BPC **3,2914** |
+| PyTorch parity (aynı ağırlıklar, 8 batch) | **1,8e-05** fark (eşik 2e-3) |
+| Eğitim hızı | 10.772 tok/s (son 200 adım) |
+| PyTorch SDPA / naive | 10.502 / 9.996 tok/s |
+
+Bu sırada `measure.py`'de dört hata çıktı ve düzeltildi: alt süreç çıktısı **cp1252**
+ile okunuyordu (kendi emojimizde çöküyordu), bench ayrıştırıcısı `"10,076"`
+binlik ayırıcısında patlıyordu, başarısız ölçümde `None` karşılaştırılıyordu, ve
+**chars/token yanlış paydayla** hesaplanıyordu — TinyStories rastgele tabanı 0,024
+görünüyordu (doğrusu 2,909).
+
+Ayrıca `docs/SAMPLES.md` eklendi: yedi **filtresiz** üretim örneği, ikisi iyi beşi
+kötü, her biri "ne fark edilmeli" notuyla.
+
 ### Rakamlarla 5 ay → bugün
 
 | | 15 Haziran (v0.6) | Bugün |
@@ -1047,6 +1100,8 @@ karışımının ~%77'si Gutenberg, validasyon yalnız TinyStories.
 | En büyük model | 842 bin parametre | **222 milyon** |
 | Eğitim hızı | 5.714 tok/s | **244.698 tok/s** (43×) |
 | Veri | 2,87 M karakter | **2,05 milyar token** |
+| Yayınlanan model | — | **222 M parametre · BPC 0,6064** (rastgele taban 2,909) |
+| PyTorch ile doğruluk | — | aynı ağırlıklar, **1,8e-05** fark |
 | Bulunan bulgu | — | **23** — 19'u kod hatası, 4'ü süreç/altyapı; hepsi test, profilleme ya da ölçümle yakalandı |
 | Türkçe satır (README-Tr hariç) | — | **0** |
 

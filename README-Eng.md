@@ -43,7 +43,7 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 9. [Tests](#9-tests)
 10. [Bugs found during development](#10-bugs-found-during-development)
 11. [Known limitations](#11-known-limitations)
-12. [Roadmap — what comes next](#12-roadmap--what-comes-next)
+12. [Roadmap - what is done, what is left](#12-roadmap---what-is-done-what-is-left)
 13. [Directory layout](#13-directory-layout)
 14. [How zero dependencies works](#14-how-zero-dependencies-works)
 15. [**Timeline — from 15 June to today**](#15-timeline--from-15-june-to-today)
@@ -58,10 +58,11 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 |---|---|
 | Handwritten digit classification (MNIST) | **98.14 %** test accuracy (`train 20 0.5`) |
 | English language model (v2, released) | **222.3 M parameters**, exactly 1 epoch = **2.05 B tokens** |
+| Quality | held-out **BPC 0.6064** (random baseline 2.909) · perplexity **7.56** |
 | English generation | 512-token context, temperature/top-k, **KV-cache** so generation is O(n) |
 | Turkish character model (v0.5, historical) | 842 K parameters, val CE **1.6230** (baseline 4.91) |
 | Gradient verification | **32 tests**, analytic <-> numerical by central difference |
-| GPU training | device-resident; **10,732 tok/s** at 222 M |
+| GPU training | device-resident; **10,772 tok/s** at 222 M |
 | Checkpoints | config+vocab embedded, **atomic** writes, resume |
 
 ### ❌ What it cannot do (the honest list)
@@ -73,7 +74,44 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 - **Small and undertrained.** 222 M parameters on 2.05 B tokens is 9.2 tokens per parameter, less than half of what scaling work recommends.
 - **English only.** The Turkish model was a character-level toy and is not part of this release.
 - **512-token context.** Beyond that the window slides; the model never saw longer.
-- **Slow on a CPU.** `en-gen` runs without a GPU, at about 3 tokens/s.
+- **Slow on a CPU.** `en-gen` runs without a GPU, at about 3 tokens/s; the GPU path
+  reaches **160-185 tokens/s** (measured).
+- **Not meaningfully faster than PyTorch.** 2.6 % ahead at 222 M, 1.3 GB worse on
+  memory. The gain is not speed; see 7.5.
+
+### Why it exists
+
+I could have defined this model in about ten lines of PyTorch. I did not, because the
+question this project asks is not "train a language model" but **"understand the
+layers that make one run"**:
+
+- How does `backward()` actually work, and where do the gradients come from?
+- What does writing a CUDA kernel look like without a wrapper like `cudarc`?
+- Which decisions get 222M parameters into a 12 GB card?
+- Is the number right, or does it merely run?
+
+None of that is learned by using a library. The whole project is the answer to those
+four questions. The model is the by-product.
+
+In one line: **it was built to take the pinball machine apart, not to play it.** But
+the parts turned out to be a machine that plays: 2 billion tokens of training, 75
+tests, and a loss that matches PyTorch to 1.8e-05.
+
+### Where to start reading
+
+10,328 lines is intimidating; in the right order, five files are enough.
+
+| # | File | What it teaches |
+|---|---|---|
+| 1 | `src/tensor.rs` | a plain Rust 2D matrix - matmul, transpose, slicing |
+| 2 | `src/autograd.rs` | the `Op` enum and topological `backward()`; gradients for 19 ops |
+| 3 | `src/transformer.rs` | RMSNorm, SwiGLU, RoPE, attention, GPT |
+| 4 | `src/gpu_train.rs` | the device-resident trainer: hand-written forward and backward |
+| 5 | `src/sys/` | our own CUDA FFI - from `LoadLibraryW` to `cublasSgemm` |
+
+All of it is cross-checked by tests; `tests/gradcheck.rs` recomputes every op's
+gradient by central difference. If you get stuck reading the code, that test probably
+has the answer.
 
 ---
 
@@ -99,7 +137,7 @@ cargo build --release
 
 # --- English GPT (BPE-16k, 222 M) ---
 ./target/release/stonefish_ai en-prepare             # learn BPE + build the u16 cache
-./target/release/stonefish_ai en-train 2047457313    # token budget (~56 h, one GPU)
+./target/release/stonefish_ai en-train 2047457313    # token budget (~54 h, one GPU)
 ./target/release/stonefish_ai en-eval 8 data/en/tiny # loss / perplexity / BPC
 ./target/release/stonefish_ai en-gen "Once upon a time" 150 0.8
 
@@ -196,7 +234,7 @@ Measured training speeds:
 | 842K (GPU-native) | 4.2 ms | **244,698 tok/s** |
 | 842K (CPU+cuBLAS) | 120.8 ms | 8,476 tok/s |
 | 236M, v1 (GPU-native) | ~3.27 s | ~10,000 tok/s |
-| **222M, v2 (GPU-native)** | **3.05 s** | **10,732 tok/s** |
+| **222M, v2 (GPU-native)** | **3.04 s** | **10,772 tok/s** |
 
 The 222M row is the mean of the last 200 samples over 62,483 steps; the whole run
 averaged 10,558 tok/s (the first hours carried the data-window bug and my own
@@ -347,22 +385,34 @@ holds `model_seed: 0xDEADBEEF`, `shuffle_seed: 0xA5A51234`, `wall_seconds: 69.6`
 `epochs` holds each epoch's train/val CE; and `best_val_ce: 1.622985` is the last
 row of the table above.
 
-### 6.2 English (BPE-16k) — **active development**
+### 6.2 English (BPE-16k)
+
+Two English models exist: **v1** (the previous version, measured but never published)
+and **v2** (the model released here). Both were measured on the same validation file,
+so they are directly comparable.
+
+| | **v1 - previous, never published** | **v2 - released** |
+|---|---|---|
+| Architecture | LayerNorm + GELU + absolute positions | **RMSNorm + SwiGLU + RoPE + weight tying + dropout** |
+| Parameters | 235,571,200 | **222,331,904** |
+| Corpus | TinyStories, 450.9 M tokens | **TinyStories + Gutenberg, 2,047,457,313 tokens** |
+| Tokens/parameter | 1.9 | **9.2** |
+| Training | 13,732 steps, 745 min | 62,483 steps, ~54 hours |
+| **BPC** | 0.6913 | **0.6064** |
+| Status | completed, measured - **never published** | **completed, measured, ready to publish** |
+
+v2 gets a better BPC **with 6 % fewer parameters**: the architecture round (RoPE,
+RMSNorm, SwiGLU, tying) and 4.5x more data, together.
+
+#### v1 (previous version, never published) - measured
 
 | | |
 |---|---|
 | Model | `d_model=1024`, 16 layers, 8 heads (`d_head=128`), ctx=512 |
-| Vocab | **16,384** (byte-level BPE) |
-| Parameters | **235,571,200** |
-| Corpus | TinyStories v2: **450,873,533** train + 3,931,894 valid tokens |
-| Compression | 4.7 characters/token |
-| Batch | 4 × gradient accumulation 16 = effective 64 sequences (32,768 tokens/step) |
-| Plan | 13,732 steps, max_lr=6e-4, 500-step warmup + cosine, clip=1.0 |
-| VRAM | 8.4 GB / 12 GB |
-| Speed | ~10,000 tok/s → **~12.5 hours** |
+| Vocabulary | **16,384** (byte-level BPE) |
 | Checkpoint | `stonefish_en.state` (`SFEN001`, every 500 steps) |
-
-**Training completed (2026-11-17):** 13,732 steps, **745 minutes**, 10,061 tok/s average.
+| VRAM | 8.4 GB / 12 GB · ~10,000 tok/s |
+| Training | 13,732 steps, 745 minutes, 10,061 tok/s average |
 
 **Measured quality (`valid.bin`, 3,928,064 tokens):**
 
@@ -371,7 +421,7 @@ row of the table above.
 | val loss | **2.3700** nats/token |
 | perplexity | **10.70** |
 | **BPC** | **0.6913 bits/character** |
-| final train loss | ~1.95 (gap 0.42 → mild overfitting) |
+| final train loss | ~1.95 (gap 0.42 -> mild overfitting) |
 | random baseline | 9.70 |
 
 **Sample generation (temperature 0, greedy):**
@@ -676,63 +726,49 @@ closed in v2.
 
 ---
 
-## 12. Roadmap — what comes next
+## 12. Roadmap - what is done, what is left
 
-### Phase A — Validate the English model *(on completion, ~1 hour)*
+This section used to be a "to do" list, and time proved it wrong: all three of its
+phases finished in v1.0. Below is the real state of things.
 
-- [ ] **A1 `en-eval`**: val loss, **perplexity**, **BPC** over `valid.bin` (3.9 M tokens)
-  - BPC = loss[token] / (ln2 × chars/token) → the only tokenizer-independent metric
-  - Expected band after 450 M tokens: `loss 1.7–2.0`
-- [ ] **A2 `en-gen`**: BPE encode → sliding-window forward → temperature/top-k → decode
-- [ ] **A3 sample report**: raw generations (temperature 0 and 0.8)
+### 12.1 Done (in v1.0)
 
-### Phase B — Grow the data *(highest payoff)*
+| Phase | What | Result |
+|---|---|---|
+| **A - validation** | `en-eval`, `en-gen`, sample report | ✅ BPC **0.6064** · ppl **7.56** · OOD BPC **3.2914** · 7 samples (`docs/SAMPLES.md`) |
+| **B - data** | Project Gutenberg + TinyStories | ✅ **2.05 B tokens**, exactly one epoch |
+| **C - architecture** | KV-cache, RoPE, RMSNorm, SwiGLU, weight tying, dropout | ✅ all of them; the KV-cache matches the full forward pass to **5e-8** |
+| **C - correctness** | same weights in PyTorch | ✅ loss differs by **1.8e-05** (threshold 2e-3) |
 
-- [ ] **B1** Download and clean Project Gutenberg (~3-5 B tokens; strip headers/footers)
-- [ ] **B2** Mix: 60 % TinyStories + 40 % Gutenberg → 2-4 B tokens
-- [ ] **B3** Re-tokenize → ~6-8 GB u16 cache
-- [ ] **B4** Retrain the same architecture on 2-4 B tokens (~2-3 days)
-  - Target: 8-16 tokens/parameter → clear quality jump
+### 12.2 Next - in priority order
 
-### Phase C — Architectural improvements
+| # | Work | Why this order | Expected effect |
+|---|---|---|---|
+| 1 | **bf16 mixed precision** | Either 2x speed or 2x model in the same 12 GB; needs `__half` support in the kernels | Highest return |
+| 2 | **More data** (4-8 B tokens) | 9.2 tokens/parameter -> 20+; the Chinchilla regime | Quality jump |
+| 3 | **Gradient checkpointing** | Recompute activations -> room for a 400M model | Medium |
+| 4 | **Ring-buffer KV-cache** | Past 512 tokens generation degrades to O(n*512) | Medium |
+| 5 | **Checkpoint v3** | Embed the BPE merge table too, so the weights are one file | Small, but it simplifies the release |
+| 6 | **Automated tests for `en-eval`/`en-gen`** | Those two paths are only verified by hand today | CI coverage |
+| 7 | **ctx 1024** | The model has never seen past 512 | Medium |
+| 8 | **Flash-attention-style kernel** | No difference at 222M; memory win at 400M+ | Experimental |
 
-- [ ] **C1 KV-cache**: 10-50× faster generation (O(n²) → O(n))
-- [ ] **C2 RoPE**: rotary positions instead of learned absolute ones → long context, no position drift
-- [ ] **C3 RMSNorm** (instead of LayerNorm), **SwiGLU** (FFN), **weight tying** (embed ↔ head), **dropout**
-- [ ] **C4 bf16 mixed precision**: 2-3× speed + larger models (`__half` support in kernels)
-- [ ] **C5 Memory-efficient/fused attention** (flash-attention style)
-- [ ] **C6 Gradient checkpointing**: recompute activations → room for 300-500 M models
+### 12.3 Deliberately **not** done
 
-### Phase D — Scale
-
-- [ ] **D1** Try 300 M (d=1024, L=20), measuring VRAM
-- [ ] **D2** ctx 1024 (currently 512)
-
-### Phase E — Alignment (assistant behaviour)
-
-- [ ] **E1** SFT dataset: 10-50 k `(instruction, response)` pairs *(the hard part)*
-- [ ] **E2** Chat template (`<|user|>… <|assistant|>…`) + SFT fine-tuning
-- [ ] **E3** DPO / preference training (style, helpfulness, refusal)
-- [ ] **E4** Instruction-following evaluation set
-
-### Phase F — Engineering debt
-
-- [ ] **F1** Checkpoint **v3**: embed the BPE merge table (currently a separate `SFEN001` file)
-- [ ] **F2** Automated tests for `en-eval`/`en-gen`
-- [ ] **F3** Periodic checkpointing for the Turkish path too
-- [ ] **F4** Keep both READMEs updated as Phases A-E progress
-
-### Expectation table
-
-| After phase | What you get |
+| What | Why not |
 |---|---|
-| A | Measured quality + first real English samples |
-| B | Fluent, topic-coherent, 2-3 paragraphs |
-| C | ~2× speed on the same hardware, long context, less VRAM |
-| D | Quality ceiling (hardware limit) |
-| E | A model that **answers questions** (no knowledge, but the format) |
+| **SFT / DPO / chat** | This project is not an assistant. SFT needs 1B+ parameters and human-labelled data; doing SFT on 222M would be teaching it to imitate knowledge it does not have |
+| **Multi-GPU** | The target was one consumer card; a data-parallel path would change that premise |
+| **Fine-tuning a base model** | The entire project rests on the from-scratch claim; that step would void it |
+| **Copying FlashAttention** | We have our own fused attention and it is not the bottleneck at 222M; copying it would add no learning value |
 
-> **Honest caveat:** with a single RTX 5070 the reachable end point is ~250-300 M parameters and ~4 B tokens. That means "an impressive from-scratch engine + a real language model" — not "a usable assistant". A real assistant needs 1 B+ parameters and ~20 B tokens → cloud GPUs (8×A100, ~2 days, ~$700) or fine-tuning an existing base model.
+### 12.4 The realistic ceiling
+
+On one RTX 5070 (12 GB, fp32) the reachable endpoint is **~250-300M parameters** and
+**~4 B tokens**. That means "a real from-scratch engine plus an honest language
+model" - not "a usable assistant". A real assistant needs 1B+ parameters and ~20B
+tokens: cloud GPUs (8xA100 for ~2 days) or fine-tuning an existing base model. Both
+are outside this project's claim.
 
 ---
 
@@ -750,7 +786,7 @@ StonefishAI/
 │   └── stonefish.cu      # 711 lines, 33 CUDA kernels (compiled by NVRTC)
 ├── src/                  # 28 files, 10,328 lines
 │   ├── autograd.rs       # 19 ops, topological backward()
-│   ├── sys/              # our own CUDA FFI (1,289 lines)
+│   ├── sys/              # our own CUDA FFI (1,415 lines)
 │   ├── gpu_train.rs      # GPU-native trainer
 │   ├── en_train.rs       # English LM training and evaluation
 │   ├── bpe.rs            # byte-level BPE-16k
@@ -758,7 +794,8 @@ StonefishAI/
 ├── tests/                # 6 files, 75 tests (2,322 lines)
 ├── examples/             # bpe_bench.rs, grad_probe.rs
 ├── tools/                # 15 Python tools: measurement, charts, guards, release gate
-├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, HF card, 4 charts
+├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, SAMPLES,
+│                         #   HF card, report.json, 7 charts
 ├── .github/workflows/    # CI: 5 jobs (CPU, CUDA, zero deps, docs, language)
 ├── data/                 # (not in git) MNIST + corpora
 └── runs/                 # (not in git) training manifests
@@ -988,7 +1025,7 @@ Model  : d=1024, 16 layers, 8 heads (d_head=128), ctx=512, BPE-16,384
          -> 222,331,904 parameters
 Batch  : 4 x gradient accumulation 16 = 32,768 tokens/step
 Plan   : 62,483 steps - max_lr 4e-4 - 1000-step warmup + cosine - clip 1.0
-Time   : ~56 hours - 10,100 tokens/s - 8.2 GB VRAM - 76 C - 250 W
+Time   : ~54 hours - 10,562 tokens/s - 8.2 GB VRAM - 66-80 C - 250 W
 ```
 
 ![Loss curve and learning-rate schedule](docs/loss-curve.png)
@@ -1025,7 +1062,7 @@ verified by running it**, being written down is not enough. What turned up:
 | Quick start | `train` (98.12 %), `en-train 450M`, "236 M" | `train 20 0.5`, `en-train 2047457313`, 222 M |
 | Architecture table | line counts for 20 files | all re-measured (10,328 lines) |
 | Section 13 tree | version 0.7.0, "6,300 lines", "62 tests" | 1.0.0, 10,328, 75 |
-| Model card | "~5.5 days", a held-out Gutenberg row, baseline BPC 2.28 | ~56 hours, row removed, baseline 2.909 |
+| Model card | "~5.5 days", a held-out Gutenberg row, baseline BPC 2.28 | ~54 hours, row removed, baseline 2.909 |
 | Section 7.3 speed-up | "46.7x" (the table yields 28.9x) | **28.6x per step**, **46.6x wall clock** - both stated |
 | Data table | TinyStories only | TinyStories **+ Gutenberg** (the model used both) |
 | README.md (landing page) | v1 numbers | v2: 222 M, 2.05 B tokens, 75 tests |
@@ -1044,6 +1081,29 @@ TinyStories valid loss 1.947 · Gutenberg 2.898 · README probe 4.422. All three
 below their own random baseline. It also explained the apparent "val loss below
 train loss": the training mix is ~77 % Gutenberg, validation is TinyStories only.
 
+### 19 November 2026 - night: training finished, measured
+
+The 62,483rd step completed at 23:26 and `stonefish_en.final.state` (848 MB) was
+written. With the GPU free, the measurement ran as one command
+(`python tools/measure.py`):
+
+| Measurement | Result |
+|---|---|
+| TinyStories (held out, 32,768 tokens) | loss **2.0227** · ppl **7.56** · BPC **0.6064** |
+| README probe (OOD, 20,514 tokens) | loss **4.5849** · BPC **3.2914** |
+| PyTorch parity (same weights, 8 batches) | **1.8e-05** difference (threshold 2e-3) |
+| Training throughput | 10,772 tok/s (last 200 steps) |
+| PyTorch SDPA / naive | 10,502 / 9,996 tok/s |
+
+Four bugs surfaced in `measure.py` and were fixed: subprocess output was decoded as
+**cp1252** (our own emoji crashed it), the bench parser choked on the `"10,076"`
+thousands separator, a failed measurement compared `None`, and **chars-per-token used
+the wrong denominator** - which made the TinyStories random baseline look like 0.024
+bits/character instead of 2.909.
+
+`docs/SAMPLES.md` was added too: seven **unfiltered** generations, two good and five
+bad, each with a note about what to notice.
+
 ### In numbers: 5 months → today
 
 | | 15 June (v0.6) | Today |
@@ -1053,6 +1113,8 @@ train loss": the training mix is ~77 % Gutenberg, validation is TinyStories only
 | Largest model | 842 K parameters | **222 M** |
 | Training speed | 5,714 tok/s | **244,698 tok/s** (43×) |
 | Data | 2.87 M characters | **2.05 billion tokens** |
+| Released model | - | **222 M parameters · BPC 0.6064** (random baseline 2.909) |
+| Parity with PyTorch | - | same weights, **1.8e-05** difference |
 | Findings | — | **23** — 19 code defects and 4 process/infrastructure problems, each caught by a test, a profile or a measurement |
 | Turkish lines (excl. README-Tr) | — | **0** |
 
