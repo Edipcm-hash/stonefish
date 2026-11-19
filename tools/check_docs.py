@@ -24,6 +24,7 @@ FILES = [
     "README-Eng.md",
     "docs/MODEL-CARD.md",
     "docs/REPRODUCING.md",
+    "docs/RELEASE.md",
     "CHANGELOG.md",
 ]
 
