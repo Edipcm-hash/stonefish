@@ -440,7 +440,7 @@ Kayıp eğrisi: 9,70 (rastgele) → **~1,97** (%90'da, hâlâ düşüyor).
 
 ### 7.5 PyTorch ile karşılaştırma — aynı GPU, aynı mimari
 
-![StonefishAI vs PyTorch](docs/speedup.png)
+![StonefishAI vs PyTorch - 35,7 M parametreyle olculdu](docs/speedup.png)
 
 `tools/torch_bench.py` v2 mimarisini (RMSNorm + SwiGLU + RoPE + weight tying)
 birebir PyTorch'a kurar; aynı veri, aynı batch, aynı GPU. Üç ölçüm de aynı
@@ -455,7 +455,7 @@ makinede, aynı ısınma turundan sonra alındı.
 Fark, PyTorch'un Python döngüsünden değil, **bellek trafiğinden** geliyor:
 fused causal attention tek çekirdekte çalışıp B×S×S skor matrisini diske hiç
 yazmıyor. (35,7 M parametreyle ölçüldü; 222 M ile ölçüm eğitim bitince
-tekrarlanacak.)
+tekrarlanacak ve `docs/comparison.png` olarak yayınlanacak.)
 
 ---
 

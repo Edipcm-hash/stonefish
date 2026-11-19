@@ -443,7 +443,7 @@ Loss curve: 9.70 (random) → **~1.97** (at 90 %, still falling).
 
 ### 7.5 Against PyTorch - same GPU, same architecture
 
-![StonefishAI vs PyTorch](docs/speedup.png)
+![StonefishAI vs PyTorch - measured at 35.7 M parameters](docs/speedup.png)
 
 `tools/torch_bench.py` rebuilds the v2 architecture (RMSNorm + SwiGLU + RoPE +
 weight tying) exactly in PyTorch; same data, same batch, same GPU. All three

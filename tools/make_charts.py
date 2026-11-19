@@ -343,8 +343,9 @@ def chart_speedup(out_dir):
     best = max(r[1] for r in rows)
 
     img = canvas(
-        "StonefishAI vs PyTorch - same GPU, same model",
-        "tokens/second, measured on one RTX 5070",
+        "StonefishAI vs PyTorch - same GPU, same architecture",
+        "tokens/second on one RTX 5070, 35.7 M parameters "
+        "(the 222 M comparison is in docs/comparison.png)",
         "higher is better",
     )
     d = ImageDraw.Draw(img)
