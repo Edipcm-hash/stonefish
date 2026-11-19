@@ -25,6 +25,11 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
       - name: Tests
         run: cargo test --release --no-default-features
+      # The demo is the first thing a reader runs, and until recently it only
+      # worked with CUDA. Five seconds of CPU training proves the fallback path
+      # still builds, trains and generates.
+      - name: Demo runs on CPU
+        run: cargo run --release --no-default-features -- demo 5
 
   # CUDA build: no driver here, so only compilation + clippy.
   # (GPU tests need real hardware; reported separately in the README.)
