@@ -305,3 +305,96 @@ pub fn load_sfen_into(path: &str, model: &mut GPT) -> io::Result<u64> {
     }
     Ok(step)
 }
+
+#[cfg(test)]
+mod sfen_tests {
+    use super::*;
+    use crate::transformer::GPT;
+    use std::io::Write;
+
+    /// Writes a tiny SFEN001 file whose every tensor is filled with a value that
+    /// identifies its ROLE (1 = tok_emb, 2 = norm1, 3 = wq, ... 11 = lnf).
+    fn write_tiny_sfen(path: &str, cfg: &GptConfig, model: &GPT) {
+        let f = std::fs::File::create(path).unwrap();
+        let mut w = std::io::BufWriter::new(f);
+        w.write_all(b"SFEN001\0").unwrap();
+        w.write_all(&1u32.to_le_bytes()).unwrap();
+        for v in [
+            cfg.vocab_size,
+            cfg.max_seq_len,
+            cfg.d_model,
+            cfg.n_layers,
+            cfg.n_heads,
+        ] {
+            w.write_all(&(v as u32).to_le_bytes()).unwrap();
+        }
+        w.write_all(&7u64.to_le_bytes()).unwrap(); // adam_t
+        let params = model.parameters();
+        // CPU order: tok, [n1, n2, wq, wk, wv, wo, gate, up, down] x L, lnf
+        // FILE order: tok, [n1, wq, wk, wv, wo, n2, gate, up, down] x L, lnf
+        let roles = [2u32, 3, 4, 5, 6, 7, 8, 9, 10]; // file roles per block
+        let cpu_idx = [0usize, 2, 3, 4, 5, 1, 6, 7, 8]; // matching CPU slots
+        let mut seq: Vec<(usize, u32)> = vec![(0, 1)];
+        for b in 0..cfg.n_layers {
+            for k in 0..9 {
+                seq.push((1 + b * 9 + cpu_idx[k], roles[k]));
+            }
+        }
+        seq.push((params.len() - 1, 11));
+
+        w.write_all(&(seq.len() as u32).to_le_bytes()).unwrap();
+        for (slot, role) in seq {
+            let d = params[slot].data.borrow();
+            let (rows, cols) = (d.rows, d.cols);
+            drop(d);
+            w.write_all(&(rows as u32).to_le_bytes()).unwrap();
+            w.write_all(&(cols as u32).to_le_bytes()).unwrap();
+            for _ in 0..(rows * cols) {
+                w.write_all(&(role as f32).to_le_bytes()).unwrap();
+            }
+        }
+        w.flush().unwrap();
+    }
+
+    /// Regression test for the bug found while adding the CPU generation path:
+    /// the device block order (norm1, wq..wo, norm2) is NOT the CPU order
+    /// (norm1, norm2, wq..wo). A zip instead of a permutation silently loads q
+    /// weights into the norm2 slot; this test would have caught it.
+    #[test]
+    fn sfen_block_order_matches_roles() {
+        let cfg = GptConfig {
+            vocab_size: 11,
+            max_seq_len: 4,
+            d_model: 8,
+            n_layers: 1,
+            n_heads: 2,
+        };
+        let mut seed = 42u64;
+        let src = GPT::new(cfg, &mut seed);
+        let path = std::env::temp_dir().join("stonefish_tiny_sfen.state");
+        let path = path.to_str().unwrap().to_string();
+        write_tiny_sfen(&path, &cfg, &src);
+
+        let (got_cfg, step) = read_sfen_cfg(&path).unwrap();
+        assert_eq!(got_cfg, cfg);
+        assert_eq!(step, 7);
+
+        let mut dst = GPT::new(cfg, &mut seed);
+        let loaded = load_sfen_into(&path, &mut dst).unwrap();
+        assert_eq!(loaded, 7);
+
+        // CPU order: tok_emb, norm1, norm2, wq, wk, wv, wo, gate, up, down, lnf
+        let expect = [1.0f32, 2.0, 7.0, 3.0, 4.0, 5.0, 6.0, 8.0, 9.0, 10.0, 11.0];
+        let loaded_params = dst.parameters();
+        for (slot, want) in expect.iter().enumerate() {
+            let d = loaded_params[slot].data.borrow();
+            for (k, v) in d.data.iter().enumerate() {
+                assert_eq!(
+                    *v, *want,
+                    "slot {slot} element {k}: expected role {want}, got {v}"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}
