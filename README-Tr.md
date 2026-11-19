@@ -113,6 +113,9 @@ Invoke-WebRequest "$b/TinyStories-valid.txt"        -OutFile data/en/valid.txt
 
 ### 2.1 Her iddiayı kendin doğrula
 
+> Every number in this document can be reproduced: [docs/REPRODUCING.md](docs/REPRODUCING.md). Model details: [docs/MODEL-CARD.md](docs/MODEL-CARD.md).
+
+
 Bu README'deki hiçbir sayı "bize inan" üzerine kurulu değil. Aşağıdaki
 komutlar her iddiayı kendi makinenizde yeniden üretir.
 

@@ -18,7 +18,14 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILES = ["README.md", "README-Tr.md", "README-Eng.md", "docs/MODEL-CARD.md", "CHANGELOG.md"]
+FILES = [
+    "README.md",
+    "README-Tr.md",
+    "README-Eng.md",
+    "docs/MODEL-CARD.md",
+    "docs/REPRODUCING.md",
+    "CHANGELOG.md",
+]
 
 # ![alt](target) or [text](target)
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")

@@ -113,6 +113,9 @@ Invoke-WebRequest "$b/TinyStories-valid.txt"        -OutFile data/en/valid.txt
 
 ### 2.1 Verify every claim yourself
 
+> Every number in this document can be reproduced: [docs/REPRODUCING.md](docs/REPRODUCING.md). Model details: [docs/MODEL-CARD.md](docs/MODEL-CARD.md).
+
+
 No number in this README asks you to trust us. The commands below reproduce
 each claim on your own machine.
 
