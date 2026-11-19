@@ -176,44 +176,47 @@ def chart_quality(data, out):
 
     img = canvas(
         "Model quality - what 222M parameters on 2B tokens actually buys",
-        "bits per character, lower is better - measured on held-out data",
-        "honest numbers, no cherry-picking",
+        "bits per character on held-out data; each corpus against its OWN random baseline",
+        "lower is better",
     )
     d = ImageDraw.Draw(img)
 
-    ax = Axes(img, (PAD_L + 60, 170, W - PAD_R - 260, 470), (0, 1), (0, 1))
+    # Every corpus needs its own random baseline: BPC is loss/ln(2)/chars_per_token,
+    # so a corpus that tokenises into 2 characters per token has a baseline of
+    # log2(vocab)/2, not log2(vocab)/4.8. Comparing a 2-char/token BPC against a
+    # 4.8-char/token baseline is the classic way to make a model look worse than
+    # random when it is not.
     rows = []
     for c in corpora:
-        rows.append((f"{c['name']}", c["bpc"], BLUE, f"loss {c['loss']:.4f} · ppl {c['ppl']:.2f}"))
-    for b in q.get("baselines", []):
-        rows.append((b["name"], b["bpc"], MUTED, b.get("note", "")))
+        cpt = c.get("chars_per_token", 4.812)
+        base = c.get("random_bpc", 13.9997 / cpt)
+        rows.append((c["name"], c["bpc"], BLUE, f"loss {c['loss']:.4f} · ppl {c['ppl']:.2f} · {cpt:.2f} chars/token"))
+        rows.append(("  random baseline", base, MUTED, f"log2(16384) / {cpt:.2f}"))
     for r in q.get("reference", []):
         rows.append((r["name"], r["bpc"], PURPLE, r.get("note", "")))
 
-    top = 170
-    bar_h = 52
-    x0 = PAD_L + 340
+    top = 150
+    bar_h = 46
+    x0 = PAD_L + 380
     x1 = W - PAD_R - 300
-    vmax = max(r[1] for r in rows) * 1.05
+    vmax = max(r[1] for r in rows) * 1.06
 
-    d.text((PAD_L - 40, top - 44), "bits per character", fill=TEXT, font=font(23, bold=True))
+    d.text((PAD_L - 40, top - 40), "bits per character", fill=TEXT, font=font(23, bold=True))
     for name, bpc, col, note in rows:
-        d.text((PAD_L - 40, top + 4), name, fill=TEXT, font=font(20))
+        d.text((PAD_L - 40, top + 2), name, fill=TEXT, font=font(19))
         w = (bpc / vmax) * (x1 - x0)
         d.rounded_rectangle([x0, top, x0 + w, top + bar_h - 14], radius=6, fill=col)
-        d.text((x0 + w + 14, top - 2), f"{bpc:.3f}", fill=TEXT, font=font(21, bold=True))
+        d.text((x0 + w + 14, top - 2), f"{bpc:.3f}", fill=TEXT, font=font(20, bold=True))
         if note:
-            d.text((PAD_L - 40, top + 28), note, fill=MUTED, font=font(16))
-        top += bar_h + 14
+            d.text((PAD_L - 40, top + 22), note, fill=MUTED, font=font(15))
+        top += bar_h + 8
 
-    # what this model is and is not
-    box_y = 520
-    d.rounded_rectangle([PAD_L - 40, box_y, W - PAD_R, box_y + 190], radius=10, fill=(22, 27, 34))
-    d.text((PAD_L - 10, box_y + 16), "How to read this", fill=TEXT, font=font(23, bold=True))
-    lines = q.get("reading", [])
-    for i, line in enumerate(lines[:4]):
+    box_y = top + 12
+    d.rounded_rectangle([PAD_L - 40, box_y, W - PAD_R, box_y + 170], radius=10, fill=(22, 27, 34))
+    d.text((PAD_L - 10, box_y + 14), "How to read this", fill=TEXT, font=font(23, bold=True))
+    for i, line in enumerate(q.get("reading", [])[:4]):
         col = GREEN if line.startswith("+") else RED if line.startswith("-") else MUTED
-        d.text((PAD_L - 10, box_y + 58 + i * 32), line, fill=col, font=font(19))
+        d.text((PAD_L - 10, box_y + 52 + i * 28), line, fill=col, font=font(18))
 
     save(img, out, "quality.png")
 
