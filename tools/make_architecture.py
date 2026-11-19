@@ -93,7 +93,7 @@ def main():
     d.text((W - 70 - d.textlength(note, font=font(19)), 40), note, fill=GREEN, font=font(19))
 
     # ---------------------------------------------------------------- input
-    box(d, (60, 180, 320, 260), (120, 130, 140), "token ids", "u16, BPE-16k", "batch 8 x 512")
+    box(d, (60, 180, 320, 260), (120, 130, 140), "token ids", "u16, BPE-16k", "seq 512, batch 4")
     down(d, 190, 260, 310)
     box(d, (60, 310, 320, 410), BLUE, "Embedding", "16384 x 1024", "shared with the head")
 
@@ -139,7 +139,7 @@ def main():
     right(d, 350, 320, px0, AXIS, 3)
     d.line([(px0 + 30, 350), (st_x0 - 120, 350)], fill=AXIS, width=2)
     d.text((st_x1 - 150, 930), "block output", fill=MUTED, font=font(17))
-    d.text((st_x1 - 150, 952), "(8, 512, 1024)", fill=MUTED, font=font(15))
+    d.text((st_x1 - 150, 952), "(4, 512, 1024)", fill=MUTED, font=font(15))
 
     # ---------------------------------------------------------------- head
     hx0, hx1 = 1220, 1740
