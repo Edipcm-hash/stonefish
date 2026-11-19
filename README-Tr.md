@@ -921,14 +921,22 @@ Süre   : ~56 saat · 10.100 token/s · 8,2 GB VRAM · 76 °C · 250 W
 
 ![Eğitim hızı](docs/throughput.png)
 
-Kayıp eğrisi (canlı):
+Kayıp eğrisi (logdan, adım adım):
 
 | Adım | Loss | Not |
 |---|---|---|
 | 20 | 9,54 | rastgele taban ln(16384) = 9,70 |
 | 1.440 | 5,20 | warmup bitti |
-| 5.640 | 4,22 | |
+| 5.640 | 4,48 | |
 | 8.380 | 4,01 | %13,4 |
+| 15.000 | 3,65 | %24 |
+| 25.000 | 3,41 | %40 |
+| 35.000 | 3,27 | %56 |
+| 45.000 | 3,19 | %72 |
+| 55.000 | 3,14 | %88 |
+
+> Bu tablo **eğitim loss**'udur (dropout açık, karışımın ~%77'si Gutenberg).
+> Validasyon loss'u bundan düşüktür — sebebi §7.4'te.
 
 ### 19 Kasım 2026 · 3. gün — yayın öncesi denetim (40+ commit)
 

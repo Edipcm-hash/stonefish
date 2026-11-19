@@ -62,6 +62,22 @@ def claim(pattern, path):
 def main() -> int:
     print("headline numbers vs artifacts\n")
 
+    # --- no unfilled placeholders anywhere in the published documents ---
+    # The measurement checklist uses <FINAL_LOSS>-style markers; if one survives
+    # into a commit the README ships with a hole in it.
+    PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]{2,}>")
+    for doc in ("README.md", "README-Tr.md", "README-Eng.md", "CHANGELOG.md",
+                "docs/MODEL-CARD.md", "docs/REPRODUCING.md", "docs/RELEASE.md",
+                "docs/huggingface-README.md"):
+        try:
+            text = io.open(doc, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        found = sorted(set(PLACEHOLDER.findall(text)))
+        if found:
+            fail(f"{doc}: placeholders", ", ".join(found))
+    print("  OK    no unfilled placeholders" if failures == 0 else "  (see above)")
+
     # --- CUDA kernels: count the __global__ definitions ---
     cu = io.open("kernels/stonefish.cu", encoding="utf-8", errors="replace").read()
     kernels = len(re.findall(r"__global__\s+void\s+\w+", cu))

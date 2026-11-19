@@ -926,14 +926,22 @@ Time   : ~56 hours - 10,100 tokens/s - 8.2 GB VRAM - 76 C - 250 W
 
 ![Training throughput](docs/throughput.png)
 
-Loss curve (live):
+Loss curve (from the log, step by step):
 
 | Step | Loss | Note |
 |---|---|---|
 | 20 | 9.54 | random baseline ln(16384) = 9.70 |
 | 1,440 | 5.20 | warmup finished |
-| 5,640 | 4.22 | |
+| 5,640 | 4.48 | |
 | 8,380 | 4.01 | 13.4 % |
+| 15,000 | 3.65 | 24 % |
+| 25,000 | 3.41 | 40 % |
+| 35,000 | 3.27 | 56 % |
+| 45,000 | 3.19 | 72 % |
+| 55,000 | 3.14 | 88 % |
+
+> This is the **training** loss (dropout on, ~77 % of the mix is Gutenberg). The
+> validation loss is lower - section 7.4 explains why.
 
 ### 19 November 2026 - day 3: the pre-release audit (40+ commits)
 
