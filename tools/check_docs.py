@@ -102,7 +102,16 @@ def check_line_counts(rel: str, text: str) -> list[tuple[str, str]]:
     return bad
 
 
-TREE_ROW = re.compile(r"^([\u2502 ]*)[\u251c\u2514]\u2500\u2500 ([\w.\-/]+/?)\s*(?:#.*)?$")
+TREE_ROW = re.compile(
+    r"^([\u2502 ]*)[\u251c\u2514]\u2500\u2500 ([\w.\-/]+/?)\s*(?:#(.*))?$"
+)
+
+# The tree lists data/ and runs/ with a comment saying they are not committed.
+# Those two are gitignored by design, so they exist on a development machine and
+# not in a fresh clone - which is exactly where this check has to pass.
+NOT_COMMITTED = re.compile(
+    r"git d\u0131\u015f\u0131|git disi|not in git|not committed|gitignore", re.IGNORECASE
+)
 
 
 def check_tree(rel: str, text: str) -> list[tuple[str, str]]:
@@ -110,14 +119,15 @@ def check_tree(rel: str, text: str) -> list[tuple[str, str]]:
 
     A tree diagram is a claim about the repository, and it silently rots when a
     file is renamed or a directory is added. This walks the diagram, tracking the
-    parent from the indentation, and stats each entry."""
+    parent from the indentation, and stats each entry - except entries whose own
+    comment says they are not committed, which are absent in CI on purpose."""
     bad = []
     stack: list[str] = []
     for line in text.splitlines():
         m = TREE_ROW.match(line)
         if not m:
             continue
-        prefix, name = m.group(1), m.group(2)
+        prefix, name, comment = m.group(1), m.group(2), m.group(3) or ""
         depth = len(prefix) // 4
         stack = stack[:depth]
         if name == "StonefishAI/":
@@ -128,6 +138,8 @@ def check_tree(rel: str, text: str) -> list[tuple[str, str]]:
         if name.endswith("/"):
             stack.append(bare)
         if bare == "...":
+            continue
+        if NOT_COMMITTED.search(comment):
             continue
         if not os.path.exists(os.path.join(base_dir, full)):
             bad.append((f"{rel}: tree", f"{full} does not exist"))
