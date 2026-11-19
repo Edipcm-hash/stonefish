@@ -143,6 +143,8 @@ komutlar her iddiayı kendi makinenizde yeniden üretir.
 | Grafikler bu verilerden üretiliyor | `python tools/make_charts.py` | `docs/*.png` yeniden yazılır |
 
 **Not:** `demo 90` CPU'da da çalışır (12 bin karakterlik bir dilimle, ~11.000 tok/s).
+GPU'da 90 saniyelik bütçe **boş kart** varsayar: kartı başka bir eğitimle paylaşırsan
+ölçülen hız 352.000 yerine ~12.000 tok/s olur ve üretilen metin kaba kalır.
 `test-ffi` ve GPU testleri için CUDA'lı derleme gerekir; `--no-default-features` ile onlar atlanır.
 
 ---

@@ -144,6 +144,9 @@ each claim on your own machine.
 | The charts come from this data | `python tools/make_charts.py` | `docs/*.png` rewritten |
 
 **Note:** `demo 90` also runs on the CPU (a 12K-character slice, ~11,000 tok/s).
+On a GPU the 90-second budget assumes an **idle card**: sharing it with another
+training run drops the measured rate from 352,000 to ~12,000 tok/s and the text
+gets rough.
 `test-ffi` and the GPU tests need the CUDA build; `--no-default-features` skips them. With
 `--no-default-features` everything runs on the CPU and the GPU tests are
 skipped.
