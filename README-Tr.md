@@ -1,5 +1,9 @@
 # 🐟 StonefishAI
 
+[![CI](https://github.com/Edipcm-hash/stonefish/actions/workflows/ci.yml/badge.svg)](https://github.com/Edipcm-hash/stonefish/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#14-s%C4%B1f%C4%B1r-ba%C4%9F%C4%B1ml%C4%B1l%C4%B1k-nas%C4%B1l-%C3%A7al%C4%B1%C5%9F%C4%B1yor)
+
 **Sıfırdan yazılmış bir autograd motoru ve dil modeli altyapısı — Rust, SIFIR bağımlılık.**
 
 **222 M parametre · 2,05 milyar token · 75 test · 0 bağımlılık** — tek bir RTX 5070'de,

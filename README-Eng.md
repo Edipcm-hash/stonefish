@@ -1,5 +1,9 @@
 # 🐟 StonefishAI
 
+[![CI](https://github.com/Edipcm-hash/stonefish/actions/workflows/ci.yml/badge.svg)](https://github.com/Edipcm-hash/stonefish/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#14-how-zero-dependencies-works)
+
 **A from-scratch autograd engine and language-model stack in Rust — ZERO dependencies.**
 
 **222 M parameters · 2.05 billion tokens · 75 tests · 0 dependencies** — on one
