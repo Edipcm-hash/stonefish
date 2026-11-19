@@ -13,8 +13,10 @@ Three passes, because each one alone misses real cases:
    stem plus up to six trailing letters catches those without matching English
    (the stems themselves do not occur in English).
 
-3. A per-line opt-out: a line containing `tr:sample` is skipped, used for the one
-   place the README quotes the Turkish model's own output as evidence.
+3. A per-line opt-out: a line containing `tr:sample` is skipped. Two uses: the
+   place the README quotes the Turkish model's own output as evidence, and
+   tools/check_numbers.py, whose regexes must literally contain Turkish column
+   headers to find the numbers they audit.
 
 This is a net, not a proof of absence: a Turkish sentence whose words are all
 absent from the list will pass. The README says as much.

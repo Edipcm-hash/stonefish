@@ -76,6 +76,8 @@ jobs:
           python-version: "3.12"
       - name: Relative links must resolve
         run: python tools/check_docs.py
+      - name: Headline numbers must match their artifacts
+        run: python tools/check_numbers.py
 # Language guard: no Turkish text outside README-Tr.md.
   language:
     name: English-only source

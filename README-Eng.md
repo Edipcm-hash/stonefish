@@ -666,7 +666,7 @@ StonefishAI/
 │   └── ...               # tensor, transformer, trainer, checkpoint, corpus
 ├── tests/                # 6 files, 75 tests (2,322 lines)
 ├── examples/             # bpe_bench.rs, grad_probe.rs
-├── tools/                # 13 Python tools: measurement, charts, guards, release gate
+├── tools/                # 14 Python tools: measurement, charts, guards, release gate
 ├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, HF card, 4 charts
 ├── .github/workflows/    # CI: 5 jobs (CPU, CUDA, zero deps, docs, language)
 ├── data/                 # (not in git) MNIST + corpora

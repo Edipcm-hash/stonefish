@@ -102,6 +102,7 @@ def main() -> int:
         ("clippy (cpu)", lambda: check_clippy(env, False)),
         ("language guard", lambda: check_script("check_no_turkish.py")),
         ("links + anchors", lambda: check_script("check_docs.py")),
+        ("headline numbers", lambda: check_script("check_numbers.py")),
     ]
     if not a.fast:
         checks.insert(2, ("tests (75)", lambda: check_tests(env)))
