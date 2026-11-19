@@ -310,7 +310,9 @@ BPE learning uses **incremental pair counting**: after each merge only words con
 
 - tokenized corpus is written to disk as **u16** (2 bytes/token)
 - training reads through a **window** (`len*8`, clamped to 4 KB - 1 MB); the whole file is never loaded
-- tokenization: **148 MB/s** (word-cached)
+- tokenization: **114-148 MB/s** (word-cached; depends on how repetitive the
+  corpus is - measured with `cargo run --release --example bpe_bench`: 114 MB/s
+  on TinyStories, 148 MB/s on a more repetitive text)
 
 ---
 

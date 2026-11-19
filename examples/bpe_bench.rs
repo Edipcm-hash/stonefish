@@ -8,7 +8,19 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or("data/en/bench10.txt".into());
-    let bytes = std::fs::read(&path).expect("could not read file");
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            // A bare `expect` here panicked with "could not read file" and no hint
+            // about which file or where to get one.
+            eprintln!("❌ could not read {path}: {e}");
+            eprintln!();
+            eprintln!("This example needs a plain-text corpus to measure. Either:");
+            eprintln!("  cargo run --release --example bpe_bench -- path/to/text.txt");
+            eprintln!("  or create a 10 MB slice:  head -c 10000000 data/en/train.txt > data/en/bench10.txt");
+            std::process::exit(1);
+        }
+    };
     let text = String::from_utf8_lossy(&bytes).into_owned();
     println!(
         "file: {path} ({:.1} MB)",
@@ -36,12 +48,16 @@ fn main() {
 
     // 2) Disk cache write (word-cached path)
     let t0 = std::time::Instant::now();
-    let n2 = tokenize_file_to_cache(&path, "/tmp_bpe_cache.bin", &bpe, 64 << 20).unwrap_or(0);
+    // A relative temp name works on Windows and POSIX alike; the absolute
+    // /tmp path used before did not exist on Windows.
+    let cache = std::env::temp_dir().join("bpe_bench_cache.bin");
+    let cache = cache.to_string_lossy().into_owned();
+    let n2 = tokenize_file_to_cache(&path, &cache, &bpe, 64 << 20).unwrap_or(0);
     let dt2 = t0.elapsed().as_secs_f64();
     println!(
-        "disk cache: {n2} token, {:.2} s → {:.2} MB/s",
+        "disk cache: {n2} tokens, {:.2} s -> {:.2} MB/s",
         dt2,
         bytes.len() as f64 / (1 << 20) as f64 / dt2
     );
-    let _ = std::fs::remove_file("/tmp_bpe_cache.bin");
+    let _ = std::fs::remove_file(&cache);
 }

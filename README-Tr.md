@@ -305,7 +305,9 @@ BPE öğrenimi **artımlı çift sayımı** ile yapılır: her merge'den sonra y
 
 - Tokenize edilmiş korpus diske **u16** olarak yazılır (2 bayt/token)
 - Eğitim **pencere tabanlı** okur (`len·8`, 4 KB – 1 MB), tüm dosya yüklenmez
-- Tokenize: **148 MB/s** (kelime önbellekli)
+- Tokenize: **114–148 MB/s** (kelime önbellekli; korpusun kelime tekrarına
+  bağlı — `cargo run --release --example bpe_bench` ile ölçülür: TinyStories'te
+  114 MB/s, daha tekrarlı bir metinde 148 MB/s)
 
 ---
 
