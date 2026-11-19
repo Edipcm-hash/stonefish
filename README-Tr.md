@@ -2,6 +2,9 @@
 
 **Sıfırdan yazılmış bir autograd motoru ve dil modeli altyapısı — Rust, SIFIR bağımlılık.**
 
+**222 M parametre · 2,05 milyar token · 75 test · 0 bağımlılık** — tek bir RTX 5070'de,
+hiçbir ML kütüphanesi olmadan.
+
 > **Bu nedir:** sıfırdan yazılmış bir dil modeli motoru — autograd, tokenizer, transformer,
 > CUDA çekirdekleri — tek bir tüketici GPU'sunda, hiçbir bağımlılık olmadan eğitilip çalışıyor.
 >

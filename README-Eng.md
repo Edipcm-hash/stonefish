@@ -2,6 +2,9 @@
 
 **A from-scratch autograd engine and language-model stack in Rust — ZERO dependencies.**
 
+**222 M parameters · 2.05 billion tokens · 75 tests · 0 dependencies** — on one
+RTX 5070, with no ML library underneath.
+
 > **What this is:** a language-model engine written from scratch - autograd, tokenizer,
 > transformer, CUDA kernels - that trains and runs on one consumer GPU with zero
 > dependencies.
