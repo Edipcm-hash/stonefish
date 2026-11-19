@@ -458,7 +458,18 @@ pub fn eval(corpus: &str, state_path: &str, max_batches: usize) -> (f64, f64, f6
     let ppl = loss.exp();
     // BPC: bits per character. chars/token = valid.txt bytes / valid.bin tokens
     let chars_per_token = {
-        let txt = std::fs::metadata("data/en/valid.txt")
+        // BPC needs bytes-per-token for the SAME text that was tokenized. The
+        // training corpus keeps its text in data/en/valid.txt while the cache
+        // is {corpus}.valid.bin, so try {corpus}.txt first and fall back to the
+        // training text. A probe (en-tokenize) has its own {prefix}.txt and
+        // must not inherit the training ratio, or its BPC would be meaningless.
+        let own = format!("{corpus}.txt");
+        let txt_path = if std::path::Path::new(&own).exists() {
+            own
+        } else {
+            "data/en/valid.txt".to_string()
+        };
+        let txt = std::fs::metadata(&txt_path)
             .map(|m| m.len() as f64)
             .unwrap_or(0.0);
         let tokens = data.len() as f64;
