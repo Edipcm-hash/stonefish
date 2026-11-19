@@ -26,6 +26,23 @@ python tools/check_docs.py
 All of them green. If any is red, the release waits — that is the whole point of
 having them.
 
+**Then check what CI sees, not what this machine sees.** Twice during this release
+a check passed locally and failed in CI, because `data/` and `runs/` are gitignored:
+they exist here and not in a fresh clone. Reproduce the CI environment exactly —
+`git archive` contains precisely the tracked files:
+
+```bash
+tmp=$(mktemp -d)
+git archive --format=tar HEAD | tar -x -C "$tmp"
+cd "$tmp"
+python tools/check_docs.py
+python tools/check_numbers.py      # gitignored artifacts report as "skipped"
+python tools/check_no_turkish.py
+CARGO_TARGET_DIR="$tmp/target" cargo test --release --no-default-features
+```
+
+That last line is the CI cpu-only job: it must end in `55 passed; 0 failed`.
+
 ## 1. The measurement that must exist in the README
 
 These numbers cannot be copied from an older run:
