@@ -58,7 +58,20 @@ jobs:
           fi
           echo "✅ Zero dependencies verified"
 
-  # Language guard: no Turkish text outside README-Tr.md.
+    # Documentation guard: every relative link in the READMEs, the model card and
+  # the changelog must resolve. Catches a renamed image or an uncommitted file
+  # before it becomes a broken link on the repository front page.
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Relative links must resolve
+        run: python tools/check_docs.py
+# Language guard: no Turkish text outside README-Tr.md.
   language:
     name: English-only source
     runs-on: ubuntu-latest
