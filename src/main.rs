@@ -1269,7 +1269,7 @@ fn bench(args: &[String]) {
 
 #[cfg(not(feature = "cuda"))]
 fn bench(_args: &[String]) {
-    println!("❌ bench CUDA gerektirir.");
+    println!("❌ bench requires CUDA (built with --no-default-features).");
 }
 
 /// Works with or without CUDA: the trainer picks the device-resident path when
@@ -1337,7 +1337,7 @@ fn en_eval(args: &[String]) {
 
 #[cfg(not(feature = "cuda"))]
 fn en_eval(_args: &[String]) {
-    println!("❌ en-eval CUDA gerektirir.");
+    println!("❌ en-eval requires CUDA (built with --no-default-features).");
 }
 
 #[cfg(feature = "cuda")]
