@@ -7,5 +7,6 @@
 
 # Binary files
 *.bin binary
+*.state binary
 *.gz binary
 *.png binary
