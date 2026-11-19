@@ -394,13 +394,8 @@ pub fn train(a: &EnTrainArgs) {
 }
 
 pub fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f32) -> f32 {
-    if step < warmup {
-        return max_lr * (step + 1) as f32 / warmup.max(1) as f32;
-    }
-    let span = total.saturating_sub(warmup).max(1) as f32;
-    let t = ((step - warmup) as f32 / span).min(1.0);
-    let cos = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
-    max_lr * (min_ratio + (1.0 - min_ratio) * cos)
+    // one implementation, in trainer.rs, so the demo can use it without CUDA
+    crate::trainer::lr_at(step, total, max_lr, warmup, min_ratio)
 }
 
 // ============================================================

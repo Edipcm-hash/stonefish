@@ -142,7 +142,8 @@ each claim on your own machine.
 | No Turkish text | `python tools/check_no_turkish.py` | `OK` |
 | The charts come from this data | `python tools/make_charts.py` | `docs/*.png` rewritten |
 
-**Note:** `demo 90` and `test-ffi` need the CUDA build. With
+**Note:** `demo 90` also runs on the CPU (a 12K-character slice, ~11,000 tok/s).
+`test-ffi` and the GPU tests need the CUDA build; `--no-default-features` skips them. With
 `--no-default-features` everything runs on the CPU and the GPU tests are
 skipped.
 

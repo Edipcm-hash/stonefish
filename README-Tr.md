@@ -141,8 +141,8 @@ komutlar her iddiayı kendi makinenizde yeniden üretir.
 | Türkçe metin yok | `python tools/check_no_turkish.py` | `OK` |
 | Grafikler bu verilerden üretiliyor | `python tools/make_charts.py` | `docs/*.png` yeniden yazılır |
 
-**Not:** `demo 90` ve `test-ffi` için CUDA'lı derleme gerekir
-(`--no-default-features` ile CPU'da çalışır, GPU testleri atlanır).
+**Not:** `demo 90` CPU'da da çalışır (12 bin karakterlik bir dilimle, ~11.000 tok/s).
+`test-ffi` ve GPU testleri için CUDA'lı derleme gerekir; `--no-default-features` ile onlar atlanır.
 
 ---
 

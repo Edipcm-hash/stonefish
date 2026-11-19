@@ -19,7 +19,6 @@ pub mod bpe;
 pub mod checkpoint;
 pub mod corpus;
 pub mod data;
-#[cfg(feature = "cuda")]
 pub mod demo;
 #[cfg(feature = "cuda")]
 pub mod en_train;
@@ -38,6 +37,7 @@ pub mod profile;
 pub mod sys;
 pub mod tensor;
 pub mod tokenizer;
+pub mod trainer;
 pub mod transformer;
 
 /// Library version (single source of truth with Cargo.toml).
