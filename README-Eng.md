@@ -193,7 +193,7 @@ Measured training throughput:
 | [src/gpu_kernels.rs](src/gpu_kernels.rs) | 603 | NVRTC compile, PTX cache, kernel wrappers |
 | [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT trainer (the fast path) |
 | [src/en_train.rs](src/en_train.rs) | 633 | English pipeline: `prepare`, `train`, `eval`, `generate` |
-| [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache generation (O(n) instead of O(n^2)) |
+| [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache generation (O(n) until the context fills) |
 | [src/demo.rs](src/demo.rs) | 203 | One-command demo, CPU or GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Tokenize unseen text so `en-eval` can score it |
 | [src/profile.rs](src/profile.rs) | 133 | Lightweight profiling counters |
@@ -519,16 +519,29 @@ These ran without crashing and produced **wrong numbers**. None of them raised a
 
 ## 11. Known limitations
 
-- **No KV-cache** — generation recomputes the whole context per token (O(n²)).
-- **Position drift in generation** — as the window slides, `pos_emb` restarts from 0, so positions do not match training (RoPE fixes this).
-- **fp32 training only** — no bf16; this caps VRAM usage at ~250 M parameters.
-- **No gradient checkpointing** — activations are kept; needed for larger models.
-- **Single-threaded CPU path** — no `rayon`; the CPU path is the reference/fallback.
-- **Turkish model processed 17 M tokens** but the corpus is only 2.87 M (3.4 unique tokens/param) → limited diversity, heavy epoch repetition.
-- **English model saw 450 M tokens** (1.9 tokens/param) → 1/10 of Chinchilla, i.e. **undertrained**.
-- **No SFT/DPO** → the model shows no assistant behaviour.
-- **No validation/generation tooling for the English path yet** (`en-eval`, `en-gen` are on the roadmap).
-- No weight tying, dropout, RoPE, SwiGLU, or RMSNorm.
+These are v2's real limits - the model that ships - not v1's. The earlier
+version's gaps (RoPE, SwiGLU, RMSNorm, weight tying, `en-eval`, `en-gen`) are
+closed in v2.
+
+- **The KV cache resets when the window fills** - generation is O(n) until the
+  512-token context is full; after that the sliding window is re-encoded per
+  token, i.e. O(n·512). A ring buffer is the right fix; it is not implemented.
+- **Context is 512 tokens** - longer text needs window sliding, and the model
+  never saw anything beyond 512 during training.
+- **fp32 training** - no bf16, which is what caps the model at ~250M on 12 GB.
+- **No gradient checkpointing** - activations are kept; required for a bigger model.
+- **9.2 tokens per parameter** - less than half of what scaling work recommends
+  (~20). More training time or a smaller model would have been better on this
+  GPU; it was a budget decision.
+- **Single GPU** - no data-parallel path; the only way up is a bigger card.
+- **Single-threaded CPU path** - no `rayon`; the CPU path is a reference and a
+  fallback, not a production path.
+- **No SFT/DPO** - the model does not behave like an assistant; it continues text.
+- **English only** - the Turkish model (v0.5) was a character-level toy and is not
+  part of this release.
+- **Synchronous checkpoint writes** - writing 848 MB pauses the run for ~1-2 s;
+  measured and accepted, every 500 steps.
+- **Single-sequence generation** - no batching, no speculative decoding.
 
 ---
 

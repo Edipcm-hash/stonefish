@@ -190,7 +190,7 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | [src/gpu_kernels.rs](src/gpu_kernels.rs) | 603 | NVRTC derleme, PTX önbelleği, çekirdek sarmalayıcıları |
 | [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT eğiticisi (hızlı yol) |
 | [src/en_train.rs](src/en_train.rs) | 633 | İngilizce hat: `prepare`, `train`, `eval`, `generate` |
-| [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache üretimi (O(n²) yerine O(n)) |
+| [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache üretimi (bağlam dolana kadar O(n)) |
 | [src/demo.rs](src/demo.rs) | 203 | Tek komut demo, CPU veya GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Görülmemiş metni `en-eval` için tokenize et |
 | [src/profile.rs](src/profile.rs) | 133 | Hafif profil sayaçları |
@@ -521,16 +521,26 @@ Bu bölüm projenin en değerli kısmı: **her hata gerçekti, çoğu testlerle 
 
 ## 11. Bilinen sınırlar
 
-- **KV-cache yok** — üretimde her token için tüm bağlam yeniden hesaplanır (O(n²)).
-- **Üretimde konum kayması** — pencere kaydıkça `pos_emb` yeniden 0'dan uygulanır; eğitimdeki mutlak konumlarla tam örtüşmez (RoPE bunu çözer).
-- **fp32 eğitim** — bf16 yok; VRAM tavanını ~250 M'da tutuyor.
-- **Gradyan checkpointing yok** — aktivasyonlar saklanır, daha büyük model için gerekli.
-- **Tek thread CPU yolu** — `rayon` yok; CPU yolu referans/yedektir.
-- **Türkçe model 17 M token işledi** ama korpus yalnız 2,87 M token (3,4 benzersiz token/param) → çeşitlilik dar, epoch tekrarı yüksek.
-- **İngilizce model 450 M token** görmüş (1,9 token/parametre) → Chinchilla'nın 1/10'u, yani **yetersiz eğitilmiş**.
-- **SFT/DPO yok** → model asistan davranışı göstermez.
-- **İngilizce hat için val/generation aracı henüz yok** (`en-eval`, `en-gen` yol haritasında).
-- Ağırlık paylaşımı (weight tying), dropout, RoPE, SwiGLU, RMSNorm yok.
+Bunlar v2'nin (yayınlanan modelin) gerçek sınırları — v1'in değil. Önceki sürümün
+eksikleri (RoPE, SwiGLU, RMSNorm, weight tying, `en-eval`, `en-gen`) v2'de kapandı.
+
+- **KV-cache pencere dolunca sıfırlanır** — bağlam (512 token) dolana kadar üretim
+  O(n); dolduktan sonra kayan pencere her token için yeniden kodlanır, yani O(n·512).
+  Doğru çözüm halka tamponu; henüz yok.
+- **Bağlam 512 token** — daha uzun metin için pencere kaydırma gerekir; model
+  512'nin ötesini hiç görmedi.
+- **fp32 eğitim** — bf16 yok; kaydedilen VRAM yüzünden model boyutu ~250 M'da kalıyor.
+- **Gradyan checkpointing yok** — aktivasyonlar saklanır; daha büyük model için şart.
+- **9,2 token/parametre** — Chinchilla'nın (~20) yarısından az. Aynı GPU'da daha uzun
+  eğitim veya daha küçük model daha iyi olurdu; bu bir bütçe kararıydı.
+- **Tek GPU** — veri paralel yolu yok; ölçek yalnız dikey (daha büyük kart).
+- **CPU yolu tek thread** — `rayon` yok; CPU yolu referans/yedek, üretim yolu değil.
+- **SFT/DPO yok** — model asistan davranışı göstermez; metin devam ettirir.
+- **Yalnız İngilizce** — Türkçe model (v0.5) karakter seviyesinde bir oyuncaktı ve bu
+  sürüme dahil değil.
+- **Checkpoint yazımı senkron** — 848 MB'lık yazma ~1-2 s durur; eğitimde ölçüldü ve
+  kabul edildi (her 500 adımda bir).
+- **Üretim tek örnek** — batch'li/speculative decoding yok.
 
 ---
 
