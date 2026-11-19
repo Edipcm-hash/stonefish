@@ -52,10 +52,37 @@ def github_slug(heading: str) -> str:
     return t.replace(" ", "-")
 
 
+TABLE_SEP = re.compile(r"^\|[\s:\-|]+\|$")
+
+
+def check_tables(rel: str, lines) -> list[tuple[str, str]]:
+    """A markdown table renders correctly only if every row has the same number
+    of pipes as the header. Editing a table by hand is exactly how that breaks,
+    and the result is a mangled table on the repository front page."""
+    bad = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip("\n")
+        if line.strip().startswith("|") and i + 1 < len(lines):
+            sep = lines[i + 1].strip()
+            if TABLE_SEP.match(sep) and "-" in sep:
+                width = line.count("|")
+                j = i + 1
+                while j < len(lines) and lines[j].strip().startswith("|"):
+                    if lines[j].strip().count("|") != width:
+                        bad.append((f"{rel}:{j + 1}", "table row width"))
+                    j += 1
+                i = j
+                continue
+        i += 1
+    return bad
+
+
 def main() -> int:
     broken = []
     checked = 0
     anchors_checked = 0
+    tables_checked = 0
 
     for rel in FILES:
         path = os.path.join(ROOT, rel)
@@ -90,16 +117,22 @@ def main() -> int:
                 if not os.path.exists(resolved):
                     broken.append((f"{rel}:{lineno}", target))
 
+        broken.extend(check_tables(rel, lines))
+        tables_checked += 1
+
     if broken:
         print(
-            f"broken links: {len(broken)} "
-            f"({checked} paths, {anchors_checked} anchors checked)"
+            f"broken docs: {len(broken)} "
+            f"({checked} paths, {anchors_checked} anchors, {tables_checked} files)"
         )
         for where, target in broken:
             print(f"  {where}  ->  {target}")
         return 1
 
-    print(f"OK: {checked} relative links resolve, {anchors_checked} anchors resolve")
+    print(
+        f"OK: {checked} relative links resolve, {anchors_checked} anchors resolve, "
+        f"tables in {tables_checked} files are well formed"
+    )
     return 0
 
 
