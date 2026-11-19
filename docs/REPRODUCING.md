@@ -87,6 +87,15 @@ It prints `MATCH` when the two losses differ by less than 2e-3.
 
 ## 6. Speed
 
+**Measure on an idle GPU.** Every GPU number in this file was taken on a card
+with nothing else running. Sharing the card with another CUDA process does not
+scale the timings by a constant: a small matmul that takes 0.19 ms alone measured
+2.99 ms while a training run owned the card - a 16x difference - because each
+call waits for the other context's kernels. The CPU numbers are unaffected, so
+the contamination is easy to miss: the comparison silently inverts.
+
+
+
 ```bash
 python tools/torch_bench.py --d 1024 --layers 16 --heads 8 --ctx 512 \
     --batch 4 --accum 16 --steps 6 --attn naive
