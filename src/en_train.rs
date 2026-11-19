@@ -14,7 +14,7 @@ use crate::bpe::{train_bpe, Bpe};
 use crate::corpus::{tokenize_append, tokenize_file_to_cache, TokenDataset};
 use crate::gpu_train::GpuGpt;
 use crate::transformer::GptConfig;
-use std::io::{Read, Write};
+use std::io::Read;
 
 pub const MERGES_MAGIC: &[u8; 8] = b"SFBPE001";
 
@@ -23,48 +23,11 @@ pub const MERGES_MAGIC: &[u8; 8] = b"SFBPE001";
 // ============================================================
 
 pub fn save_bpe(path: &str, bpe: &Bpe) -> std::io::Result<()> {
-    let f = std::fs::File::create(path)?;
-    let mut w = std::io::BufWriter::new(f);
-    w.write_all(MERGES_MAGIC)?;
-    w.write_all(&1u32.to_le_bytes())?;
-    w.write_all(&(bpe.merges.len() as u32).to_le_bytes())?;
-    for (a, b) in &bpe.merges {
-        w.write_all(&a.to_le_bytes())?;
-        w.write_all(&b.to_le_bytes())?;
-    }
-    w.flush()
+    crate::bpe::save_merges(path, bpe)
 }
 
 pub fn load_bpe(path: &str) -> std::io::Result<Bpe> {
-    let f = std::fs::File::open(path)?;
-    let mut r = std::io::BufReader::new(f);
-    let mut magic = [0u8; 8];
-    r.read_exact(&mut magic)?;
-    if &magic != MERGES_MAGIC {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "BPE file not recognized",
-        ));
-    }
-    let mut u4 = [0u8; 4];
-    r.read_exact(&mut u4)?;
-    if u32::from_le_bytes(u4) != 1 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "unsupported BPE version",
-        ));
-    }
-    r.read_exact(&mut u4)?;
-    let n = u32::from_le_bytes(u4) as usize;
-    let mut merges = Vec::with_capacity(n);
-    for _ in 0..n {
-        r.read_exact(&mut u4)?;
-        let a = u32::from_le_bytes(u4);
-        r.read_exact(&mut u4)?;
-        let b = u32::from_le_bytes(u4);
-        merges.push((a, b));
-    }
-    Ok(Bpe::from_merges(merges))
+    crate::bpe::load_merges(path)
 }
 
 // ============================================================

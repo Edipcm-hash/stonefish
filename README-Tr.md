@@ -139,6 +139,7 @@ komutlar her iddiayı kendi makinenizde yeniden üretir.
 | Profil tablosu doğru | `cargo run --release -- test-gpt-profile` | tablo basılır (CUDA build'inde GERÇEK GEMM ve transfer kalemleri sıfırdan farklı) |
 | Model PyTorch ile aynı loss'u veriyor | `python tools/torch_parity.py --state stonefish_en.final.state --valid data/en/tiny.valid.bin --batches 8 --expected <en-eval çıktısı>` | `MATCH` (< 2e-3) |
 | Türkçe metin yok | `python tools/check_no_turkish.py` | `OK` |
+| `en-gen` GPU'suz da çalışır | `cargo run --release --no-default-features -- en-gen "Once upon a time" 10 0` | metin üretir (~3 tok/s) |
 | Grafikler bu verilerden üretiliyor | `python tools/make_charts.py` | `docs/*.png` yeniden yazılır |
 
 **Not:** `demo 90` CPU'da da çalışır (12 bin karakterlik bir dilimle, ~11.000 tok/s).
@@ -545,6 +546,8 @@ eksikleri (RoPE, SwiGLU, RMSNorm, weight tying, `en-eval`, `en-gen`) v2'de kapan
 - **Checkpoint yazımı senkron** — 848 MB'lık yazma ~1-2 s durur; eğitimde ölçüldü ve
   kabul edildi (her 500 adımda bir).
 - **Üretim tek örnek** — batch'li/speculative decoding yok.
+- **CPU üretimi yavaş** — `en-gen` GPU'suz da çalışır ama autograd yoluyla
+  ~3 token/s; GPU yolu aynı modelde ~100 token/s üzerinde.
 
 ---
 

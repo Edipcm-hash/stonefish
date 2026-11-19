@@ -162,3 +162,146 @@ pub fn load_gpt(path: &str) -> io::Result<(GPT, Tokenizer)> {
 
     Ok((model, tok))
 }
+
+// ============================================================
+// SFEN001 (the GPU trainer's format) -> CPU model
+// ============================================================
+
+/// Reads only the header of an SFEN001 file (no weights).
+///
+/// Layout: magic SFEN001\0, version u32, config (5 x u32), adam_t u64,
+/// tensor count u32, then tensors as (rows u32, cols u32, f32...). The tensor
+/// order is the same as GPT::parameters(), because the device trainer was
+/// built from the CPU model in the first place.
+pub fn read_sfen_cfg(path: &str) -> io::Result<(GptConfig, u64)> {
+    let f = File::open(path)?;
+    let mut r = BufReader::new(f);
+    let mut magic = [0u8; 8];
+    r.read_exact(&mut magic)?;
+    if &magic != b"SFEN001\0" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not an SFEN001 weight file",
+        ));
+    }
+    let mut b4 = [0u8; 4];
+    r.read_exact(&mut b4)?;
+    if u32::from_le_bytes(b4) != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported SFEN version",
+        ));
+    }
+    let mut cfg_u = [0u32; 5];
+    for v in cfg_u.iter_mut() {
+        r.read_exact(&mut b4)?;
+        *v = u32::from_le_bytes(b4);
+    }
+    let mut b8 = [0u8; 8];
+    r.read_exact(&mut b8)?;
+    let step = u64::from_le_bytes(b8);
+    let cfg = GptConfig {
+        vocab_size: cfg_u[0] as usize,
+        max_seq_len: cfg_u[1] as usize,
+        d_model: cfg_u[2] as usize,
+        n_layers: cfg_u[3] as usize,
+        n_heads: cfg_u[4] as usize,
+    };
+    Ok((cfg, step))
+}
+
+/// Loads SFEN001 weights into an existing CPU model. Returns the training step.
+///
+/// The two models keep their parameters in a different order, so this is not a
+/// zip: the device block is (norm1, wq, wk, wv, wo, norm2, gate, up, down)
+/// while the CPU block is (norm1, norm2, wq, wk, wv, wo, gate, up, down). Both
+/// layouts are spelled out here, and every tensor is shape-checked, so a
+/// mismatch is an error instead of a silently scrambled model.
+pub fn load_sfen_into(path: &str, model: &mut GPT) -> io::Result<u64> {
+    let (cfg, step) = read_sfen_cfg(path)?;
+    let have = model.config;
+    if cfg.vocab_size != have.vocab_size
+        || cfg.max_seq_len != have.max_seq_len
+        || cfg.d_model != have.d_model
+        || cfg.n_layers != have.n_layers
+        || cfg.n_heads != have.n_heads
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "config mismatch between the state file and the model",
+        ));
+    }
+
+    let f = File::open(path)?;
+    let mut r = BufReader::new(f);
+    let mut skip = [0u8; 8 + 4 + 20 + 8 + 4];
+    r.read_exact(&mut skip)?;
+
+    // Read every tensor in file order.
+    let per_block = 9usize;
+    let expected = 1 + cfg.n_layers * per_block + 1;
+    let mut file_tensors: Vec<(usize, usize, Vec<f32>)> = Vec::with_capacity(expected);
+    loop {
+        let mut hdr = [0u8; 8];
+        match r.read_exact(&mut hdr) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+        let rows = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+        let cols = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+        let mut buf = vec![0u8; rows * cols * 4];
+        r.read_exact(&mut buf)?;
+        let mut data = vec![0f32; rows * cols];
+        for (k, v) in data.iter_mut().enumerate() {
+            let o = k * 4;
+            *v = f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
+        }
+        file_tensors.push((rows, cols, data));
+    }
+    if file_tensors.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("tensor count {} != expected {expected}", file_tensors.len()),
+        ));
+    }
+
+    // File order -> CPU order (per block).
+    let order = [0usize, 5, 1, 2, 3, 4, 6, 7, 8];
+    let mut plan: Vec<usize> = vec![0];
+    for b in 0..cfg.n_layers {
+        let base = 1 + b * per_block;
+        for &o in &order {
+            plan.push(base + o);
+        }
+    }
+    plan.push(1 + cfg.n_layers * per_block);
+
+    let params = model.parameters();
+    if params.len() != plan.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "model has {} parameters, plan has {}",
+                params.len(),
+                plan.len()
+            ),
+        ));
+    }
+    for (slot, &src) in plan.iter().enumerate() {
+        let (rows, cols, ref data) = file_tensors[src];
+        let p = &params[slot];
+        let mut d = p.data.borrow_mut();
+        if d.rows != rows || d.cols != cols {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "slot {slot} <- file tensor {src}: shape {rows}x{cols}, model {}x{}",
+                    d.rows, d.cols
+                ),
+            ));
+        }
+        d.data.copy_from_slice(data);
+    }
+    Ok(step)
+}

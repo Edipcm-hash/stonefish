@@ -140,6 +140,7 @@ each claim on your own machine.
 | The profile table is real | `cargo run --release -- test-gpt-profile` | a table is printed (on a CUDA build the GEMM and transfer buckets are non-zero) |
 | The model agrees with PyTorch | `python tools/torch_parity.py --state stonefish_en.final.state --valid data/en/tiny.valid.bin --batches 8 --expected <value from en-eval>` | `MATCH` (< 2e-3) |
 | No Turkish text | `python tools/check_no_turkish.py` | `OK` |
+| `en-gen` works without a GPU | `cargo run --release --no-default-features -- en-gen "Once upon a time" 10 0` | text comes out (~3 tok/s) |
 | The charts come from this data | `python tools/make_charts.py` | `docs/*.png` rewritten |
 
 **Note:** `demo 90` also runs on the CPU (a 12K-character slice, ~11,000 tok/s).
@@ -547,6 +548,8 @@ closed in v2.
 - **Synchronous checkpoint writes** - writing 848 MB pauses the run for ~1-2 s;
   measured and accepted, every 500 steps.
 - **Single-sequence generation** - no batching, no speculative decoding.
+- **CPU generation is slow** - `en-gen` runs without a GPU, but through the
+  autograd path at ~3 tokens/s; the GPU path is well above 100 tokens/s.
 
 ---
 

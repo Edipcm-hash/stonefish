@@ -1331,9 +1331,114 @@ fn en_gen(args: &[String]) {
     stonefish_ai::en_train::generate("data/en/tiny", "stonefish_en.state", &prompt, n, temp, 40);
 }
 
+/// CPU fallback for `en-gen`: loads the shipped SFEN001 checkpoint into the CPU
+/// model and generates there. This is what lets someone without a GPU run the
+/// released model at all - slower (autograd path, one token at a time) but the
+/// same weights and the same sampler.
 #[cfg(not(feature = "cuda"))]
-fn en_gen(_args: &[String]) {
-    println!("❌ en-gen CUDA gerektirir.");
+fn en_gen(args: &[String]) {
+    let prompt = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Once upon a time".into());
+    let n: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
+    let temp: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.8);
+    // prefer the final checkpoint once training has finished
+    let state = if std::path::Path::new("stonefish_en.final.state").exists() {
+        "stonefish_en.final.state"
+    } else {
+        "stonefish_en.state"
+    };
+
+    let (cfg, step) =
+        stonefish_ai::checkpoint::read_sfen_cfg(state).expect("could not read the checkpoint");
+    println!(
+        "Model  : d={}, {} layers, {} heads, ctx={}, vocab={} (step {step})",
+        cfg.d_model, cfg.n_layers, cfg.n_heads, cfg.max_seq_len, cfg.vocab_size
+    );
+    println!("Device : CPU (autograd path - expect a few tokens per second)");
+
+    let bpe = stonefish_ai::bpe::load_merges("data/en/tiny.bpe").expect("could not load the BPE");
+    let mut seed = 0x5EED_1234u64;
+    let mut model = stonefish_ai::transformer::GPT::new(cfg, &mut seed);
+    stonefish_ai::checkpoint::load_sfen_into(state, &mut model)
+        .expect("could not load the weights");
+
+    let mut ids: Vec<usize> = bpe.encode(&prompt).iter().map(|&x| x as usize).collect();
+    if ids.is_empty() {
+        ids.push(0);
+    }
+    print!("{prompt}");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
+    let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+    let t0 = std::time::Instant::now();
+    for _ in 0..n {
+        let start = ids.len().saturating_sub(cfg.max_seq_len);
+        let window: Vec<usize> = ids[start..].to_vec();
+        let logits = model.forward(&window);
+        let d = logits.data.borrow();
+        let row = d.rows - 1;
+        let cols = d.cols;
+
+        let next = if temp <= 0.0 {
+            let mut best = 0usize;
+            let mut bv = f32::NEG_INFINITY;
+            for j in 0..cols {
+                let v = d.get(row, j);
+                if v > bv {
+                    bv = v;
+                    best = j;
+                }
+            }
+            best
+        } else {
+            // top-40 sampling, same shape as the GPU path
+            let mut idx: Vec<(usize, f32)> = (0..cols).map(|j| (j, d.get(row, j))).collect();
+            idx.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            idx.truncate(40.min(cols));
+            let mx = idx[0].1;
+            let mut probs: Vec<f32> = idx.iter().map(|&(_, v)| ((v - mx) / temp).exp()).collect();
+            let sum: f32 = probs.iter().sum();
+            for p in probs.iter_mut() {
+                *p /= sum;
+            }
+            let r = (next_rng(&mut rng) >> 11) as f32 / (1u64 << 53) as f32;
+            let mut acc = 0.0f32;
+            let mut pick = idx[0].0;
+            for (k, &(j, _)) in idx.iter().enumerate() {
+                acc += probs[k];
+                if r < acc {
+                    pick = j;
+                    break;
+                }
+            }
+            pick
+        };
+        drop(d);
+
+        ids.push(next);
+        let ch = bpe.decode(&[next as u32]);
+        print!("{ch}");
+        let _ = std::io::stdout().flush();
+    }
+    let dt = t0.elapsed().as_secs_f64();
+    println!();
+    if n > 0 {
+        println!(
+            "\n  ({n} tokens, {dt:.1} s, {:.2} tok/s - CPU)",
+            n as f64 / dt
+        );
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn next_rng(s: &mut u64) -> u64 {
+    *s ^= *s << 13;
+    *s ^= *s >> 7;
+    *s ^= *s << 17;
+    *s
 }
 
 // ============================================================

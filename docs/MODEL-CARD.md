@@ -91,6 +91,8 @@ cargo run --release -- demo 90        # a small model from scratch, in 90 s
 cargo test --release                  # 74 tests
 cargo run --release -- en-eval        # evaluate the shipped checkpoint
 cargo run --release -- en-gen "Once upon a time" 150 0.8
+# without CUDA: add --no-default-features; the CPU path is ~3 tokens/s
+cargo run --release --no-default-features -- en-gen "Once upon a time" 10 0
 ```
 
 ## Licence

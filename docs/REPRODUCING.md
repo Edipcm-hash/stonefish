@@ -62,6 +62,9 @@ depend on the tokeniser and can be compared with other models.
 ```bash
 cargo run --release -- en-gen "Once upon a time" 150 0.0   # greedy
 cargo run --release -- en-gen "Once upon a time" 150 0.8   # sampled
+
+# The same command works without CUDA (`--no-default-features`): the CPU path
+# loads the SFEN001 checkpoint into the CPU model and samples there at ~3 tok/s.
 ```
 
 The README quotes both. Greedy shows what the model is most confident about;
