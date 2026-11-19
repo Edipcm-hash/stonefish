@@ -20,7 +20,9 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 
 > Turkish version: [README-Tr.md](README-Tr.md)
 
-> **Status:** v1 released and measured (val loss 2.3700 · BPC 0.6913). v2 (222M parameters, 2.05B tokens, new architecture) is training - ETA 19 Nov 2026.
+> **Status:** v2 (222M parameters, 2.05B tokens, new architecture) is training;
+> ETA 19 Nov 2026. The earlier v1 was measured but never published (val loss
+> 2.3700 · BPC 0.6913); v2's numbers land in section 7 when training finishes.
 
 ---
 

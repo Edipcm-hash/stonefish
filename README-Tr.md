@@ -19,7 +19,9 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 
 > English version: [README-Eng.md](README-Eng.md)
 
-> **Durum:** v1 yayınlandı ve ölçüldü (val loss 2,3700 · BPC 0,6913). v2 (222 M parametre, 2,05 B token, yeni mimari) eğitiliyor — 19 Kasım 2026'da bitecek.
+> **Durum:** v2 (222 M parametre, 2,05 B token, yeni mimari) eğitiliyor; 19 Kasım
+> 2026'da bitecek. Önceki v1 ölçüldü ama yayınlanmadı (val loss 2,3700 · BPC 0,6913);
+> v2'nin sayıları eğitim bitince §7'ye yazılacak.
 
 ---
 
