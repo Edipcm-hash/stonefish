@@ -8,11 +8,11 @@
 # The token is never stored: `git push` prompts for it and git keeps it in the
 # credential manager, not in this script.
 #
-#   .\tools\publish_hf.ps1                      # defaults to Edipcm-hash/stonefish-222m
+#   .\tools\publish_hf.ps1                      # defaults to StonefishAI/stonefish-222m
 #   .\tools\publish_hf.ps1 -Repo someone/other
 
 param(
-    [string]$Repo = "Edipcm-hash/stonefish-222m",
+    [string]$Repo = "StonefishAI/stonefish-222m",
     [string]$User = "Edipcm-hash",
     [string]$State = "stonefish_en.final.state",
     [string]$Vocab = "data/en/tiny.bpe",

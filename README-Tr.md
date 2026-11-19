@@ -29,6 +29,9 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 > **Durum:** v2 **eğitildi ve ölçüldü**: 222 M parametre, tam 1 epoch = 2,05 B token.
 > val loss **2,0227** · perplexity **7,56** · BPC **0,6064** bit/karakter (rastgele
 > taban 2,909) · **10.772 tok/s** tek RTX 5070'de · 75 test geçiyor. Ayrıntılar §7.4.
+>
+> **Ağırlıklar:** [huggingface.co/StonefishAI/stonefish-222m](https://huggingface.co/StonefishAI/stonefish-222m)
+> — 848 MB checkpoint + 126 KB vocab. Vocab olmadan checkpoint decode edilemez.
 
 ---
 
@@ -504,6 +507,14 @@ Val CE: CPU 1,6337 / GPU 1,6230 (fast-math + toplama sırası).
 | Eğitim | 62.483 adım, **~54 saat** saf hesaplama, tek RTX 5070 (250 W) |
 | Throughput | son 200 adım ortalaması **10.772 tok/s** |
 | VRAM | 8,4 GB / 12 GB · 66 °C · GPU %99 |
+
+**Ağırlıklar:** [StonefishAI/stonefish-222m](https://huggingface.co/StonefishAI/stonefish-222m)
+(`stonefish_en.final.state` + `tiny.bpe`). İndirdikten sonra:
+
+```bash
+cargo run --release -- en-gen "Once upon a time" 150 0.8
+cargo run --release -- en-eval 8 data/en/tiny stonefish_en.final.state
+```
 
 **Kalite** (valid.bin, 8 batch = 32.768 token):
 

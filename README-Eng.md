@@ -31,6 +31,10 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 > 2.05B tokens. val loss **2.0227** · perplexity **7.56** · BPC **0.6064**
 > bits/character (random baseline 2.909) · **10,772 tok/s** on one RTX 5070 ·
 > 75 tests passing. Details in section 7.4.
+>
+> **Weights:** [huggingface.co/StonefishAI/stonefish-222m](https://huggingface.co/StonefishAI/stonefish-222m)
+> — the 848 MB checkpoint plus the 126 KB vocabulary. Without the vocabulary the
+> checkpoint cannot decode.
 
 ---
 
@@ -514,6 +518,14 @@ Val CE: CPU 1.6337 / GPU 1.6230 (fast-math + summation order).
 | Training | 62,483 steps, ~49 hours, one RTX 5070 (250 W) |
 | Throughput | last 200 steps: **10,772 tok/s** |
 | VRAM | 8.4 GB / 12 GB · 66 °C · GPU 99 % |
+
+**Weights:** [StonefishAI/stonefish-222m](https://huggingface.co/StonefishAI/stonefish-222m)
+(`stonefish_en.final.state` + `tiny.bpe`). Once downloaded:
+
+```bash
+cargo run --release -- en-gen "Once upon a time" 150 0.8
+cargo run --release -- en-eval 8 data/en/tiny stonefish_en.final.state
+```
 
 **Quality** (valid.bin, 8 batches = 32,768 tokens):
 

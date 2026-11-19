@@ -86,7 +86,7 @@ checkpoint** to a GitHub release — use Hugging Face (below) and link it.
 The checkpoint is `SFEN001`, 848 MB, and cannot be rebuilt without 56 hours of
 GPU time, so it belongs somewhere durable:
 
-- Hugging Face model repo (`Edipcm-hash/stonefish-222m`), file
+- Hugging Face model repo (`StonefishAI/stonefish-222m`), file
   `stonefish_en.final.state`, with `docs/huggingface-README.md` renamed to
   `README.md` as the model card - it carries the YAML frontmatter the Hub needs,
   which the in-repo model card does not.
@@ -112,7 +112,7 @@ The whole thing is one script - it checks for git-lfs, clones the Hub repo, trac
 push prompt for the token (so the token is never written to a file):
 
 `ash
-./tools/publish_hf.ps1                 # defaults to Edipcm-hash/stonefish-222m
+./tools/publish_hf.ps1                 # defaults to StonefishAI/stonefish-222m
 ./tools/publish_hf.ps1 -Repo other/name
 `
 
@@ -120,7 +120,7 @@ Doing it by hand also works:
 
 ```bash
 # 1. create the empty repo on huggingface.co (web UI), then:
-git clone https://huggingface.co/Edipcm-hash/stonefish-222m /tmp/sf-hf
+git clone https://huggingface.co/StonefishAI/stonefish-222m /tmp/sf-hf
 cd /tmp/sf-hf
 
 # 2. large-file tracking, before adding the checkpoint
