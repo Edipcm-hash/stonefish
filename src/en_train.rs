@@ -107,7 +107,7 @@ pub fn prepare(
                     total
                 );
             }
-            Err(e) => println!("⚠️  {path} tokenize edilemedi: {e}"),
+            Err(e) => println!("⚠️  could not tokenize {path}: {e}"),
         }
     }
 
@@ -119,7 +119,7 @@ pub fn prepare(
             "valid       : {n} token, {:.1} s",
             t.elapsed().as_secs_f64()
         ),
-        Err(e) => println!("⚠️  valid tokenize edilemedi: {e}"),
+        Err(e) => println!("⚠️  could not tokenize the validation set: {e}"),
     }
 
     let corpus_bytes: u64 = [stories_txt, books_txt]

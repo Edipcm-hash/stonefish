@@ -404,7 +404,7 @@ fn gpt_train(args: &[String]) {
         "En iyi model : epoch {} (val CE = {:.4}) → {}",
         best_epoch, best_val, GPT_PATH
     );
-    println!("Nihai model  : {}", final_path);
+    println!("Final model  : {}", final_path);
     match manifest {
         Ok(path) => println!("Manifest     : {}", path),
         Err(e) => eprintln!("⚠️  could not write the manifest: {e}"),
@@ -710,7 +710,7 @@ fn train(args: &[String]) {
 }
 
 fn predict() {
-    println!("🐟 StonefishAI v{} — tahmin\n", stonefish_ai::VERSION);
+    println!("🐟 StonefishAI v{} - predict\n", stonefish_ai::VERSION);
     let layers = load_model(MODEL_PATH, 2).expect("could not load the model");
     let x_test = load_images("data/t10k-images-idx3-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
@@ -719,7 +719,7 @@ fn predict() {
 }
 
 fn eval_only() {
-    println!("🐟 StonefishAI v{} — eval\n", stonefish_ai::VERSION);
+    println!("🐟 StonefishAI v{} - eval\n", stonefish_ai::VERSION);
     let layers = load_model(MODEL_PATH, 2).expect("could not load the model");
     let x_test = load_images("data/t10k-images-idx3-ubyte");
     let y_test_raw = load_labels_raw("data/t10k-labels-idx1-ubyte");
@@ -762,7 +762,7 @@ fn evaluate(x: &Matrix, y_raw: &[usize], l1: &Linear, l2: &Linear) -> f32 {
 // ============================================================
 
 fn tokenize() {
-    println!("🐟 StonefishAI v{} — tokenizer\n", stonefish_ai::VERSION);
+    println!("🐟 StonefishAI v{} - tokenizer\n", stonefish_ai::VERSION);
     let text = data::load_text(TEXT_PATH);
     let tok = Tokenizer::from_text(&text);
     println!("Vocab: {}", tok.vocab_size);
@@ -790,7 +790,7 @@ fn tokenize() {
 // ============================================================
 
 fn test_ops() {
-    println!("🐟 Op testleri\n");
+    println!("🐟 Op tests\n");
     let x = Tensor::leaf(Matrix::from_vec(1, 3, vec![1.0, 2.0, 3.0]), true);
     x.softmax().sum().backward();
     println!("✅ Softmax OK");
