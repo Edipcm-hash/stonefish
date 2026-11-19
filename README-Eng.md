@@ -136,6 +136,8 @@ Measured training throughput:
 
 ## 4. Architecture
 
+![Architecture - one forward pass](docs/architecture.png)
+
 | File | Lines | Responsibility |
 |---|---|---|
 | [src/lib.rs](src/lib.rs) | 35 | Library root, `VERSION`, justified clippy allows |

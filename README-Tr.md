@@ -136,6 +136,8 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 
 ## 4. Mimari
 
+![Mimari - tek ileri geçiş](docs/architecture.png)
+
 | Dosya | Satır | Sorumluluk |
 |---|---|---|
 | [src/lib.rs](src/lib.rs) | 35 | Kütüphane kökü, `VERSION`, clippy gerekçeli allow'lar |
