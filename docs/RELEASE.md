@@ -73,10 +73,44 @@ GPU time, so it belongs somewhere durable:
   `stonefish_en.final.state`, with `docs/huggingface-README.md` renamed to
   `README.md` as the model card - it carries the YAML frontmatter the Hub needs,
   which the in-repo model card does not.
-- Mention the tokeniser: `data/en/tiny.bpe` (126 KB) must ship with the weights,
-  because the checkpoint alone cannot decode.
+- `data/en/tiny.bpe` (126 KB) must ship with the weights: the checkpoint alone
+  cannot decode, and a downloader who has the state file but not the vocabulary
+  gets an error, not a model. Put it in the repo as `tiny.bpe`.
 
-Do not put the weights in git. `.gitignore` already blocks `*.state`.
+Do not put the weights in the main git repo. `.gitignore` already blocks
+`*.state`.
+
+### Prerequisites, checked on this machine
+
+| Requirement | State |
+|---|---|
+| `git lfs` | **3.8.1 installed** (needed: the file is over the 10 MB limit) |
+| Hugging Face account + write token | not present in the environment; needed |
+| `huggingface_hub` / `hf` CLI | not installed; the git + LFS route below avoids it |
+
+### Upload over git + LFS
+
+```bash
+# 1. create the empty repo on huggingface.co (web UI), then:
+git clone https://huggingface.co/Edipcm-hash/stonefish-222m /tmp/sf-hf
+cd /tmp/sf-hf
+
+# 2. large-file tracking, before adding the checkpoint
+git lfs install
+git lfs track "*.state"
+cp <repo>/stonefish_en.final.state .
+cp <repo>/data/en/tiny.bpe .
+cp <repo>/docs/huggingface-README.md README.md
+
+# 3. push (username + write token as the password)
+git add .gitattributes README.md tiny.bpe
+git add stonefish_en.final.state
+git commit -m "StonefishAI v2 - 222M, 2.05B tokens"
+git push
+```
+
+Verify afterwards that the model card renders and that the file page shows an
+LFS pointer with the real size, not a 130-byte text file.
 
 ## 5. Repository settings
 
