@@ -737,20 +737,77 @@ tamamı v1.0'da bitti. Aşağısı bugünkü gerçek durum.
 | **C — mimari** | KV-cache, RoPE, RMSNorm, SwiGLU, weight tying, dropout | ✅ hepsi; KV-cache tam ileri geçişle **5e-8** içinde aynı |
 | **C — doğruluk** | PyTorch ile aynı ağırlıklar | ✅ loss farkı **1,8e-05** (eşik 2e-3) |
 
-### 12.2 Sıradaki — öncelik sırasıyla
+### 12.2 v1.5 — mühendislik sürümü
 
-| # | İş | Neden bu sırada | Beklenen etki |
+v1.0 **model kalitesini** kanıtladı: BPC 0,6064, PyTorch ile 1,8e-05 fark. Ama ölçümler
+üç zayıf nokta gösterdi ve v1.5 bunları kapatmalı — yeni mimari değil, aynı modelin
+daha iyi mühendisliği.
+
+#### A · Performans
+
+| # | İş | Ne yapar | Süre |
 |---|---|---|---|
-| 1 | **bf16 karışık hassasiyet** | Aynı 12 GB'da ya 2× hız ya 2× model; kernel tarafında `__half` desteği gerekir | En yüksek getiri |
-| 2 | **Daha fazla veri** (4–8 B token) | 9,2 token/parametre → 20+; Chinchilla bölgesi | Kalite sıçraması |
-| 3 | **Gradyan checkpointing** | Aktivasyonları yeniden hesapla → 400 M modele yer | Orta |
-| 4 | **Halka tamponlu KV-cache** | 512 token dolduktan sonra üretim O(n·512) oluyor | Orta |
-| 5 | **Checkpoint v3** | BPE merge tablosunu da dosyaya göm → ağırlık tek dosya | Küçük, ama yayını kolaylaştırır |
-| 6 | **`en-eval`/`en-gen` otomatik testleri** | Şu an bu iki yol yalnız elle doğrulanıyor | CI kapsamı |
-| 7 | **ctx 1024** | Model 512'nin ötesini hiç görmedi | Orta |
-| 8 | **Flash-attention tarzı çekirdek** | 222 M'de fark yok; 400 M+ modelde bellek kazancı | Deneysel |
+| **A1** | **bf16 karışık hassasiyet** ⭐ | Aynı 12 GB'da ya 2× hız ya 2× model. `__half` çekirdekler + `cublasGemmEx`, fp32 master ağırlıklar. bf16'nın üs aralığı fp32 ile aynı olduğu için **loss scaling gerekmez** — fp16'nın derdi bu | 1–2 hafta |
+| **A2** | **VRAM açığını kapat** | PyTorch 7,10 GB, biz 8,40. Fark büyük olasılıkla 16384 yönlü logits'i tüm token'lar için maddileştirmek (134 MB + probs 134 MB) ve aktivasyon tamponlarının yeniden kullanılmaması. Parçalı cross-entropy + tampon yeniden kullanımı | 3–5 gün |
+| **A3** | **Halka tamponlu KV-cache** | 512 token dolduktan sonra üretim O(n·512) oluyor. Halka tamponu + RoPE konum ofseti → sabit bellekte sınırsız uzunluk | 2–3 gün |
+| **A4** | **Gradyan checkpointing** | Aktivasyonları geri geçişte yeniden hesapla → **400 M modele yer** aç (%20-30 yavaşlama) | ~1 hafta |
 
-### 12.3 Bilinçli olarak **yapmadıklarım**
+#### B · Kullanılabilirlik
+
+| # | İş | Ne yapar | Süre |
+|---|---|---|---|
+| **B1** | **Checkpoint v3 — tek dosya** | Config + vocab + merge tablosu + ağırlık tek `.sfa` dosyasında. Yayında "hangi dosya lazımdı?" sorusu biter | 2–3 gün |
+| **B2** | **Örnekleme iyileştirmeleri** | Repetition penalty (greedy döngüsünü ve "the old woman and the old woman" tekrarını azaltır), top-p, stop string. **En ucuz, algılanan kaliteyi en çok artıran iş** | 1 gün |
+| **B3** | **`en-eval`/`en-gen` testleri** | Bu iki yol CI'da hiç koşmuyor; küçük bir checkpoint + 2 test yeter | 2 gün |
+
+#### C · Ölçüm dürüstlüğü
+
+| # | İş | Ne yapar | Süre |
+|---|---|---|---|
+| **C1** | **Gerçek held-out Gutenberg** | Validasyon seti yalnız TinyStories ama eğitim karışımının %77'si Gutenberg. `en-eval --split gutenberg` → §7.4'teki uzun açıklamayı gereksiz kılar | 2 gün |
+| **C2** | **VRAM profili** | `test-gpt-profile` zamanı ölçüyor, **belleği** ölçmüyor. A2'nin önkoşulu | 1 gün |
+
+#### Hedef tablosu
+
+| Metrik | v1.0 | **v1.5 hedefi** |
+|---|---|---|
+| Throughput (222 M) | 10.772 tok/s | **≥20.000** (bf16) |
+| VRAM (222 M) | 8,40 GB | **≤7,5 GB** (PyTorch'un önünde) |
+| En büyük model | 222 M | **400 M** |
+| 512+ token üretim | bozuluyor | **sabit bellek** |
+| Checkpoint | 2 dosya | **1 dosya** |
+| Örnekleme | sıcaklık + top-k | + repetition penalty + top-p |
+| Eval | yalnız TinyStories | + held-out Gutenberg |
+| Test | 75 | **+4** |
+
+#### Önerilen sıra
+
+```
+1. B2 örnekleme        (1 gün)    en ucuz kazanç, hemen görünür
+2. C2 VRAM profili     (1 gün)    A2'nin ölçümü
+3. A2 VRAM düzeltmesi  (4 gün)
+4. B1 checkpoint v3    (3 gün)
+5. A3 halka KV-cache   (3 gün)
+6. A1 bf16             (2 hafta)  en büyük iş, en büyük kazanç
+7. A4 400 M + ckpt     (1 hafta)  bf16 bitince mümkün
+8. C1 Gutenberg eval   (2 gün)
+9. B3 testler          (2 gün)
+```
+
+Toplam **~6 hafta** (akşamları çalışarak). Bu tablo bir taahhüt değil, kapsam
+tahminidir; sıra bağımlılıklara göre.
+
+### 12.3 v2.0 — iki aday
+
+| Aday | Neden ilginç | Zor kısım |
+|---|---|---|
+| **Türkçe model** (50–100 M, gerçek korpus) | Sıfırdan yazılmış bir Türkçe dil modeli dünyada çok az; en güçlü farklılaştırıcı | Kod değil, **veri**: temiz, lisansı uygun, yeterince büyük bir Türkçe korpus |
+| **Tarayıcıda çalışan demo** (10–20 M, WebGPU/WASM) | "Kurulum yok, tıkla çalışsın" etkisi büyük | Modeli tarayıcıya sığdırmak: niceleme + WASM/WGSL arka ucu |
+
+İkisi de v1.5'in mühendislik temeline dayanıyor: bf16/niceleme olmadan tarayıcı
+demosu, sağlam veri hattı olmadan Türkçe model olmaz.
+
+### 12.4 Bilinçli olarak **yapmadıklarım**
 
 | Ne | Neden yapılmadı |
 |---|---|
@@ -759,7 +816,7 @@ tamamı v1.0'da bitti. Aşağısı bugünkü gerçek durum.
 | **Hazır modeli ince ayar** | Projenin tamamı "sıfırdan" iddiası üzerine kurulu; o adım iddiayı geçersiz kılardı |
 | **FlashAttention'ı kopyalamak** | Kendi fused attention'ımız var ve 222 M'de darboğaz değil; kopyalamak öğrenme değeri katmazdı |
 
-### 12.4 Gerçekçi tavan
+### 12.5 Gerçekçi tavan
 
 Tek RTX 5070 (12 GB, fp32) ile ulaşılabilir son nokta **~250–300 M parametre** ve
 **~4 B token**. Bu, "sıfırdan yazılmış gerçek bir motor + dürüst bir dil modeli"

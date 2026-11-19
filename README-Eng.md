@@ -750,20 +750,77 @@ phases finished in v1.0. Below is the real state of things.
 | **C - architecture** | KV-cache, RoPE, RMSNorm, SwiGLU, weight tying, dropout | ✅ all of them; the KV-cache matches the full forward pass to **5e-8** |
 | **C - correctness** | same weights in PyTorch | ✅ loss differs by **1.8e-05** (threshold 2e-3) |
 
-### 12.2 Next - in priority order
+### 12.2 v1.5 - the engineering release
 
-| # | Work | Why this order | Expected effect |
+v1.0 proved **model quality**: BPC 0.6064, a 1.8e-05 difference from PyTorch. But the
+measurements exposed three weak spots, and v1.5 should close them - not with a new
+architecture, but with better engineering of the same model.
+
+#### A - Performance
+
+| # | Work | What it does | Effort |
 |---|---|---|---|
-| 1 | **bf16 mixed precision** | Either 2x speed or 2x model in the same 12 GB; needs `__half` support in the kernels | Highest return |
-| 2 | **More data** (4-8 B tokens) | 9.2 tokens/parameter -> 20+; the Chinchilla regime | Quality jump |
-| 3 | **Gradient checkpointing** | Recompute activations -> room for a 400M model | Medium |
-| 4 | **Ring-buffer KV-cache** | Past 512 tokens generation degrades to O(n*512) | Medium |
-| 5 | **Checkpoint v3** | Embed the BPE merge table too, so the weights are one file | Small, but it simplifies the release |
-| 6 | **Automated tests for `en-eval`/`en-gen`** | Those two paths are only verified by hand today | CI coverage |
-| 7 | **ctx 1024** | The model has never seen past 512 | Medium |
-| 8 | **Flash-attention-style kernel** | No difference at 222M; memory win at 400M+ | Experimental |
+| **A1** | **bf16 mixed precision** ⭐ | Either 2x speed or 2x model in the same 12 GB. `__half` kernels + `cublasGemmEx`, fp32 master weights. bf16 has the same exponent range as fp32, so **no loss scaling is needed** - which was fp16's whole problem | 1-2 weeks |
+| **A2** | **Close the VRAM gap** | PyTorch uses 7.10 GB, we use 8.40. The difference is most likely materialising the 16,384-way logits for every token (134 MB + 134 MB of probs) and not reusing activation buffers. Chunked cross-entropy + buffer reuse | 3-5 days |
+| **A3** | **Ring-buffer KV-cache** | Past 512 tokens generation degrades to O(n*512). A ring buffer with a RoPE position offset gives constant memory and arbitrary length | 2-3 days |
+| **A4** | **Gradient checkpointing** | Recompute activations in the backward pass -> room for a **400M model** (20-30 % slower) | ~1 week |
 
-### 12.3 Deliberately **not** done
+#### B - Usability
+
+| # | Work | What it does | Effort |
+|---|---|---|---|
+| **B1** | **Checkpoint v3 - one file** | Config + vocabulary + merge table + weights in a single `.sfa` file. Ends the "which file did I need?" question at release time | 2-3 days |
+| **B2** | **Sampling improvements** | Repetition penalty (kills the greedy loop and the "the old woman and the old woman" repetition), top-p, stop strings. **The cheapest work with the largest effect on perceived quality** | 1 day |
+| **B3** | **`en-eval`/`en-gen` tests** | Neither path runs in CI today; a small checkpoint plus two tests is enough | 2 days |
+
+#### C - Measurement honesty
+
+| # | Work | What it does | Effort |
+|---|---|---|---|
+| **C1** | **A real held-out Gutenberg split** | The validation set is TinyStories only while 77 % of the training mix is Gutenberg. `en-eval --split gutenberg` would make the long explanation in 7.4 unnecessary | 2 days |
+| **C2** | **VRAM profile** | `test-gpt-profile` measures time, not **memory**. It is the prerequisite for A2 | 1 day |
+
+#### Targets
+
+| Metric | v1.0 | **v1.5 target** |
+|---|---|---|
+| Throughput (222 M) | 10,772 tok/s | **>= 20,000** (bf16) |
+| VRAM (222 M) | 8.40 GB | **<= 7.5 GB** (ahead of PyTorch) |
+| Largest model | 222 M | **400 M** |
+| Generation past 512 | degrades | **constant memory** |
+| Checkpoint | 2 files | **1 file** |
+| Sampling | temperature + top-k | + repetition penalty + top-p |
+| Evaluation | TinyStories only | + held-out Gutenberg |
+| Tests | 75 | **+4** |
+
+#### Suggested order
+
+```
+1. B2 sampling         (1 day)    cheapest win, visible immediately
+2. C2 VRAM profile     (1 day)    the measurement A2 needs
+3. A2 VRAM fix         (4 days)
+4. B1 checkpoint v3    (3 days)
+5. A3 ring KV-cache    (3 days)
+6. A1 bf16             (2 weeks)  the big one, the big payoff
+7. A4 400M + ckpt      (1 week)   possible once bf16 lands
+8. C1 Gutenberg eval   (2 days)
+9. B3 tests            (2 days)
+```
+
+About **6 weeks** of evenings. This is a scope estimate, not a promise; the order
+follows the dependencies.
+
+### 12.3 v2.0 - two candidates
+
+| Candidate | Why it is interesting | The hard part |
+|---|---|---|
+| **A Turkish model** (50-100 M, real corpus) | A from-scratch Turkish language model is rare; the strongest differentiator | Not the code - the **data**: clean, appropriately licensed, large enough |
+| **A browser demo** (10-20 M, WebGPU/WASM) | "No install, click and it runs" is a strong effect | Fitting the model into a browser: quantisation plus a WASM/WGSL backend |
+
+Both rest on v1.5's engineering: a browser demo needs bf16/quantisation, a Turkish
+model needs a solid data pipeline.
+
+### 12.4 Deliberately **not** done
 
 | What | Why not |
 |---|---|
@@ -772,7 +829,7 @@ phases finished in v1.0. Below is the real state of things.
 | **Fine-tuning a base model** | The entire project rests on the from-scratch claim; that step would void it |
 | **Copying FlashAttention** | We have our own fused attention and it is not the bottleneck at 222M; copying it would add no learning value |
 
-### 12.4 The realistic ceiling
+### 12.5 The realistic ceiling
 
 On one RTX 5070 (12 GB, fp32) the reachable endpoint is **~250-300M parameters** and
 **~4 B tokens**. That means "a real from-scratch engine plus an honest language
