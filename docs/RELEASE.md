@@ -7,6 +7,12 @@ left is packaging and the parts a human has to approve.
 ## 0. Before anything else
 
 ```bash
+python tools/release_gate.py      # runs every check below and prints a table
+```
+
+Or one at a time:
+
+```bash
 git status                 # must be clean
 cargo tree                 # must be one line
 cargo test --release       # 75 tests
@@ -17,8 +23,8 @@ python tools/check_no_turkish.py
 python tools/check_docs.py
 ```
 
-All seven green. If any of them is red, the release waits — that is the whole
-point of having them.
+All of them green. If any is red, the release waits — that is the whole point of
+having them.
 
 ## 1. The measurement that must exist in the README
 
@@ -26,8 +32,8 @@ These numbers cannot be copied from an older run:
 
 | Number | Command | Lives in |
 |---|---|---|
-| val loss, perplexity, BPC | `en-eval data/en/tiny stonefish_en.final.state 8` | §6.2, §7 |
-| out-of-distribution loss | `en-eval data/en/probe stonefish_en.final.state 8` | §7 |
+| val loss, perplexity, BPC | `en-eval 8 data/en/tiny stonefish_en.final.state` | §6.2, §7 |
+| out-of-distribution loss | `en-eval 8 data/en/probe stonefish_en.final.state` | §7 |
 | generation samples | `en-gen "Once upon a time" 150 0` and `... 0.8` | §6.2 |
 | throughput at 222M | training log, `tok/s` column | §7.4 |
 | PyTorch speed and parity | `tools/torch_bench.py`, `tools/torch_parity.py` | §7.5 |
@@ -65,8 +71,8 @@ GPU time, so it belongs somewhere durable:
 
 - Hugging Face model repo (`Edipcm-hash/stonefish-222m`), file
   `stonefish_en.final.state`, with `docs/huggingface-README.md` renamed to
-  `README.md` as the model card - it carries the YAML frontmatter the Hub
-  needs, which the in-repo model card does not.
+  `README.md` as the model card - it carries the YAML frontmatter the Hub needs,
+  which the in-repo model card does not.
 - Mention the tokeniser: `data/en/tiny.bpe` (126 KB) must ship with the weights,
   because the checkpoint alone cannot decode.
 
