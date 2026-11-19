@@ -902,5 +902,26 @@ Kayıp eğrisi (canlı):
 | En büyük model | 842 bin parametre | **222 milyon** |
 | Eğitim hızı | 5.714 tok/s | **244.698 tok/s** (43×) |
 | Veri | 2,87 M karakter | **2,05 milyar token** |
-| Bulunan gerçek hata | — | **17** (hepsi testle yakalandı) |
+| Bulunan bulgu | — | **24** — 19'u kod hatası, 5'i süreç/altyapı; hepsi test, profilleme ya da ölçümle yakalandı |
 | Türkçe satır (README-Tr hariç) | — | **0** |
+
+
+---
+
+## 16. Lisans ve atıf
+
+**MIT** — kod ve ağırlıklar. Geçerli olan `LICENSE` dosyasıdır; bu paragraf
+yalnızca bir özettir.
+
+Eğitim verisi repoda dağıtılmaz ve kendi lisanslarını korur: TinyStories
+(CDLA-Sharing-1.0), Project Gutenberg (ABD'de kamu malı). Bu yüzden `data/`
+`.gitignore` içinde.
+
+```bibtex
+@software{stonefishai2026,
+  title  = {StonefishAI: a language model from scratch in Rust with zero dependencies},
+  author = {Edipcm-hash},
+  year   = {2026},
+  url    = {https://github.com/Edipcm-hash/stonefish}
+}
+```

@@ -906,5 +906,26 @@ Loss curve (live):
 | Largest model | 842 K parameters | **222 M** |
 | Training speed | 5,714 tok/s | **244,698 tok/s** (43×) |
 | Data | 2.87 M characters | **2.05 billion tokens** |
-| Real bugs found | — | **17** (every one caught by a test) |
+| Findings | — | **24** — 19 code defects and 5 process/infrastructure problems, each caught by a test, a profile or a measurement |
 | Turkish lines (excl. README-Tr) | — | **0** |
+
+
+---
+
+## 16. Licence and citation
+
+**MIT** - code and weights. The `LICENSE` file is authoritative; this paragraph is
+only a summary.
+
+The training data is not redistributed and keeps its own licences: TinyStories
+(CDLA-Sharing-1.0), Project Gutenberg (public domain in the US). That is why
+`data/` is in `.gitignore`.
+
+```bibtex
+@software{stonefishai2026,
+  title  = {StonefishAI: a language model from scratch in Rust with zero dependencies},
+  author = {Edipcm-hash},
+  year   = {2026},
+  url    = {https://github.com/Edipcm-hash/stonefish}
+}
+```
