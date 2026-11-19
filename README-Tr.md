@@ -111,6 +111,30 @@ Invoke-WebRequest "$b/TinyStoriesV2-GPT4-train.txt" -OutFile data/en/train.txt
 Invoke-WebRequest "$b/TinyStories-valid.txt"        -OutFile data/en/valid.txt
 ```
 
+### 2.1 Her iddiayı kendin doğrula
+
+Bu README'deki hiçbir sayı "bize inan" üzerine kurulu değil. Aşağıdaki
+komutlar her iddiayı kendi makinenizde yeniden üretir.
+
+| İddia | Komut | Beklenen |
+|---|---|---|
+| Bağımlılık yok | `cargo tree` | tek satır: `stonefish_ai v1.0.0` |
+| 71 test geçiyor | `cargo test --release` | `71 passed; 0 failed` |
+| Grafyenler doğru | `cargo test --release --test gradcheck` | `32 passed` |
+| CUDA çekirdekleri CPU ile aynı | `cargo test --release --test gpu_kernels` | `16 passed` |
+| GPU eğitici CPU autograd ile aynı | `cargo test --release --test gpu_train_equiv` | `2 passed` |
+| KV-cache tam ileri geçişle aynı | `cargo test --release --test kv_cache` | `2 passed` |
+| Checkpoint bozulmaya dayanıklı | `cargo test --release --test checkpoint` | `5 passed` |
+| Sıfırdan eğitim çalışıyor | `cargo run --release -- demo 90` | 90 s'de üretim |
+| Kendi FFI'miz çalışıyor | `cargo run --release -- test-ffi` | tüm farklar `0.0` |
+| Profil tablosu doğru | `cargo run --release -- test-gpt-profile` | tablo (0 ms kalem yok) |
+| Model PyTorch ile aynı loss'u veriyor | `python tools/torch_parity.py --state stonefish_en.final.state --valid data/en/tiny.valid.bin --batches 8 --expected <en-eval çıktısı>` | `MATCH` (< 2e-3) |
+| Türkçe metin yok | `python tools/check_no_turkish.py` | `OK` |
+| Grafikler bu verilerden üretiliyor | `python tools/make_charts.py` | `docs/*.png` yeniden yazılır |
+
+**Not:** `demo 90` ve `test-ffi` için CUDA'lı derleme gerekir
+(`--no-default-features` ile CPU'da çalışır, GPU testleri atlanır).
+
 ---
 
 ## 3. Donanım ve ölçülen sınırlar

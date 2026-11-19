@@ -111,6 +111,31 @@ Invoke-WebRequest "$b/TinyStoriesV2-GPT4-train.txt" -OutFile data/en/train.txt
 Invoke-WebRequest "$b/TinyStories-valid.txt"        -OutFile data/en/valid.txt
 ```
 
+### 2.1 Verify every claim yourself
+
+No number in this README asks you to trust us. The commands below reproduce
+each claim on your own machine.
+
+| Claim | Command | Expected |
+|---|---|---|
+| No dependencies | `cargo tree` | one line: `stonefish_ai v1.0.0` |
+| 71 tests pass | `cargo test --release` | `71 passed; 0 failed` |
+| Gradients are correct | `cargo test --release --test gradcheck` | `32 passed` |
+| CUDA kernels match the CPU | `cargo test --release --test gpu_kernels` | `16 passed` |
+| GPU trainer matches CPU autograd | `cargo test --release --test gpu_train_equiv` | `2 passed` |
+| KV cache matches the full forward pass | `cargo test --release --test kv_cache` | `2 passed` |
+| Checkpoints survive corruption attempts | `cargo test --release --test checkpoint` | `5 passed` |
+| From-scratch training works | `cargo run --release -- demo 90` | text in 90 s |
+| Our own FFI works | `cargo run --release -- test-ffi` | every diff is `0.0` |
+| The profile table is real | `cargo run --release -- test-gpt-profile` | no bucket is 0 ms |
+| The model agrees with PyTorch | `python tools/torch_parity.py --state stonefish_en.final.state --valid data/en/tiny.valid.bin --batches 8 --expected <value from en-eval>` | `MATCH` (< 2e-3) |
+| No Turkish text | `python tools/check_no_turkish.py` | `OK` |
+| The charts come from this data | `python tools/make_charts.py` | `docs/*.png` rewritten |
+
+**Note:** `demo 90` and `test-ffi` need the CUDA build. With
+`--no-default-features` everything runs on the CPU and the GPU tests are
+skipped.
+
 ---
 
 ## 3. Hardware and measured limits
