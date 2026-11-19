@@ -107,6 +107,17 @@ Do not put the weights in the main git repo. `.gitignore` already blocks
 
 ### Upload over git + LFS
 
+The whole thing is one script - it checks for git-lfs, clones the Hub repo, tracks
+*.state, copies the weights, the vocabulary and the card, commits, and lets git
+push prompt for the token (so the token is never written to a file):
+
+`ash
+./tools/publish_hf.ps1                 # defaults to Edipcm-hash/stonefish-222m
+./tools/publish_hf.ps1 -Repo other/name
+`
+
+Doing it by hand also works:
+
 ```bash
 # 1. create the empty repo on huggingface.co (web UI), then:
 git clone https://huggingface.co/Edipcm-hash/stonefish-222m /tmp/sf-hf
