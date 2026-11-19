@@ -109,7 +109,7 @@ fn gpu_trainer_matches_cpu_gradients() {
     let mut worst_name = String::new();
     for (name, gc) in &grads_cpu {
         let gg = gpu_grad(&mut gpu, name);
-        assert_eq!(gg.len(), gc.len(), "grad boyutu: {name}");
+        assert_eq!(gg.len(), gc.len(), "gradient size: {name}");
         for i in 0..gc.len() {
             let d = (gg[i] - gc[i]).abs();
             if d > worst {

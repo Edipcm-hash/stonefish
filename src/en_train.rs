@@ -230,7 +230,7 @@ pub fn train(a: &EnTrainArgs) {
     println!("🐟 StonefishAI - English GPT training (250M class)\n");
     println!("Tokenizer : BPE vocab={vocab}");
     println!(
-        "Korpus    : {} token (cache), seq_len={}",
+        "Corpus    : {} tokens (cache), seq_len={}",
         data.len(),
         a.seq_len
     );

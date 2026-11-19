@@ -153,7 +153,7 @@ fn main() {
         "en-eval" => en_eval(rest),
         "en-gen" => en_gen(rest),
         other => {
-            eprintln!("Bilinmeyen mod: {}", other);
+            eprintln!("Unknown mode: {}", other);
             eprintln!(
                 "Valid modes: {}",
                 MODES
@@ -359,7 +359,8 @@ fn gpt_train(args: &[String]) {
             best_val = val_loss;
             best_epoch = epoch;
             trainer.sync_to_cpu(&mut model);
-            checkpoint::save_gpt(GPT_PATH, &model, &tok).expect("en iyi checkpoint kaydedilemedi");
+            checkpoint::save_gpt(GPT_PATH, &model, &tok)
+                .expect("could not save the best checkpoint");
             let _ = tok.save(GPT_VOCAB_PATH);
         }
     }

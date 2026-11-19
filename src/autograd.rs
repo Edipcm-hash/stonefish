@@ -380,7 +380,7 @@ impl Tensor {
         let xd = self.data.borrow();
         let (rows, cols) = (xd.rows, xd.cols);
         let gd = gamma.data.borrow();
-        assert_eq!(gd.cols, cols, "rms_norm: gamma boyutu");
+        assert_eq!(gd.cols, cols, "rms_norm: gamma shape");
 
         let mut data = Matrix::zeros(rows, cols);
         let mut x_hat = Matrix::zeros(rows, cols);
@@ -479,8 +479,8 @@ impl Tensor {
             assert_eq!(rows, batch * seq, "attention: rows must equal batch*seq");
             assert_eq!(kd.rows, rows, "attention: K row count");
             assert_eq!(vd.rows, rows, "attention: V row count");
-            assert_eq!(kd.cols, d_model, "attention: K boyutu");
-            assert_eq!(vd.cols, d_model, "attention: V boyutu");
+            assert_eq!(kd.cols, d_model, "attention: K shape");
+            assert_eq!(vd.cols, d_model, "attention: V shape");
             assert_eq!(d_model % n_heads, 0, "attention: d_model % n_heads");
             let d_head = d_model / n_heads;
             let scale = 1.0 / (d_head as f32).sqrt();
@@ -915,7 +915,7 @@ fn apply_backward(node: &Node, upstream: &Matrix) {
         }
 
         Op::Embedding { seq_len } => {
-            // v2: girdiler (tok_emb, ids). Konum bilgisi RoPE'den gelir,
+            // v2: the inputs are (tok_emb, ids). Positions come from RoPE,
             // therefore there is no positional embedding gradient.
             let _ = seq_len;
             let tok_emb = &node.inputs[0];
