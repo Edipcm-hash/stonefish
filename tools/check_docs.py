@@ -30,6 +30,7 @@ FILES = [
     "docs/MODEL-CARD.md",
     "docs/REPRODUCING.md",
     "docs/RELEASE.md",
+    "docs/huggingface-README.md",
     "CHANGELOG.md",
 ]
 
