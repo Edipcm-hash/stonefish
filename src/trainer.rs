@@ -161,3 +161,59 @@ pub fn lr_at(step: usize, total: usize, max_lr: f32, warmup: usize, min_ratio: f
     let cos = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
     max_lr * (min_ratio + (1.0 - min_ratio) * cos)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::lr_at;
+
+    const MAX: f32 = 4e-4;
+    const WARMUP: usize = 100;
+    const TOTAL: usize = 1100;
+    const MIN_RATIO: f32 = 0.1;
+
+    /// The warmup is linear and reaches max_lr exactly at the last warmup step.
+    #[test]
+    fn warmup_is_linear_and_ends_at_max() {
+        assert!(lr_at(0, TOTAL, MAX, WARMUP, MIN_RATIO) < MAX * 0.02);
+        let mid = lr_at(WARMUP / 2, TOTAL, MAX, WARMUP, MIN_RATIO);
+        let first = lr_at(0, TOTAL, MAX, WARMUP, MIN_RATIO);
+        assert!(mid > first, "warmup must increase");
+        // step+1 scaling: the last warmup step is exactly max_lr
+        let last = lr_at(WARMUP - 1, TOTAL, MAX, WARMUP, MIN_RATIO);
+        assert!(
+            (last - MAX).abs() < MAX * 1e-5,
+            "last warmup step is {last}"
+        );
+    }
+
+    /// The decay is monotone after warmup and never drops below min_ratio*max_lr.
+    #[test]
+    fn cosine_decays_monotonically_to_the_floor() {
+        let mut prev = lr_at(WARMUP, TOTAL, MAX, WARMUP, MIN_RATIO);
+        for step in (WARMUP + 1)..TOTAL {
+            let lr = lr_at(step, TOTAL, MAX, WARMUP, MIN_RATIO);
+            assert!(
+                lr <= prev + 1e-9,
+                "not monotone at step {step}: {lr} > {prev}"
+            );
+            assert!(
+                lr >= MAX * MIN_RATIO - 1e-9,
+                "below the floor at step {step}"
+            );
+            prev = lr;
+        }
+        let last = lr_at(TOTAL - 1, TOTAL, MAX, WARMUP, MIN_RATIO);
+        assert!((last - MAX * MIN_RATIO).abs() < MAX * 0.01, "end is {last}");
+    }
+
+    /// Past the last step the schedule must stay at the floor, not go negative
+    /// (the cosine formula would otherwise wrap around).
+    #[test]
+    fn past_the_end_it_holds_the_floor() {
+        let floor = MAX * MIN_RATIO;
+        for step in [TOTAL, TOTAL + 500, TOTAL * 3] {
+            let lr = lr_at(step, TOTAL, MAX, WARMUP, MIN_RATIO);
+            assert!((lr - floor).abs() < MAX * 1e-4, "step {step} gave {lr}");
+        }
+    }
+}

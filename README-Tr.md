@@ -128,7 +128,7 @@ komutlar her iddiayı kendi makinenizde yeniden üretir.
 | İddia | Komut | Beklenen |
 |---|---|---|
 | Bağımlılık yok | `cargo tree` | tek satır: `stonefish_ai v1.0.0` |
-| 71 test geçiyor | `cargo test --release` | `71 passed; 0 failed` |
+| 74 test geçiyor | `cargo test --release` | `74 passed; 0 failed` |
 | Grafyenler doğru | `cargo test --release --test gradcheck` | `32 passed` |
 | CUDA çekirdekleri CPU ile aynı | `cargo test --release --test gpu_kernels` | `16 passed` |
 | GPU eğitici CPU autograd ile aynı | `cargo test --release --test gpu_train_equiv` | `2 passed` |
@@ -435,7 +435,7 @@ tekrarlanacak.)
 
 ## 9. Testler
 
-**71 test**, iki feature config'inde de yeşil:
+**74 test**, iki feature config'inde de yeşil:
 
 | Grup | Adet | Ne doğrular |
 |---|---|---|
@@ -444,7 +444,7 @@ tekrarlanacak.)
 | [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | Roundtrip, bozuk magic, yarım dosya, vocab uyuşmazlığı, drift |
 | [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU eğiticisi ↔ CPU autograd: **tüm gradyanlar** + 5 Adam adımının loss eğrisi |
 | [tests/kv_cache.rs](tests/kv_cache.rs) | 2 | KV-cache'li üretim ↔ tam ileri geçiş |
-| Birim testleri (`src/`) | 14 | Tokenizer (4), optimizer/clip (4), BPE (4), corpus (2) |
+| Birim testleri (`src/`) | 17 | Tokenizer (4), optimizer/clip (4), BPE (4), corpus (2), LR programı (3) |
 
 Gradyan kapsamı: `add`/`sub` (broadcast dahil), `mul_elem`, `matmul` (kare dahil),
 `matmul+transpose`, `scale`, `relu`, `sigmoid`, `transpose`, `sum`, `softmax_ce`,
@@ -865,7 +865,7 @@ Kayıp eğrisi (canlı):
 
 | | 15 Haziran (v0.6) | Bugün |
 |---|---|---|
-| Test | 0 | **71** |
+| Test | 0 | **74** |
 | Bağımlılık | 4 crate | **0** |
 | En büyük model | 842 bin parametre | **222 milyon** |
 | Eğitim hızı | 5.714 tok/s | **244.698 tok/s** (43×) |

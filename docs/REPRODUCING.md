@@ -23,12 +23,12 @@ cache changes and training refuses to start — that is deliberate.
 ## 1. Tests
 
 ```bash
-cargo test --release                       # 71 tests
+cargo test --release                       # 74 tests
 cargo test --release --test gradcheck      # 32 numerical gradient checks
 cargo test --release --test gpu_kernels    # 16 kernel-vs-CPU checks
 ```
 
-Expected: `71 passed; 0 failed`. If the GPU is busy, the four GPU test binaries
+Expected: `74 passed; 0 failed`. If the GPU is busy, the four GPU test binaries
 still run but slower; they are not skipped.
 
 ## 2. Train (optional — this is the 56-hour step)

@@ -9,7 +9,7 @@ left is packaging and the parts a human has to approve.
 ```bash
 git status                 # must be clean
 cargo tree                 # must be one line
-cargo test --release       # 71 tests
+cargo test --release       # 74 tests
 cargo clippy --all-targets --features cuda -- -D warnings
 cargo clippy --all-targets --no-default-features -- -D warnings
 cargo fmt --all -- --check
@@ -51,7 +51,7 @@ Body: start from `CHANGELOG.md`, then put the four numbers a reader can check in
 the first screen:
 
 ```
-222,331,904 parameters · 2.05B tokens · 71 tests · 0 dependencies
+222,331,904 parameters · 2.05B tokens · 74 tests · 0 dependencies
 val loss X.XXXX · BPC 0.XXXX · 10,7xx tokens/s on one RTX 5070
 ```
 
@@ -85,7 +85,7 @@ One paragraph, no superlatives, the numbers that can be verified:
 
 > I wrote a language model from scratch in Rust — autograd, BPE, transformer,
 > CUDA kernels — with zero dependencies. 222M parameters trained on 2.05B tokens
-> on one RTX 5070. 71 tests, 32 of them numerical gradient checks. It is 1.8×
+> on one RTX 5070. 74 tests, 32 of them numerical gradient checks. It is 1.8×
 > faster than PyTorch on the same GPU at the same architecture, and it is **not**
 > a chat assistant: it continues text.
 

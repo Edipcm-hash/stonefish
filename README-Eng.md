@@ -129,7 +129,7 @@ each claim on your own machine.
 | Claim | Command | Expected |
 |---|---|---|
 | No dependencies | `cargo tree` | one line: `stonefish_ai v1.0.0` |
-| 71 tests pass | `cargo test --release` | `71 passed; 0 failed` |
+| 74 tests pass | `cargo test --release` | `74 passed; 0 failed` |
 | Gradients are correct | `cargo test --release --test gradcheck` | `32 passed` |
 | CUDA kernels match the CPU | `cargo test --release --test gpu_kernels` | `16 passed` |
 | GPU trainer matches CPU autograd | `cargo test --release --test gpu_train_equiv` | `2 passed` |
@@ -434,7 +434,7 @@ repeated once training finishes.)
 
 ## 9. Tests
 
-**71 tests**, green in both feature configurations:
+**74 tests**, green in both feature configurations:
 
 | Group | Count | What it proves |
 |---|---|---|
@@ -443,7 +443,7 @@ repeated once training finishes.)
 | [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | round-trip, bad magic, truncated file, vocab mismatch, drift |
 | [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU trainer <-> CPU autograd: **every gradient** plus the loss curve of 5 Adam steps |
 | [tests/kv_cache.rs](tests/kv_cache.rs) | 2 | cached generation <-> full forward pass |
-| Unit tests (`src/`) | 14 | tokenizer (4), optimizer/clip (4), BPE (4), corpus (2) |
+| Unit tests (`src/`) | 17 | tokenizer (4), optimizer/clip (4), BPE (4), corpus (2), LR schedule (3) |
 
 Gradient coverage: `add`/`sub` (including broadcast), `mul_elem`, `matmul`
 (including square), `matmul+transpose`, `scale`, `relu`, `sigmoid`, `transpose`,
@@ -866,7 +866,7 @@ Loss curve (live):
 
 | | 15 June (v0.6) | Today |
 |---|---|---|
-| Tests | 0 | **71** |
+| Tests | 0 | **74** |
 | Dependencies | 4 crates | **0** |
 | Largest model | 842 K parameters | **222 M** |
 | Training speed | 5,714 tok/s | **244,698 tok/s** (43×) |

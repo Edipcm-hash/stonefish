@@ -17,7 +17,7 @@ a 222M-parameter model trained on 2.05B tokens on a single consumer GPU.
 | Parameters | 222,331,904 |
 | Training data | 2,047,457,313 tokens (TinyStories + Gutenberg) |
 | Dependencies | **0** (`cargo tree` is one line) |
-| Tests | **71** |
+| Tests | **74** |
 | Training speed | ~10,700 tokens/s on one RTX 5070 at 250 W |
 | Rust | 9,890 lines in src/ (11,362 with tests and examples) |
 | CUDA | 711 lines |

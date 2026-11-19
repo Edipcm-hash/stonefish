@@ -59,7 +59,7 @@ def chart_tests(data, out):
     failed = sum(a.get("failed", 0) for a in areas)
 
     img = canvas(
-        "Test suite - 71 tests, every one of them a real assertion",
+        f"Test suite - {total} tests, every one of them a real assertion",
         f"{total} tests across {len(areas)} areas - gradient checks, kernel parity, "
         "checkpoint safety, KV-cache",
         f"{total - failed}/{total} passing",
