@@ -49,7 +49,7 @@ WORDS = [
     "silindi", "guncellendi", "baslatildi", "tamamlandi", "denendi",
     "atlandi", "secildi", "kullanilir", "kullanilan", "kullanilarak",
     "calisiyor", "calismiyor", "calistir", "degistir", "kaldir", "ekle",
-    "aciklama", "uyari", "bilgi", "mesaj", "sifir", "bos", "dolu",
+    "aciklama", "uyari", "bilgi", "mesaj", "sifir", "bos", "dolu", "zirve", "tepe", "son loss",
 ]
 WORD_RE = re.compile(r"\b(" + "|".join(WORDS) + r")\b", re.IGNORECASE)
 

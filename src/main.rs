@@ -1246,7 +1246,7 @@ fn bench(args: &[String]) {
         "peak VRAM  : ~{used:.1} GB (total {:.1} GB)",
         total as f64 / 1e9
     );
-    println!("son loss   : {last_loss:.4}");
+    println!("final loss : {last_loss:.4}");
 }
 
 #[cfg(not(feature = "cuda"))]

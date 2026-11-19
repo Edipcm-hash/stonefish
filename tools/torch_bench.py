@@ -185,8 +185,8 @@ def main():
     peak = torch.cuda.max_memory_allocated() / 1e9
     print(f"\nstep time: {dt/a.steps*1000:.0f} ms")
     print(f"speed      : {tok_s:,.0f} tokens/s")
-    print(f"zirve VRAM : {peak:.1f} GB")
-    print(f"son loss   : {loss.item()*a.accum:.4f}")
+    print(f"peak VRAM  : {peak:.1f} GB")
+    print(f"final loss : {loss.item()*a.accum:.4f}")
 
 
 if __name__ == "__main__":

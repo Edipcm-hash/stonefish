@@ -26,7 +26,7 @@ def main():
                     out.write("\n")
                     total_chars += len(t) + 2
                     total_rows += 1
-            print(f"{os.path.basename(f)}: {total_rows} belge, {total_chars/1e6:.1f}M karakter", flush=True)
+            print(f"{os.path.basename(f)}: {total_rows} documents, {total_chars/1e6:.1f}M characters", flush=True)
     print(f"TOTAL: {total_rows} documents, {total_chars/1e6:.1f}M characters -> {out_path}")
 
 if __name__ == "__main__":
