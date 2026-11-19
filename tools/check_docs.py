@@ -102,6 +102,38 @@ def check_line_counts(rel: str, text: str) -> list[tuple[str, str]]:
     return bad
 
 
+TREE_ROW = re.compile(r"^([\u2502 ]*)[\u251c\u2514]\u2500\u2500 ([\w.\-/]+/?)\s*(?:#.*)?$")
+
+
+def check_tree(rel: str, text: str) -> list[tuple[str, str]]:
+    """The directory tree in section 13 names real paths.
+
+    A tree diagram is a claim about the repository, and it silently rots when a
+    file is renamed or a directory is added. This walks the diagram, tracking the
+    parent from the indentation, and stats each entry."""
+    bad = []
+    stack: list[str] = []
+    for line in text.splitlines():
+        m = TREE_ROW.match(line)
+        if not m:
+            continue
+        prefix, name = m.group(1), m.group(2)
+        depth = len(prefix) // 4
+        stack = stack[:depth]
+        if name == "StonefishAI/":
+            stack = []
+            continue
+        bare = name.rstrip("/")
+        full = "/".join(stack + [bare]) if stack else bare
+        if name.endswith("/"):
+            stack.append(bare)
+        if bare == "...":
+            continue
+        if not os.path.exists(os.path.join(base_dir, full)):
+            bad.append((f"{rel}: tree", f"{full} does not exist"))
+    return bad
+
+
 def main() -> int:
     broken = []
     checked = 0
@@ -143,6 +175,7 @@ def main() -> int:
 
         broken.extend(check_tables(rel, lines))
         broken.extend(check_line_counts(rel, "".join(lines)))
+        broken.extend(check_tree(rel, "".join(lines)))
         tables_checked += 1
 
     if broken:
