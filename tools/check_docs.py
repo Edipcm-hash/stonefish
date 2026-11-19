@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Check that every relative link in the READMEs points at something real.
+"""Check that every link in the documentation points at something real.
 
-Catches the failure mode that matters before a release: an image or source file
-renamed, moved or never committed, leaving a broken link on the repository front
-page. External URLs are not fetched (CI has no business making network calls for
-a link check); only relative paths are verified.
+Two kinds of link, two kinds of failure:
+
+* relative paths - an image or source file renamed, moved or never committed,
+  which leaves a broken image on the repository front page;
+* heading anchors - the table of contents drifting away from the sections, which
+  silently turns a working link into a no-op.
+
+External URLs are not fetched (CI has no business making network calls for a
+link check).
 
     python tools/check_docs.py
 
-Exit code 1 lists the broken links.
+Exit code 1 lists everything that does not resolve.
 """
 
 from __future__ import annotations
@@ -30,11 +35,26 @@ FILES = [
 
 # ![alt](target) or [text](target)
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+
+
+def github_slug(heading: str) -> str:
+    """GitHub's heading-anchor rule.
+
+    Lowercase, drop everything that is not a letter/number/space/hyphen/
+    underscore, then replace EACH space with a hyphen. The one-to-one space
+    replacement is what makes "a / b" become "a--b" (the slash disappears, both
+    spaces stay); collapsing runs of whitespace gives a false positive there.
+    """
+    t = heading.strip().lower()
+    t = re.sub(r"[^\w\s-]", "", t)
+    return t.replace(" ", "-")
 
 
 def main() -> int:
     broken = []
     checked = 0
+    anchors_checked = 0
 
     for rel in FILES:
         path = os.path.join(ROOT, rel)
@@ -43,26 +63,42 @@ def main() -> int:
             continue
         base = os.path.dirname(path)
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for lineno, line in enumerate(fh, 1):
-                for target in LINK.findall(line):
-                    t = target.strip()
-                    if t.startswith(("http://", "https://", "mailto:", "#")):
-                        continue
-                    t = t.split("#", 1)[0].split("?", 1)[0]
-                    if not t:
-                        continue
-                    checked += 1
-                    resolved = os.path.normpath(os.path.join(base, t))
-                    if not os.path.exists(resolved):
+            lines = fh.readlines()
+
+        headings = set()
+        for line in lines:
+            m = HEADING.match(line)
+            if m:
+                headings.add(github_slug(m.group(2)))
+
+        for lineno, line in enumerate(lines, 1):
+            for target in LINK.findall(line):
+                t = target.strip()
+                if t.startswith(("http://", "https://", "mailto:")):
+                    continue
+                if t.startswith("#"):
+                    anchors_checked += 1
+                    if t[1:] not in headings:
                         broken.append((f"{rel}:{lineno}", target))
+                    continue
+                path_part = t.split("#", 1)[0].split("?", 1)[0]
+                if not path_part:
+                    continue
+                checked += 1
+                resolved = os.path.normpath(os.path.join(base, path_part))
+                if not os.path.exists(resolved):
+                    broken.append((f"{rel}:{lineno}", target))
 
     if broken:
-        print(f"broken links: {len(broken)} of {checked} checked")
+        print(
+            f"broken links: {len(broken)} "
+            f"({checked} paths, {anchors_checked} anchors checked)"
+        )
         for where, target in broken:
             print(f"  {where}  ->  {target}")
         return 1
 
-    print(f"OK: {checked} relative links resolve")
+    print(f"OK: {checked} relative links resolve, {anchors_checked} anchors resolve")
     return 0
 
 
