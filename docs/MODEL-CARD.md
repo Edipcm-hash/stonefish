@@ -33,7 +33,7 @@ cannot do as about what it can.
 | Batch | 4 sequences × gradient accumulation 16 = 32,768 tokens/step |
 | Optimiser | Adam (β 0.9 / 0.999, eps 1e-6) |
 | LR | 4e-4, 1,000-step warmup, cosine decay, gradient clip 1.0 |
-| Hardware | one RTX 5070 (12 GB), 250 W, ~5.5 days |
+| Hardware | one RTX 5070 (12 GB), 250 W, ~56 hours of compute |
 | Throughput | ~10,700 tokens/s |
 | Data reuse | ~9.2 tokens per parameter |
 
@@ -62,9 +62,15 @@ character (BPC) because it is comparable across tokenisers:
 
 | Corpus | Loss (nat/token) | Perplexity | BPC |
 |---|---|---|---|
-| TinyStories (held out) | see README §7 | — | — |
-| Gutenberg (held out) | see README §7 | — | — |
-| Random baseline (BPE-16k) | 9.70 | 16,384 | 2.28 |
+| TinyStories (held out, 4,041,031 tokens) | see README §7 | see §7 | see §7 |
+| README probe (unseen, out of distribution) | see README §7 | see §7 | see §7 |
+| Random baseline, BPE-16k on TinyStories | 9.70 | 16,384 | 2.909 |
+
+The random baseline is `log2(16384) / chars_per_token`, and that denominator
+is 4.812 on the TinyStories validation set. The probe tokenises differently, so
+it gets its own baseline in README §7 - comparing a 2-character/token corpus
+against the 4.8-character baseline is the classic way to make a model look
+worse than random when it is not.
 
 The README's §7 tables are the source of truth; this card intentionally does not
 duplicate numbers that can drift out of sync. Run `en-eval` yourself — the exact
@@ -81,6 +87,9 @@ command is in §2.1.
 - **Memorisation.** With ~9 tokens per parameter the model is not large enough to
   memorise the corpus the way much bigger models can, but rare passages could
   still be reproduced. Do not train on data you cannot redistribute.
+- **Not evaluated on held-out Gutenberg.** The validation split is TinyStories
+  only; the out-of-distribution check uses unseen README text. A Gutenberg
+  held-out number does not exist and this card should not imply one.
 - **Silent failure.** The model does not know when it is wrong, and its errors
   read exactly like its correct output.
 
