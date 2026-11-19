@@ -463,7 +463,9 @@ repeated once training finishes.)
 
 ## 9. Tests
 
-**75 tests**, green in both feature configurations:
+**75 tests** in the CUDA build, **55** in the CPU-only build. The other 20 are
+kernel comparisons and the device trainer, so they need CUDA (on a machine
+without a GPU, `cargo test --no-default-features` runs 55).
 
 | Group | Count | What it proves |
 |---|---|---|

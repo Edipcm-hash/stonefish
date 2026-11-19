@@ -461,7 +461,9 @@ tekrarlanacak.)
 
 ## 9. Testler
 
-**75 test**, iki feature config'inde de yeşil:
+**75 test** CUDA derlemesinde, **55**'i CUDA'sız derlemede. Aradaki 20 test
+çekirdek karşılaştırmaları ve device eğitici olduğu için CUDA'ya bağlı
+(GPU'suz bir makinede `cargo test --no-default-features` 55 test çalıştırır).
 
 | Grup | Adet | Ne doğrular |
 |---|---|---|
