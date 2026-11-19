@@ -335,8 +335,27 @@ SGD lr=0.01, batch 64, 20 epochs → **98.12 %** test accuracy (10,000 images, 1
 
 ### 7.4 English 236 M
 
-~10,000 tok/s, 8.4 GB VRAM, 76 °C (at 210 W), GPU 99 % — throughput never dropped over 11 hours.
+~10,000 tok/s, 8.4 GB VRAM, 76 °C (at 250 W), GPU 99 % — throughput never dropped over 11 hours.
 Loss curve: 9.70 (random) → **~1.97** (at 90 %, still falling).
+
+### 7.5 Against PyTorch - same GPU, same architecture
+
+![StonefishAI vs PyTorch](docs/speedup.png)
+
+`tools/torch_bench.py` rebuilds the v2 architecture (RMSNorm + SwiGLU + RoPE +
+weight tying) exactly in PyTorch; same data, same batch, same GPU. All three
+measurements were taken on the same machine after the same warm-up.
+
+| Implementation | tok/s | Note |
+|---|---|---|
+| **StonefishAI** | **20,487** | from-scratch Rust + our own CUDA FFI |
+| PyTorch (naive attention) | 11,456 | explicit `q @ k.T` |
+| PyTorch (`F.scaled_dot_product_attention`) | 10,810 | PyTorch's fastest path |
+
+The gap does not come from PyTorch's Python loop but from **memory traffic**:
+our fused causal attention runs in a single kernel and never materialises the
+B×S×S score matrix. (Measured at 35.7M parameters; the 222M run will be
+repeated once training finishes.)
 
 ---
 
@@ -712,8 +731,12 @@ Model  : d=1024, 16 layers, 8 heads (d_head=128), ctx=512, BPE-16,384
          -> 222,331,904 parameters
 Batch  : 4 x gradient accumulation 16 = 32,768 tokens/step
 Plan   : 62,483 steps - max_lr 4e-4 - 1000-step warmup + cosine - clip 1.0
-Time   : ~56 hours - 10,100 tokens/s - 8.2 GB VRAM - 76 C - 210 W
+Time   : ~56 hours - 10,100 tokens/s - 8.2 GB VRAM - 76 C - 250 W
 ```
+
+![Loss curve and learning-rate schedule](docs/loss-curve.png)
+
+![Training throughput](docs/throughput.png)
 
 Loss curve (live):
 

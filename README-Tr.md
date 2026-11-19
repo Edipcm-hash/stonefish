@@ -340,8 +340,27 @@ SGD lr=0,01, batch 64, 20 epoch → **%98,12** test doğruluğu (10.000 görünt
 
 ### 7.4 İngilizce 236 M
 
-~10.000 tok/s, 8,4 GB VRAM, 76 °C (210 W limitinde), GPU %99 — 11 saat boyunca hız düşmedi.
+~10.000 tok/s, 8,4 GB VRAM, 76 °C (250 W limitinde), GPU %99 — 11 saat boyunca hız düşmedi.
 Kayıp eğrisi: 9,70 (rastgele) → **~1,97** (%90'da, hâlâ düşüyor).
+
+### 7.5 PyTorch ile karşılaştırma — aynı GPU, aynı mimari
+
+![StonefishAI vs PyTorch](docs/speedup.png)
+
+`tools/torch_bench.py` v2 mimarisini (RMSNorm + SwiGLU + RoPE + weight tying)
+birebir PyTorch'a kurar; aynı veri, aynı batch, aynı GPU. Üç ölçüm de aynı
+makinede, aynı ısınma turundan sonra alındı.
+
+| Uygulama | tok/s | Not |
+|---|---|---|
+| **StonefishAI** | **20.487** | sıfırdan Rust + kendi CUDA FFI'miz |
+| PyTorch (naive attention) | 11.456 | `q @ k.T` açıkça |
+| PyTorch (`F.scaled_dot_product_attention`) | 10.810 | PyTorch'un en hızlı yolu |
+
+Fark, PyTorch'un Python döngüsünden değil, **bellek trafiğinden** geliyor:
+fused causal attention tek çekirdekte çalışıp B×S×S skor matrisini diske hiç
+yazmıyor. (35,7 M parametreyle ölçüldü; 222 M ile ölçüm eğitim bitince
+tekrarlanacak.)
 
 ---
 
@@ -718,8 +737,12 @@ Model  : d=1024, 16 katman, 8 head (d_head=128), ctx=512, BPE-16.384
          → 222.331.904 parametre
 Batch  : 4 × gradyan biriktirme 16 = 32.768 token/adım
 Plan   : 62.483 adım · max_lr 4e-4 · 1000 adım warmup + cosine · clip 1,0
-Süre   : ~56 saat · 10.100 token/s · 8,2 GB VRAM · 76 °C · 210 W
+Süre   : ~56 saat · 10.100 token/s · 8,2 GB VRAM · 76 °C · 250 W
 ```
+
+![Kayıp eğrisi ve öğrenme oranı programı](docs/loss-curve.png)
+
+![Eğitim hızı](docs/throughput.png)
 
 Kayıp eğrisi (canlı):
 
