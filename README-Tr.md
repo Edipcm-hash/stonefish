@@ -194,20 +194,20 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | [src/loss.rs](src/loss.rs) | 9 | Softmax + cross-entropy |
 | [src/data.rs](src/data.rs) | 89 | MNIST idx okuyucu, metin → sequence |
 | [src/tokenizer.rs](src/tokenizer.rs) | 150 | Karakter seviyesi tokenizer |
-| [src/bpe.rs](src/bpe.rs) | 257 | Byte-level BPE: merge öğrenimi, encode/decode |
+| [src/bpe.rs](src/bpe.rs) | 313 | Byte-level BPE: merge öğrenimi, encode/decode |
 | [src/corpus.rs](src/corpus.rs) | 306 | u16 token cache, akışlı pencere okuyucu |
 | [src/transformer.rs](src/transformer.rs) | 290 | CPU'da v2 GPT referansı (RMSNorm/SwiGLU/RoPE) |
-| [src/checkpoint.rs](src/checkpoint.rs) | 164 | GPT checkpoint v2 (magic/version/config/vocab/tensörler) |
-| [src/trainer.rs](src/trainer.rs) | 163 | CPU ve cihaz eğiticisi üzerinde tek arayüz |
+| [src/checkpoint.rs](src/checkpoint.rs) | 400 | GPT checkpoint v2 (magic/version/config/vocab/tensörler) |
+| [src/trainer.rs](src/trainer.rs) | 219 | CPU ve cihaz eğiticisi üzerinde tek arayüz |
 | [src/gpu.rs](src/gpu.rs) | 326 | cuBLAS GEMM (düz/transposed/device/strided-batched) |
 | [src/gpu_kernels.rs](src/gpu_kernels.rs) | 603 | NVRTC derleme, PTX önbelleği, çekirdek sarmalayıcıları |
 | [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT eğiticisi (hızlı yol) |
-| [src/en_train.rs](src/en_train.rs) | 633 | İngilizce hat: `prepare`, `train`, `eval`, `generate` |
+| [src/en_train.rs](src/en_train.rs) | 596 | İngilizce hat: `prepare`, `train`, `eval`, `generate` |
 | [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache üretimi (bağlam dolana kadar O(n)) |
 | [src/demo.rs](src/demo.rs) | 203 | Tek komut demo, CPU veya GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Görülmemiş metni `en-eval` için tokenize et |
 | [src/profile.rs](src/profile.rs) | 133 | Hafif profil sayaçları |
-| [src/main.rs](src/main.rs) | 1612 | CLI (27 mod), eğitim döngüleri, duman testleri |
+| [src/main.rs](src/main.rs) | 1739 | CLI (27 mod), eğitim döngüleri, duman testleri |
 | [src/sys/mod.rs](src/sys/mod.rs) | 202 | Dinamik kütüphane yükleyici (LoadLibraryW / dlopen) |
 | [src/sys/cuda.rs](src/sys/cuda.rs) | 202 | CUDA sürücü API'si |
 | [src/sys/cublas.rs](src/sys/cublas.rs) | 85 | cuBLAS bağları |
@@ -216,7 +216,7 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 | [src/sys/selftest.rs](src/sys/selftest.rs) | 238 | `test-ffi`: tahsis, kopyalama, PTX, çekirdek, cuBLAS |
 | [kernels/stonefish.cu](kernels/stonefish.cu) | 711 | CUDA çekirdekleri |
 
-Ölçülen toplam: **9.890 satır Rust** (`src/`) + 2.322 satır test + 150 satır örnek + **711 satır CUDA**, **0 bağımlılık**.
+Ölçülen toplam: **10.328 satır Rust** (`src/`) + 2.322 satır test + 150 satır örnek + **711 satır CUDA**, **0 bağımlılık**.
 
 ---
 
@@ -469,11 +469,11 @@ tekrarlanacak.)
 
 | Grup | Adet | Ne doğrular |
 |---|---|---|
-| [tests/gradcheck.rs](tests/gradcheck.rs) | 32 | Her op için **merkezi fark** ile analitik ↔ numerik gradyan |
-| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 16 | 33 CUDA çekirdeği + device GEMM modları, CPU referansına karşı |
-| [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | Roundtrip, bozuk magic, yarım dosya, vocab uyuşmazlığı, drift |
-| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU eğiticisi ↔ CPU autograd: **tüm gradyanlar** + 5 Adam adımının loss eğrisi |
-| [tests/kv_cache.rs](tests/kv_cache.rs) | 2 | KV-cache'li üretim ↔ tam ileri geçiş |
+| [tests/gradcheck.rs](tests/gradcheck.rs) | 789 | Her op için **merkezi fark** ile analitik ↔ numerik gradyan |
+| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 1109 | 33 CUDA çekirdeği + device GEMM modları, CPU referansına karşı |
+| [tests/checkpoint.rs](tests/checkpoint.rs) | 155 | Roundtrip, bozuk magic, yarım dosya, vocab uyuşmazlığı, drift |
+| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 159 | GPU eğiticisi ↔ CPU autograd: **tüm gradyanlar** + 5 Adam adımının loss eğrisi |
+| [tests/kv_cache.rs](tests/kv_cache.rs) | 110 | KV-cache'li üretim ↔ tam ileri geçiş |
 | Birim testleri (`src/`) | 18 | Tokenizer (4), optimizer/clip (4), BPE (4), corpus (2), LR programı (3), SFEN sırası (1) |
 
 Gradyan kapsamı: `add`/`sub` (broadcast dahil), `mul_elem`, `matmul` (kare dahil),
@@ -644,21 +644,37 @@ eksikleri (RoPE, SwiGLU, RMSNorm, weight tying, `en-eval`, `en-gen`) v2'de kapan
 
 ```
 StonefishAI/
-├── Cargo.toml            # sürüm 0.7.0, cuda feature (varsayılan açık)
+├── Cargo.toml            # sürüm 1.0.0, [dependencies] boş, cuda feature (varsayılan)
+├── LICENSE               # MIT
+├── CHANGELOG.md          # sürüm notları
 ├── README-Tr.md          # bu dosya
 ├── README-Eng.md         # İngilizce
+├── README.md             # dil seçimi
 ├── kernels/
-│   └── stonefish.cu      # 33 CUDA çekirdeği (NVRTC ile derlenir)
-├── src/                  # 18 modül (~6.300 satır)
-├── tests/                # 4 dosya, 62 test
-├── examples/
-│   ├── bpe_bench.rs      # BPE tokenizasyon hız ölçümü
-│   └── grad_probe.rs     # parametre bazlı gradyan teşhisi
+│   └── stonefish.cu      # 711 satır, 33 CUDA çekirdeği (NVRTC ile derlenir)
+├── src/                  # 28 dosya, 10.328 satır
+│   ├── autograd.rs       # 19 op, topolojik backward()
+│   ├── sys/              # kendi CUDA FFI'miz (1.289 satır)
+│   ├── gpu_train.rs      # GPU-native eğitici
+│   ├── en_train.rs       # İngilizce dil modeli eğitimi/değerlendirmesi
+│   ├── bpe.rs            # byte-level BPE-16k
+│   └── ...               # tensor, transformer, trainer, checkpoint, corpus
+├── tests/                # 6 dosya, 75 test (2.322 satır)
+├── examples/             # bpe_bench.rs, grad_probe.rs
+├── tools/                # 13 Python aracı: ölçüm, grafik, koruma, yayın kapısı
+├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, HF kartı, 4 grafik
+├── .github/workflows/    # CI: 5 iş (CPU, CUDA, sıfır bağımlılık, doküman, dil)
 ├── data/                 # (git dışı) MNIST + korpuslar
 └── runs/                 # (git dışı) eğitim manifestleri
 ```
 
-**Motor ilkeleri:** sıfırdan yazılmış · gradyanları sayısal doğrulanmış · ölçümle karar verilmiş · her hata testle kilitlenmiş · CUDA'sız da çalışır.
+`src/sys/` kendi CUDA FFI'mizi tutar: `LoadLibraryW`/`dlopen` ile sürücü, cuBLAS ve
+NVRTC çalışma zamanında yüklenir. `tests/` iki feature config'inde farklı sayıda
+test çalıştırır (75 CUDA'da, 55 CUDA'sız).
+
+**Motor ilkeleri:** sıfırdan yazılmış · gradyanları sayısal doğrulanmış · ölçümle
+karar verilmiş · bulunan her hata test, profilleme ya da ölçümle kilitlenmiş ·
+CUDA'sız da çalışır.
 
 ---
 

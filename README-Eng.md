@@ -199,20 +199,20 @@ compile load).
 | [src/loss.rs](src/loss.rs) | 9 | Softmax + cross-entropy |
 | [src/data.rs](src/data.rs) | 89 | MNIST idx reader, text to sequences |
 | [src/tokenizer.rs](src/tokenizer.rs) | 150 | Character-level tokenizer |
-| [src/bpe.rs](src/bpe.rs) | 257 | Byte-level BPE: merge learning, encode/decode |
+| [src/bpe.rs](src/bpe.rs) | 313 | Byte-level BPE: merge learning, encode/decode |
 | [src/corpus.rs](src/corpus.rs) | 306 | u16 token cache, streaming window reader |
 | [src/transformer.rs](src/transformer.rs) | 290 | v2 GPT reference on the CPU (RMSNorm/SwiGLU/RoPE) |
-| [src/checkpoint.rs](src/checkpoint.rs) | 164 | GPT checkpoint v2 (magic/version/config/vocab/tensors) |
-| [src/trainer.rs](src/trainer.rs) | 163 | One training interface over the CPU and device trainers |
+| [src/checkpoint.rs](src/checkpoint.rs) | 400 | GPT checkpoint v2 (magic/version/config/vocab/tensors) |
+| [src/trainer.rs](src/trainer.rs) | 219 | One training interface over the CPU and device trainers |
 | [src/gpu.rs](src/gpu.rs) | 326 | cuBLAS GEMM (plain/transposed/device/strided-batched) |
 | [src/gpu_kernels.rs](src/gpu_kernels.rs) | 603 | NVRTC compile, PTX cache, kernel wrappers |
 | [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT trainer (the fast path) |
-| [src/en_train.rs](src/en_train.rs) | 633 | English pipeline: `prepare`, `train`, `eval`, `generate` |
+| [src/en_train.rs](src/en_train.rs) | 596 | English pipeline: `prepare`, `train`, `eval`, `generate` |
 | [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache generation (O(n) until the context fills) |
 | [src/demo.rs](src/demo.rs) | 203 | One-command demo, CPU or GPU |
 | [src/probe.rs](src/probe.rs) | 60 | Tokenize unseen text so `en-eval` can score it |
 | [src/profile.rs](src/profile.rs) | 133 | Lightweight profiling counters |
-| [src/main.rs](src/main.rs) | 1612 | CLI (27 modes), the training loops, the smoke tests |
+| [src/main.rs](src/main.rs) | 1739 | CLI (27 modes), the training loops, the smoke tests |
 | [src/sys/mod.rs](src/sys/mod.rs) | 202 | Dynamic loader (LoadLibraryW / dlopen) |
 | [src/sys/cuda.rs](src/sys/cuda.rs) | 202 | CUDA driver API |
 | [src/sys/cublas.rs](src/sys/cublas.rs) | 85 | cuBLAS bindings |
@@ -221,7 +221,7 @@ compile load).
 | [src/sys/selftest.rs](src/sys/selftest.rs) | 238 | `test-ffi`: alloc, copy, PTX, kernel, cuBLAS |
 | [kernels/stonefish.cu](kernels/stonefish.cu) | 711 | CUDA kernels |
 
-Measured total: **9,890 lines of Rust** (`src/`) + 2,322 lines of tests + 150 of examples + **711 lines of CUDA**, **0 dependencies**.
+Measured total: **10,328 lines of Rust** (`src/`) + 2,322 lines of tests + 150 of examples + **711 lines of CUDA**, **0 dependencies**.
 
 ---
 
@@ -471,11 +471,11 @@ without a GPU, `cargo test --no-default-features` runs 55).
 
 | Group | Count | What it proves |
 |---|---|---|
-| [tests/gradcheck.rs](tests/gradcheck.rs) | 32 | analytic <-> numerical gradient by **central difference**, for every op |
-| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 16 | 33 CUDA kernels and the device GEMM modes, against the CPU reference |
-| [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | round-trip, bad magic, truncated file, vocab mismatch, drift |
-| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU trainer <-> CPU autograd: **every gradient** plus the loss curve of 5 Adam steps |
-| [tests/kv_cache.rs](tests/kv_cache.rs) | 2 | cached generation <-> full forward pass |
+| [tests/gradcheck.rs](tests/gradcheck.rs) | 789 | analytic <-> numerical gradient by **central difference**, for every op |
+| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 1109 | 33 CUDA kernels and the device GEMM modes, against the CPU reference |
+| [tests/checkpoint.rs](tests/checkpoint.rs) | 155 | round-trip, bad magic, truncated file, vocab mismatch, drift |
+| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 159 | GPU trainer <-> CPU autograd: **every gradient** plus the loss curve of 5 Adam steps |
+| [tests/kv_cache.rs](tests/kv_cache.rs) | 110 | cached generation <-> full forward pass |
 | Unit tests (`src/`) | 18 | tokenizer (4), optimizer/clip (4), BPE (4), corpus (2), LR schedule (3), SFEN order (1) |
 
 Gradient coverage: `add`/`sub` (including broadcast), `mul_elem`, `matmul`
@@ -649,21 +649,37 @@ closed in v2.
 
 ```
 StonefishAI/
-├── Cargo.toml            # version 0.7.0, cuda feature (on by default)
+├── Cargo.toml            # version 1.0.0, empty [dependencies], cuda feature (default)
+├── LICENSE               # MIT
+├── CHANGELOG.md          # release notes
 ├── README-Tr.md          # Turkish
 ├── README-Eng.md         # this file
+├── README.md             # language picker
 ├── kernels/
-│   └── stonefish.cu      # 33 CUDA kernels (compiled via NVRTC)
-├── src/                  # 28 modules (9,890 lines)
-├── tests/                # 4 files, 62 tests
-├── examples/
-│   ├── bpe_bench.rs      # BPE tokenization speed benchmark
-│   └── grad_probe.rs     # parameter-wise gradient diagnostics
-├── data/                 # (untracked) MNIST + corpora
-└── runs/                 # (untracked) training manifests
+│   └── stonefish.cu      # 711 lines, 33 CUDA kernels (compiled by NVRTC)
+├── src/                  # 28 files, 10,328 lines
+│   ├── autograd.rs       # 19 ops, topological backward()
+│   ├── sys/              # our own CUDA FFI (1,289 lines)
+│   ├── gpu_train.rs      # GPU-native trainer
+│   ├── en_train.rs       # English LM training and evaluation
+│   ├── bpe.rs            # byte-level BPE-16k
+│   └── ...               # tensor, transformer, trainer, checkpoint, corpus
+├── tests/                # 6 files, 75 tests (2,322 lines)
+├── examples/             # bpe_bench.rs, grad_probe.rs
+├── tools/                # 13 Python tools: measurement, charts, guards, release gate
+├── docs/                 # MODEL-CARD, REPRODUCING, RELEASE, HF card, 4 charts
+├── .github/workflows/    # CI: 5 jobs (CPU, CUDA, zero deps, docs, language)
+├── data/                 # (not in git) MNIST + corpora
+└── runs/                 # (not in git) training manifests
 ```
 
-**Engine principles:** written from scratch · gradients numerically verified · decisions driven by measurement · every bug locked down by a test · runs without CUDA.
+`src/sys/` holds our own CUDA FFI: the driver, cuBLAS and NVRTC are loaded at
+runtime through `LoadLibraryW`/`dlopen`. The test count depends on the feature set
+(75 with CUDA, 55 without).
+
+**Engine principles:** written from scratch · gradients numerically verified ·
+decisions made by measurement · every defect locked down by a test, a profile or a
+measurement · runs without CUDA.
 
 ---
 

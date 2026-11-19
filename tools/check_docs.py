@@ -23,6 +23,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+base_dir = ROOT
 FILES = [
     "README.md",
     "README-Tr.md",
@@ -78,6 +79,29 @@ def check_tables(rel: str, lines) -> list[tuple[str, str]]:
     return bad
 
 
+LINE_ROW = re.compile(r"\| \[([^\]]+)\]\([^)]+\) \| (\d+) \|")
+
+
+def check_line_counts(rel: str, text: str) -> list[tuple[str, str]]:
+    """The architecture table claims a line count per file.
+
+    Those numbers are the easiest claim in the README to falsify and the easiest to
+    forget: adding a function to checkpoint.rs quietly makes the table wrong. This
+    reads each linked file and compares."""
+    bad = []
+    for m in LINE_ROW.finditer(text):
+        path, claimed = m.group(1), int(m.group(2))
+        full = os.path.join(base_dir, path)
+        if not os.path.exists(full):
+            bad.append((f"{rel}: table row", f"{path} does not exist"))
+            continue
+        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+            real = sum(1 for _ in fh)
+        if real != claimed:
+            bad.append((f"{rel}: table row", f"{path} says {claimed}, is {real}"))
+    return bad
+
+
 def main() -> int:
     broken = []
     checked = 0
@@ -118,6 +142,7 @@ def main() -> int:
                     broken.append((f"{rel}:{lineno}", target))
 
         broken.extend(check_tables(rel, lines))
+        broken.extend(check_line_counts(rel, "".join(lines)))
         tables_checked += 1
 
     if broken:
