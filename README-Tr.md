@@ -173,33 +173,37 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 
 | Dosya | Satır | Sorumluluk |
 |---|---|---|
-| [src/lib.rs](src/lib.rs) | 35 | Kütüphane kökü, `VERSION`, clippy gerekçeli allow'lar |
-| [src/sys/mod.rs](src/sys/mod.rs) | 190 | Dinamik kütüphane yükleyici (LoadLibraryW / dlopen) |
-| [src/sys/cuda.rs](src/sys/cuda.rs) | 200 | CUDA sürücü API'si (bellek, bağlam, modül, çekirdek) |
-| [src/sys/cublas.rs](src/sys/cublas.rs) | 80 | cuBLAS SGEMM + strided-batched |
-| [src/sys/nvrtc.rs](src/sys/nvrtc.rs) | 130 | NVRTC — çalışma zamanında CUDA C derleme |
-| [src/sys/dev.rs](src/sys/dev.rs) | 520 | `DevBuf`/görünümler, modül, çekirdek başlatma |
-| [src/sys/selftest.rs](src/sys/selftest.rs) | 250 | FFI öz-testi (`test-ffi` modu) |
-| [src/tensor.rs](src/tensor.rs) | 142 | `Matrix` (row-major 2D): matmul, transpose, broadcast add/sub |
-| [src/autograd.rs](src/autograd.rs) | 845 | `Tensor`, `Op` (17 varyant), topolojik backward, tüm op'lar |
-| [src/nn.rs](src/nn.rs) | 99 | `Linear`, MNIST model (de)serializasyonu |
-| [src/transformer.rs](src/transformer.rs) | 246 | Embedding, MultiHeadSelfAttention, TransformerBlock, GPT, GptConfig |
-| [src/checkpoint.rs](src/checkpoint.rs) | 147 | GPT checkpoint v2 (magic/version/config/vocab/tensörler) |
-| [src/optim.rs](src/optim.rs) | 167 | SGD, Adam (bias correction'lı), `clip_grad_norm` |
-| [src/loss.rs](src/loss.rs) | 7 | Softmax + cross-entropy |
-| [src/data.rs](src/data.rs) | 79 | MNIST idx okuyucu, metin → sequence |
-| [src/tokenizer.rs](src/tokenizer.rs) | 128 | Karakter seviyesi tokenizer |
-| [src/bpe.rs](src/bpe.rs) | 236 | Byte-level BPE: merge öğrenimi + encode/decode |
-| [src/corpus.rs](src/corpus.rs) | 251 | u16 token cache, akışlı pencere okuyucu |
-| [src/gpu.rs](src/gpu.rs) | 362 | cuBLAS GEMM (düz/transposed/device/strided-batched) + CPU yedeği |
-| [src/gpu_kernels.rs](src/gpu_kernels.rs) | 405 | NVRTC derleme + PTX önbelleği + 15 çekirdek sarmalayıcısı |
-| [src/gpu_train.rs](src/gpu_train.rs) | 1289 | Device-resident GPT eğiticisi (hızlı yol) |
-| [src/en_train.rs](src/en_train.rs) | 270 | İngilizce hat: `prepare` + `train` |
-| [src/profile.rs](src/profile.rs) | 119 | Hafif profil sayaçları |
-| [src/main.rs](src/main.rs) | 1252 | CLI (20 mod) + eğitim döngüleri + `Trainer` soyutlaması |
-| [kernels/stonefish.cu](kernels/stonefish.cu) | 389 | CUDA çekirdekleri |
+| [src/lib.rs](src/lib.rs) | 46 | Modül kökü, `VERSION`, gerekçeli clippy izinleri |
+| [src/tensor.rs](src/tensor.rs) | 182 | Matrix + `Tensor` (Rc<RefCell<..>>), xorshift RNG |
+| [src/autograd.rs](src/autograd.rs) | 1106 | 19 op, topolojik `backward()`, fused causal attention |
+| [src/nn.rs](src/nn.rs) | 117 | `Linear`, MNIST modelini kaydet/yükle |
+| [src/optim.rs](src/optim.rs) | 196 | SGD, Adam (bias correction), `clip_grad_norm` |
+| [src/loss.rs](src/loss.rs) | 9 | Softmax + cross-entropy |
+| [src/data.rs](src/data.rs) | 89 | MNIST idx okuyucu, metin → sequence |
+| [src/tokenizer.rs](src/tokenizer.rs) | 150 | Karakter seviyesi tokenizer |
+| [src/bpe.rs](src/bpe.rs) | 257 | Byte-level BPE: merge öğrenimi, encode/decode |
+| [src/corpus.rs](src/corpus.rs) | 306 | u16 token cache, akışlı pencere okuyucu |
+| [src/transformer.rs](src/transformer.rs) | 290 | CPU'da v2 GPT referansı (RMSNorm/SwiGLU/RoPE) |
+| [src/checkpoint.rs](src/checkpoint.rs) | 164 | GPT checkpoint v2 (magic/version/config/vocab/tensörler) |
+| [src/trainer.rs](src/trainer.rs) | 163 | CPU ve cihaz eğiticisi üzerinde tek arayüz |
+| [src/gpu.rs](src/gpu.rs) | 326 | cuBLAS GEMM (düz/transposed/device/strided-batched) |
+| [src/gpu_kernels.rs](src/gpu_kernels.rs) | 603 | NVRTC derleme, PTX önbelleği, çekirdek sarmalayıcıları |
+| [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT eğiticisi (hızlı yol) |
+| [src/en_train.rs](src/en_train.rs) | 633 | İngilizce hat: `prepare`, `train`, `eval`, `generate` |
+| [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache üretimi (O(n²) yerine O(n)) |
+| [src/demo.rs](src/demo.rs) | 203 | Tek komut demo, CPU veya GPU |
+| [src/probe.rs](src/probe.rs) | 60 | Görülmemiş metni `en-eval` için tokenize et |
+| [src/profile.rs](src/profile.rs) | 133 | Hafif profil sayaçları |
+| [src/main.rs](src/main.rs) | 1612 | CLI (25 mod), eğitim döngüleri, duman testleri |
+| [src/sys/mod.rs](src/sys/mod.rs) | 202 | Dinamik kütüphane yükleyici (LoadLibraryW / dlopen) |
+| [src/sys/cuda.rs](src/sys/cuda.rs) | 202 | CUDA sürücü API'si |
+| [src/sys/cublas.rs](src/sys/cublas.rs) | 85 | cuBLAS bağları |
+| [src/sys/nvrtc.rs](src/sys/nvrtc.rs) | 124 | Çalışma zamanı derleme |
+| [src/sys/dev.rs](src/sys/dev.rs) | 564 | Tamponlar, görünümler, çekirdek argümanları, GEMM |
+| [src/sys/selftest.rs](src/sys/selftest.rs) | 238 | `test-ffi`: tahsis, kopyalama, PTX, çekirdek, cuBLAS |
+| [kernels/stonefish.cu](kernels/stonefish.cu) | 711 | CUDA çekirdekleri |
 
-Toplam: **~7.500 satır Rust** + 389 satır CUDA, **0 bağımlılık**.
+Ölçülen toplam: **9.890 satır Rust** (`src/`) + 2.322 satır test + 150 satır örnek + **711 satır CUDA**, **0 bağımlılık**.
 
 ---
 
@@ -618,7 +622,7 @@ src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
 
 1. **Derleme zamanında CUDA SDK gerekmez** — import kütüphanesi (`.lib`) yok, `build.rs` yok
 2. **CUDA yoksa zarif düşüş** — `LoadLibraryW` `None` döner, her şey CPU'da çalışır
-3. **Denetlenebilir** — 1.100 satır FFI, 400 satırlık bir crate'in soyutlaması yerine doğrudan API
+3. **Denetlenebilir** — 1.289 satır FFI, 400 satırlık bir crate'in soyutlaması yerine doğrudan API
 4. **Doğrulanmış** — `stonefish_ai test-ffi` alloc + kopyalama + PTX yükleme + çekirdek başlatma + cuBLAS SGEMM'i CPU referansına karşı sınar (ölçülen fark: **0.0**)
 
 Çekirdek argümanları `Kargs` ile hazırlanır: her argüman bir `u64` slota yazılır (cihaz işaretçisi 8 bayt, i32/f32 ilk 4 bayt) ve `cuLaunchKernel`'e o slotların adresleri verilir — tahsis yok, sıfır kopya.

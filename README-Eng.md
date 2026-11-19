@@ -176,33 +176,37 @@ Measured training throughput:
 
 | File | Lines | Responsibility |
 |---|---|---|
-| [src/lib.rs](src/lib.rs) | 35 | Library root, `VERSION`, justified clippy allows |
-| [src/sys/mod.rs](src/sys/mod.rs) | 190 | Dynamic library loader (LoadLibraryW / dlopen) |
-| [src/sys/cuda.rs](src/sys/cuda.rs) | 200 | CUDA driver API (memory, context, module, kernel) |
-| [src/sys/cublas.rs](src/sys/cublas.rs) | 80 | cuBLAS SGEMM + strided-batched |
-| [src/sys/nvrtc.rs](src/sys/nvrtc.rs) | 130 | NVRTC — runtime CUDA C compilation |
-| [src/sys/dev.rs](src/sys/dev.rs) | 520 | `DevBuf`/views, module, kernel launch |
-| [src/sys/selftest.rs](src/sys/selftest.rs) | 250 | FFI self-test (`test-ffi` mode) |
-| [src/tensor.rs](src/tensor.rs) | 142 | `Matrix` (row-major 2D): matmul, transpose, broadcast add/sub |
-| [src/autograd.rs](src/autograd.rs) | 845 | `Tensor`, `Op` (17 variants), topological backward, all ops |
-| [src/nn.rs](src/nn.rs) | 99 | `Linear`, MNIST model (de)serialization |
-| [src/transformer.rs](src/transformer.rs) | 246 | Embedding, MultiHeadSelfAttention, TransformerBlock, GPT, GptConfig |
-| [src/checkpoint.rs](src/checkpoint.rs) | 147 | GPT checkpoint v2 (magic/version/config/vocab/tensors) |
-| [src/optim.rs](src/optim.rs) | 167 | SGD, Adam (with bias correction), `clip_grad_norm` |
-| [src/loss.rs](src/loss.rs) | 7 | Softmax + cross-entropy |
-| [src/data.rs](src/data.rs) | 79 | MNIST idx reader, text → sequences |
-| [src/tokenizer.rs](src/tokenizer.rs) | 128 | Character-level tokenizer |
-| [src/bpe.rs](src/bpe.rs) | 236 | Byte-level BPE: merge learning + encode/decode |
-| [src/corpus.rs](src/corpus.rs) | 251 | u16 token cache, windowed streaming reader |
-| [src/gpu.rs](src/gpu.rs) | 362 | cuBLAS GEMM (plain/transposed/device/strided-batched) + CPU fallback |
-| [src/gpu_kernels.rs](src/gpu_kernels.rs) | 405 | NVRTC compilation + PTX cache + 15 kernel wrappers |
-| [src/gpu_train.rs](src/gpu_train.rs) | 1289 | Device-resident GPT trainer (fast path) |
-| [src/en_train.rs](src/en_train.rs) | 270 | English pipeline: `prepare` + `train` |
-| [src/profile.rs](src/profile.rs) | 119 | Lightweight profiling counters |
-| [src/main.rs](src/main.rs) | 1252 | CLI (20 modes) + training loops + `Trainer` abstraction |
-| [kernels/stonefish.cu](kernels/stonefish.cu) | 389 | CUDA kernels |
+| [src/lib.rs](src/lib.rs) | 46 | Module root, `VERSION`, the clippy allows with reasons |
+| [src/tensor.rs](src/tensor.rs) | 182 | Matrix + `Tensor` (Rc<RefCell<..>>), the xorshift RNG |
+| [src/autograd.rs](src/autograd.rs) | 1106 | 19 ops, topological `backward()`, fused causal attention |
+| [src/nn.rs](src/nn.rs) | 117 | `Linear`, save/load for the MNIST model |
+| [src/optim.rs](src/optim.rs) | 196 | SGD, Adam with bias correction, `clip_grad_norm` |
+| [src/loss.rs](src/loss.rs) | 9 | Softmax + cross-entropy |
+| [src/data.rs](src/data.rs) | 89 | MNIST idx reader, text to sequences |
+| [src/tokenizer.rs](src/tokenizer.rs) | 150 | Character-level tokenizer |
+| [src/bpe.rs](src/bpe.rs) | 257 | Byte-level BPE: merge learning, encode/decode |
+| [src/corpus.rs](src/corpus.rs) | 306 | u16 token cache, streaming window reader |
+| [src/transformer.rs](src/transformer.rs) | 290 | v2 GPT reference on the CPU (RMSNorm/SwiGLU/RoPE) |
+| [src/checkpoint.rs](src/checkpoint.rs) | 164 | GPT checkpoint v2 (magic/version/config/vocab/tensors) |
+| [src/trainer.rs](src/trainer.rs) | 163 | One training interface over the CPU and device trainers |
+| [src/gpu.rs](src/gpu.rs) | 326 | cuBLAS GEMM (plain/transposed/device/strided-batched) |
+| [src/gpu_kernels.rs](src/gpu_kernels.rs) | 603 | NVRTC compile, PTX cache, kernel wrappers |
+| [src/gpu_train.rs](src/gpu_train.rs) | 1467 | Device-resident GPT trainer (the fast path) |
+| [src/en_train.rs](src/en_train.rs) | 633 | English pipeline: `prepare`, `train`, `eval`, `generate` |
+| [src/kv_cache.rs](src/kv_cache.rs) | 363 | KV-cache generation (O(n) instead of O(n^2)) |
+| [src/demo.rs](src/demo.rs) | 203 | One-command demo, CPU or GPU |
+| [src/probe.rs](src/probe.rs) | 60 | Tokenize unseen text so `en-eval` can score it |
+| [src/profile.rs](src/profile.rs) | 133 | Lightweight profiling counters |
+| [src/main.rs](src/main.rs) | 1612 | CLI (25 modes), the training loops, the smoke tests |
+| [src/sys/mod.rs](src/sys/mod.rs) | 202 | Dynamic loader (LoadLibraryW / dlopen) |
+| [src/sys/cuda.rs](src/sys/cuda.rs) | 202 | CUDA driver API |
+| [src/sys/cublas.rs](src/sys/cublas.rs) | 85 | cuBLAS bindings |
+| [src/sys/nvrtc.rs](src/sys/nvrtc.rs) | 124 | Runtime compilation |
+| [src/sys/dev.rs](src/sys/dev.rs) | 564 | Buffers, views, kernel arguments, GEMM |
+| [src/sys/selftest.rs](src/sys/selftest.rs) | 238 | `test-ffi`: alloc, copy, PTX, kernel, cuBLAS |
+| [kernels/stonefish.cu](kernels/stonefish.cu) | 711 | CUDA kernels |
 
-Total: **~6,300 lines of Rust** + 389 lines of CUDA.
+Measured total: **9,890 lines of Rust** (`src/`) + 2,322 lines of tests + 150 of examples + **711 lines of CUDA**, **0 dependencies**.
 
 ---
 
@@ -584,7 +588,7 @@ StonefishAI/
 ├── README-Eng.md         # this file
 ├── kernels/
 │   └── stonefish.cu      # 15 CUDA kernels (compiled via NVRTC)
-├── src/                  # 18 modules (~6,300 lines)
+├── src/                  # 28 modules (9,890 lines)
 ├── tests/                # 4 files, 62 tests
 ├── examples/
 │   ├── bpe_bench.rs      # BPE tokenization speed benchmark
@@ -615,7 +619,7 @@ src/sys/nvrtc.rs  nvrtcCreateProgram, nvrtcCompileProgram, nvrtcGetPTX
 
 1. **No CUDA SDK at build time** — no import `.lib`, no `build.rs`
 2. **Graceful degradation** — `LoadLibraryW` returns `None`, everything runs on CPU
-3. **Auditable** — 1,100 lines of FFI instead of a 400-line crate's abstractions over the same API
+3. **Auditable** — 1,289 lines of FFI instead of a 400-line crate's abstractions over the same API
 4. **Verified** — `stonefish_ai test-ffi` checks alloc + copy + PTX load + kernel launch + cuBLAS SGEMM against CPU references (measured diff: **0.0**)
 
 Kernel arguments are prepared by `Kargs`: each argument is written into one `u64` slot (device pointer = 8 bytes, i32/f32 = low 4 bytes) and `cuLaunchKernel` receives the addresses of those slots — zero allocation, zero copy.
