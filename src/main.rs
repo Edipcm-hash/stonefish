@@ -134,7 +134,7 @@ fn main() {
                 println!("  {:<20} {}", name, desc);
             }
         }
-        "train" => train(),
+        "train" => train(rest),
         "predict" => predict(),
         "eval" => eval_only(),
         "tokenize" => tokenize(),
@@ -636,7 +636,10 @@ fn gpt_generate(args: &[String]) {
 // MNIST MLP
 // ============================================================
 
-fn train() {
+fn train(args: &[String]) {
+    // train [epochs] [lr] - the defaults reproduce the documented run
+    let epochs: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(20);
+    let lr: f32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.01);
     println!(
         "🐟 StonefishAI v{} - MNIST training\n",
         stonefish_ai::VERSION
@@ -653,12 +656,11 @@ fn train() {
     let mut params = Vec::new();
     params.extend(l1.parameters());
     params.extend(l2.parameters());
-    let opt = SGD::new(params, 0.01);
+    let opt = SGD::new(params, lr);
 
     let batch_size = 64;
     let n = x_train.rows;
-    let epochs = 20;
-    println!("784→128→10 | LR: 0.01 (SGD)\n");
+    println!("784→128→10 | LR: {} (SGD), {} epochs\n", lr, epochs);
 
     let mut rng_state = 0xCAFEBABEu64;
     for epoch in 0..epochs {

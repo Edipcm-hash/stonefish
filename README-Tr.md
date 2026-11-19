@@ -361,7 +361,17 @@ Model `<|endoftext|>` hikâye sınırını ve tırnaklı diyalog düzenini kendi
 
 ### 7.1 MNIST MLP (784→128→10)
 
-SGD lr=0,01, batch 64, 20 epoch → **%98,12** test doğruluğu (10.000 görüntü, 196 hata).
+```bash
+cargo run --release -- train 20 0.5
+```
+
+SGD lr=0,5, batch 64, 20 epoch → **%98,14** test doğruluğu (10.000 görüntü).
+
+> **Neden lr=0,5, neden README eskiden 0,01 diyordu:** `SoftmaxCE`'nin backward'ı
+> bir dönem toplamı kullanıyordu; `1/batch` düzeltmesi eklendiğinde gradyan 64×
+> küçüldü. Aynı 20 epoch'ta lr=0,01 artık **%94,51**'de kalıyor (ölçüldü), lr=0,5
+> ise eski sonucu geri veriyor (%98,14). Eski %98,12 sayısı o düzeltmeden
+> **önce** ölçülmüştü; ikisi de doğru, farklı kod sürümlerine ait.
 
 ### 7.2 GPU vs CPU matmul (RTX 5070, ısınma sonrası)
 

@@ -361,7 +361,18 @@ The model learned the `<|endoftext|>` story boundary and quoted dialogue formatt
 
 ### 7.1 MNIST MLP (784→128→10)
 
-SGD lr=0.01, batch 64, 20 epochs → **98.12 %** test accuracy (10,000 images, 196 errors).
+```bash
+cargo run --release -- train 20 0.5
+```
+
+SGD lr=0.5, batch 64, 20 epochs → **98.14 %** test accuracy (10,000 images).
+
+> **Why lr=0.5, and why the README used to say 0.01:** `SoftmaxCE`'s backward
+> once summed over the batch; when the `1/batch` fix landed, the gradient became
+> 64x smaller. With the same 20 epochs, lr=0.01 now stalls at **94.51 %**
+> (measured) while lr=0.5 reproduces the old result (98.14 %). The earlier
+> 98.12 % was measured *before* that fix - both numbers are correct, they belong
+> to different revisions.
 
 ### 7.2 GPU vs CPU matmul (RTX 5070, after warm-up)
 
