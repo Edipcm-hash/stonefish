@@ -494,6 +494,8 @@ Val CE: CPU 1.6337 / GPU 1.6230 (fast-math + summation order).
 > One day, a little boy named Tim went to the museum with his mom. They saw a big box with a picture of a big, scary dog. Tim saw a man with a funny hat and a funny hat. He asked his mom, "Can we buy the dog?"
 > His mom said, "Yes, let's buy the dog." So, they bought the dog and brought it home. Tim
 
+Seven samples - the good and the bad, unfiltered: [docs/SAMPLES.md](docs/SAMPLES.md)
+
 **PyTorch parity:** same weights, same 8 batches (32,768 tokens) →
 StonefishAI **2.022700** · PyTorch **2.022718** · delta **1.8e-05** (threshold 2e-3).
 Two independent implementations agree to f32 rounding.

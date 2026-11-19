@@ -489,6 +489,8 @@ Val CE: CPU 1,6337 / GPU 1,6230 (fast-math + toplama sırası).
 > One day, a little boy named Tim went to the museum with his mom. They saw a big box with a picture of a big, scary dog. Tim saw a man with a funny hat and a funny hat. He asked his mom, "Can we buy the dog?"
 > His mom said, "Yes, let's buy the dog." So, they bought the dog and brought it home. Tim
 
+Yedi örnek — iyisi ve kötüsü, filtresiz: [docs/SAMPLES.md](docs/SAMPLES.md)
+
 **PyTorch doğruluğu:** aynı ağırlıklar, aynı 8 batch (32.768 token) →
 StonefishAI **2,022700** · PyTorch **2,022718** · fark **1,8e-05** (eşik 2e-3).
 İki bağımsız uygulama f32 yuvarlaması içinde aynı sonucu veriyor.
