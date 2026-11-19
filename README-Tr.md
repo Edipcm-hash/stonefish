@@ -45,26 +45,28 @@ CUDA'sı olmayan makinelerde `--no-default-features` ile her şey CPU'da çalı�
 
 ## 1. Ne yapabiliyor / ne yapamıyor
 
-### ✅ Yapabildikleri
+### ✅ Yapabildikleri (hepsi ölçüldü)
 
 | Yetenek | Ölçü |
 |---|---|
-| El yazısı rakam sınıflandırma (MNIST) | **%98,12** test doğruluğu |
-| Türkçe karakter-seviyesi metin üretimi | val CE **1,6230** (rastgele taban 4,91) |
-| İngilizce BPE-16k dil modeli eğitimi | 236 M parametre, 450 M token, ~10.000 tok/s |
-| Gradyan doğrulama | 29 op'un tamamı merkezi farkla sınanmış |
-| GPU eğitimi | device-resident, 244.698 tok/s (küçük modelde) |
-| Checkpoint yönetimi | config+vocab gömülü, bozuk dosyada panik yok, resume |
+| El yazısı rakam sınıflandırma (MNIST) | **%98,14** test doğruluğu (`train 20 0.5`) |
+| İngilizce dil modeli (v2, yayınlanan) | **222,3 M parametre**, tam 1 epoch = **2,05 B token** |
+| İngilizce üretim | 512 token bağlam, sıcaklık/top-k, **KV-cache** ile O(n) |
+| Türkçe karakter modeli (v0.5, tarihsel) | 842 K parametre, val CE **1,6230** (taban 4,91) |
+| Gradyan doğrulama | **32 test**, merkezi farkla analitik ↔ numerik |
+| GPU eğitimi | device-resident; 222 M'de **10.732 tok/s** |
+| Checkpoint | config+vocab gömülü, **atomik** yazım, resume |
 
 ### ❌ Yapamadıkları (dürüst liste)
 
 - **Sohbet/asistan değil.** Talimat takibi, soru-cevap, çeviri, özetleme, kod yazma yok.
-- **Dünya bilgisi yok.** "Fransa'nın başkenti?" gibi sorulara cevap veremez.
+- **Dünya bilgisi yok.** "Fransa'nın başkenti?" gibi sorulara cevap vermez.
 - **Muhakeme yok.** Aritmetik, mantık zinciri, çok adımlı çıkarım yok.
-- **Anlam yok.** Üretilen metin dilbilgisel olarak doğru ama anlamsızdır; model istatistiksel devam üretir.
-- **Türkçe model 842 K parametre**, İngilizce model 236 M — ikisi de "yetersiz eğitilmiş" sınıfında (sırasıyla ~8,6 M ve ~450 M token görmüş).
-- **KV-cache yok** → üretim O(n²); 300 token ≈ 2,8 s.
-- **İngilizce model henüz doğrulanmadı** — eğitim tamamlanınca `en-eval` ile ölçülecek.
+- **Uydurur.** Üretilen metin dilbilgisel olarak doğru, içerik olarak güvenilmezdir; yanlış bilgiyi de akıcı yazar.
+- **Küçük ve az eğitilmiş.** 222 M parametreye 2,05 B token = 9,2 token/parametre; Chinchilla'nın (~20) yarısından az.
+- **Yalnız İngilizce.** Türkçe model karakter seviyesinde bir oyuncaktı, bu sürüme dahil değil.
+- **Bağlam 512 token.** Daha uzun metinde pencere kayar; model 512'nin ötesini görmedi.
+- **CPU'da yavaş.** `en-gen` GPU'suz çalışır ama ~3 token/s.
 
 ---
 

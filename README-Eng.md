@@ -46,26 +46,28 @@ On machines without CUDA, `--no-default-features` runs everything on the CPU.
 
 ## 1. What it can / cannot do
 
-### ✅ What it can do
+### ✅ What it can do (all measured)
 
 | Capability | Measure |
 |---|---|
-| Handwritten digit classification (MNIST) | **98.12 %** test accuracy |
-| Turkish character-level text generation | val CE **1.6230** (random baseline 4.91) |
-| English BPE-16k language-model training | 236 M params, 450 M tokens, ~10,000 tok/s |
-| Gradient verification | 29 ops checked by central differences |
-| GPU training | device-resident, 244,698 tok/s (small model) |
-| Checkpoint management | config+vocab embedded, errors instead of panics, resumable |
+| Handwritten digit classification (MNIST) | **98.14 %** test accuracy (`train 20 0.5`) |
+| English language model (v2, released) | **222.3 M parameters**, exactly 1 epoch = **2.05 B tokens** |
+| English generation | 512-token context, temperature/top-k, **KV-cache** so generation is O(n) |
+| Turkish character model (v0.5, historical) | 842 K parameters, val CE **1.6230** (baseline 4.91) |
+| Gradient verification | **32 tests**, analytic <-> numerical by central difference |
+| GPU training | device-resident; **10,732 tok/s** at 222 M |
+| Checkpoints | config+vocab embedded, **atomic** writes, resume |
 
-### ❌ What it cannot do (honest list)
+### ❌ What it cannot do (the honest list)
 
-- **It is not a chat assistant.** No instruction following, Q&A, translation, summarization, or code generation.
-- **No world knowledge.** It cannot answer "What is the capital of France?"
-- **No reasoning.** No arithmetic, logic chains, or multi-step inference.
-- **No meaning.** Generated text is grammatical but semantically empty; the model produces statistical continuations.
-- **The Turkish model is 842 K params**, the English one 236 M — both in the "undertrained" class (~8.6 M and ~450 M tokens respectively).
-- **No KV-cache** → generation is O(n²); 300 tokens ≈ 2.8 s.
-- **The English model is not yet validated** — `en-eval` measurement comes after training finishes.
+- **Not a chat assistant.** No instruction following, Q&A, translation, summarisation or code generation.
+- **No world knowledge.** "What is the capital of France?" gets prose, not an answer.
+- **No reasoning.** No arithmetic, no logical chains, no multi-step inference.
+- **It confabulates.** The output is grammatical and factually unreliable: it writes invented facts fluently.
+- **Small and undertrained.** 222 M parameters on 2.05 B tokens is 9.2 tokens per parameter, less than half of what scaling work recommends.
+- **English only.** The Turkish model was a character-level toy and is not part of this release.
+- **512-token context.** Beyond that the window slides; the model never saw longer.
+- **Slow on a CPU.** `en-gen` runs without a GPU, at about 3 tokens/s.
 
 ---
 
