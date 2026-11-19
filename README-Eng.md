@@ -935,6 +935,37 @@ Loss curve (live):
 | 5,640 | 4.22 | |
 | 8,380 | 4.01 | 13.4 % |
 
+### 19 November 2026 - day 3: the pre-release audit (40+ commits)
+
+The release package was audited while training ran. The rule: **every claim is
+verified by running it**, being written down is not enough. What turned up:
+
+| Claim | Said | Actually |
+|---|---|---|
+| MNIST accuracy | 98.12 % | **94.51 %** with the same hyperparameters - the `1/batch` fix left lr 64x too small; `lr=0.5` gives 98.14 % |
+| Section 1, "what it can do" | "**no KV-cache** -> O(n^2)" | there is one, with two passing tests |
+| Quick start | `train` (98.12 %), `en-train 450M`, "236 M" | `train 20 0.5`, `en-train 2047457313`, 222 M |
+| Architecture table | line counts for 20 files | all re-measured (10,328 lines) |
+| Section 13 tree | version 0.7.0, "6,300 lines", "62 tests" | 1.0.0, 10,328, 75 |
+| Model card | "~5.5 days", a held-out Gutenberg row, baseline BPC 2.28 | ~56 hours, row removed, baseline 2.909 |
+| Section 7.3 speed-up | "46.7x" (the table yields 28.9x) | **28.6x per step**, **46.6x wall clock** - both stated |
+| Data table | TinyStories only | TinyStories **+ Gutenberg** (the model used both) |
+| README.md (landing page) | v1 numbers | v2: 222 M, 2.05 B tokens, 75 tests |
+
+**Guards installed in their place** (all running in CI): language · 86 links ·
+30 anchors · 71 table widths · every file's line count · 14 headline numbers
+against their artifacts · every path in the tree · `data/`+`runs/` still ignored.
+
+**CI went red twice**, both times for the same class of reason: checks that
+depended on files present here and absent in a clone. The fix was to build the
+exact CI environment with `git archive` and run the checks there (69 files, no
+`data/`, no `runs/`). `cargo test` now passes there with 55 tests.
+
+**Early measurement** (step 58,500, PyTorch on CPU, never touching the GPU):
+TinyStories valid loss 1.947 · Gutenberg 2.898 · README probe 4.422. All three
+below their own random baseline. It also explained the apparent "val loss below
+train loss": the training mix is ~77 % Gutenberg, validation is TinyStories only.
+
 ### In numbers: 5 months → today
 
 | | 15 June (v0.6) | Today |

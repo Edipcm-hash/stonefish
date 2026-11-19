@@ -930,6 +930,37 @@ Kayıp eğrisi (canlı):
 | 5.640 | 4,22 | |
 | 8.380 | 4,01 | %13,4 |
 
+### 19 Kasım 2026 · 3. gün — yayın öncesi denetim (40+ commit)
+
+Eğitim sürerken yayın paketi denetlendi. Kural şuydu: **her iddia çalıştırılarak
+doğrulanır**, "yazıldı" olması yetmez. Bulunanlar:
+
+| Ne | Eski | Gerçek |
+|---|---|---|
+| MNIST doğruluğu | %98,12 | **%94,51** aynı hiperparametrelerle — `1/batch` düzeltmesinden sonra lr 64× küçük kalmış; `lr=0,5` ile %98,14 |
+| §1 "Yapabildikleri" | "**KV-cache yok** → O(n²)" | KV-cache var, 2 testi geçiyor |
+| Hızlı başlangıç | `train` (%98,12), `en-train 450M`, "236 M" | `train 20 0.5`, `en-train 2047457313`, 222 M |
+| Mimari tablosu | 20 dosyada satır sayısı | hepsi yeniden ölçüldü (10.328 satır) |
+| §13 dizin ağacı | sürüm 0.7.0, "6.300 satır", "62 test" | 1.0.0, 10.328, 75 |
+| Model kartı | "~5,5 gün", held-out Gutenberg satırı, taban BPC 2,28 | ~56 saat, satır silindi, taban 2,909 |
+| §7.3 hızlanma | "46,7×" (tablo 28,9× veriyor) | adım başına **28,6×**, duvar saati **46,6×** — ikisi de yazıldı |
+| Veri tablosu | yalnız TinyStories | TinyStories **+ Gutenberg** (model ikisiyle eğitildi) |
+| README.md (giriş sayfası) | v1 sayıları | v2: 222 M, 2,05 B token, 75 test |
+
+**Yerine konan korumalar** (hepsi CI'da koşuyor): dil · 86 link · 30 anchor ·
+71 tablo genişliği · her dosyanın satır sayısı · 14 başlık sayısı ↔ artifact ·
+dizin ağacındaki her yol · `data/`+`runs/` gerçekten gitignore'da mı.
+
+**CI iki kez kırmızı oldu** ve ikisi de aynı sınıftandı: yerelde var olan ama
+clone'da olmayan dosyalara dayanan kontroller. Çözüm: `git archive` ile tam CI
+ortamı kurup kontrolleri orada çalıştırmak (69 dosya, `data/` ve `runs/` yok).
+Artık `cargo test` orada 55 testle geçiyor.
+
+**Erken ölçüm** (adım 58.500, PyTorch/CPU — GPU'ya dokunmadan): TinyStories valid
+loss 1,947 · Gutenberg 2,898 · README probe 4,422. Üçü de kendi rastgele tabanının
+altında. Ayrıca "val loss < train loss" görüntüsünün sebebi bulundu: eğitim
+karışımının ~%77'si Gutenberg, validasyon yalnız TinyStories.
+
 ### Rakamlarla 5 ay → bugün
 
 | | 15 Haziran (v0.6) | Bugün |
