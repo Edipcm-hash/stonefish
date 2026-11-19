@@ -209,17 +209,30 @@ def main() -> int:
 
         print("running torch_bench at 222M ...")
         runs = []
+        batch_used = 4
         for attn in ("naive", "sdpa"):
-            ok, out = sh([PY, "tools/torch_bench.py", "--d", "1024", "--layers", "16",
-                          "--heads", "8", "--ctx", "512", "--batch", "4",
-                          "--accum", "16", "--steps", "6", "--attn", attn])
-            b = parse_bench(out)
-            print(f"  {attn}: {b['tok_s']} tok/s, {b['vram_gb']} GB")
+            b = None
+            for batch in (4, 2, 1):
+                ok, out = sh([PY, "tools/torch_bench.py", "--d", "1024", "--layers", "16",
+                              "--heads", "8", "--ctx", "512", "--batch", str(batch),
+                              "--accum", "16", "--steps", "6", "--attn", attn])
+                if "out of memory" in out.lower() or "OutOfMemoryError" in out:
+                    print(f"  {attn}: OOM at batch {batch}, retrying smaller")
+                    continue
+                b = parse_bench(out)
+                batch_used = batch
+                break
+            if b is None or b["tok_s"] is None:
+                print(f"  {attn}: could not measure")
+                continue
+            print(f"  {attn}: {b['tok_s']} tok/s, {b['vram_gb']} GB (batch {batch_used})")
             runs.append({"name": f"PyTorch ({attn})", "tok_s": b["tok_s"],
                          "ms_step": b["ms_step"], "vram_gb": b["vram_gb"]})
         report["speed"] = {
             "device": "RTX 5070 12 GB, 250 W",
             "model": {"params": 222331904, "d": 1024, "layers": 16, "heads": 8, "ctx": 512},
+            # recorded because tokens/s is only comparable at the same batch size
+            "batch": batch_used,
             "runs": runs,
         }
 
