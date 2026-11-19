@@ -136,7 +136,7 @@ komutlar her iddiayı kendi makinenizde yeniden üretir.
 | Checkpoint bozulmaya dayanıklı | `cargo test --release --test checkpoint` | `5 passed` |
 | Sıfırdan eğitim çalışıyor | `cargo run --release -- demo 90` | 90 s'de üretim |
 | Kendi FFI'miz çalışıyor | `cargo run --release -- test-ffi` | tüm farklar `0.0` |
-| Profil tablosu doğru | `cargo run --release -- test-gpt-profile` | tablo (0 ms kalem yok) |
+| Profil tablosu doğru | `cargo run --release -- test-gpt-profile` | tablo basılır (CUDA build'inde GERÇEK GEMM ve transfer kalemleri sıfırdan farklı) |
 | Model PyTorch ile aynı loss'u veriyor | `python tools/torch_parity.py --state stonefish_en.final.state --valid data/en/tiny.valid.bin --batches 8 --expected <en-eval çıktısı>` | `MATCH` (< 2e-3) |
 | Türkçe metin yok | `python tools/check_no_turkish.py` | `OK` |
 | Grafikler bu verilerden üretiliyor | `python tools/make_charts.py` | `docs/*.png` yeniden yazılır |
@@ -404,6 +404,12 @@ tekrarlanacak.)
 ---
 
 ## 8. Zaman bütçesi profili
+
+> **Tarihsel ölçüm.** Aşağıdaki tablo, GPU-native eğiticiyi yazmaya karar
+> verdiğimiz günkü profildir: o zaman model **v1**'di (GELU + LayerNorm) ve
+> eğitim CPU'daydı. v2'de GELU yerine SwiGLU, LayerNorm yerine RMSNorm var;
+> güncel profil `test-gpt-profile` ile alınır ve satır adları değişir. Tabloyu
+> burada tutuyoruz çünkü **kararın gerekçesi** bu sayılardır.
 
 `test-gpt-profile` (842 K model, gerçek konfig, 10 adım ortalaması):
 

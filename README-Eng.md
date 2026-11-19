@@ -137,7 +137,7 @@ each claim on your own machine.
 | Checkpoints survive corruption attempts | `cargo test --release --test checkpoint` | `5 passed` |
 | From-scratch training works | `cargo run --release -- demo 90` | text in 90 s |
 | Our own FFI works | `cargo run --release -- test-ffi` | every diff is `0.0` |
-| The profile table is real | `cargo run --release -- test-gpt-profile` | no bucket is 0 ms |
+| The profile table is real | `cargo run --release -- test-gpt-profile` | a table is printed (on a CUDA build the GEMM and transfer buckets are non-zero) |
 | The model agrees with PyTorch | `python tools/torch_parity.py --state stonefish_en.final.state --valid data/en/tiny.valid.bin --batches 8 --expected <value from en-eval>` | `MATCH` (< 2e-3) |
 | No Turkish text | `python tools/check_no_turkish.py` | `OK` |
 | The charts come from this data | `python tools/make_charts.py` | `docs/*.png` rewritten |
@@ -402,6 +402,12 @@ repeated once training finishes.)
 ---
 
 ## 8. Time-budget profile
+
+> **Historical measurement.** This is the profile from the day we decided to
+> write the GPU-native trainer: the model was still **v1** (GELU + LayerNorm)
+> and training ran on the CPU. v2 replaced GELU with SwiGLU and LayerNorm with
+> RMSNorm, so `test-gpt-profile` prints different rows today. The table stays
+> because these numbers are the *reason* the decision was made.
 
 `test-gpt-profile` (842 K model, real config, 10-step average):
 
