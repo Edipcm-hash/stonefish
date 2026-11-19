@@ -409,7 +409,14 @@ SGD lr=0.5, batch 64, 20 epochs → **98.14 %** test accuracy (10,000 images).
 | CPU + cuBLAS (autograd) | 120.1 ms | 8,476 tok/s | **54.4 min** |
 | **GPU-native (device-resident)** | **4.2 ms** | **244,698 tok/s** | **70 s** |
 
-**46.7× speed-up.** Val CE: CPU 1.6337 / GPU 1.6230 (fast-math + summation order).
+Two ratios, both correct, measuring different things:
+
+- **28.6x per step** (120.1 ms -> 4.2 ms; 8,476 -> 244,698 tok/s).
+- **46.6x wall clock** (54.4 min -> 70 s), because on the CPU path every
+  epoch's validation also runs on the CPU, while the GPU path validates on
+  the device too.
+
+Val CE: CPU 1.6337 / GPU 1.6230 (fast-math + summation order).
 
 ### 7.4 English 236 M
 
@@ -459,7 +466,7 @@ repeated once training finishes.)
 | other (alloc, packing, residuals) | ~27 | ~23 % |
 | **total** | **~120** | 100 % |
 
-**Key insight:** a step issues 75 matmul calls but the real GEMM total is 1 ms. So "keep GEMMs on the GPU" (eliminating transfers) buys at most 17 %; the real win comes from **moving the computation itself to the GPU**. The GPU-native path does exactly that and yields 46.7×.
+**Key insight:** a step issues 75 matmul calls but the real GEMM total is 1 ms. So "keep GEMMs on the GPU" (eliminating transfers) buys at most 17 %; the real win comes from **moving the computation itself to the GPU**. The GPU-native path does exactly that: 28.6x per step, 46.6x wall clock (7.3).
 
 ---
 
@@ -869,7 +876,7 @@ CUDA 13.5 + RTX 5070 installed, `cudarc 0.19.10` added. `gpu.rs` (`GpuMatrix`, `
 | 16:32 | **GPU-native trainer** (device-resident, 15 kernels that day, 33 now) | 6 epochs **54 min → 70 s** = **46.7×**; 244,698 tok/s; val CE **1.6230** |
 | 17:14 | **English pipeline**: BPE-16k + u16 disk cache + 236 M model | TinyStories 2.1 GB → 450.9 M tokens, 4.7 chars/token |
 
-**End of day 1:** 40 tests, no dead code, training 46.7× faster, the first English model training.
+**End of day 1:** 40 tests, no dead code, training 46.7x faster wall clock, the first English model training.
 
 ### 17 November 2026 · day 2 — zero dependencies, v2 architecture, measurement (15 commits)
 

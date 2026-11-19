@@ -407,7 +407,13 @@ SGD lr=0,5, batch 64, 20 epoch → **%98,14** test doğruluğu (10.000 görünt�
 | CPU + cuBLAS (autograd) | 120,1 ms | 8.476 tok/s | **54,4 dk** |
 | **GPU-native (device-resident)** | **4,2 ms** | **244.698 tok/s** | **70 s** |
 
-**46,7× hızlanma.** Val CE: CPU 1,6337 / GPU 1,6230 (fast-math + toplama sırası).
+İki oran var, ikisi de doğru ama farklı şeyi ölçüyor:
+
+- **Adım başına 28,6×** (120,1 ms → 4,2 ms; 8.476 → 244.698 tok/s).
+- **Duvar saati 46,6×** (54,4 dk → 70 s), çünkü CPU yolunda her epoch'un
+  doğrulaması da CPU'da koşuyor, GPU yolu doğrulamayı da cihazda yapıyor.
+
+Val CE: CPU 1,6337 / GPU 1,6230 (fast-math + toplama sırası).
 
 ### 7.4 İngilizce 236 M
 
@@ -457,7 +463,7 @@ tekrarlanacak.)
 | diğer (tahsis, paketleme, residual) | ~27 | ~23 % |
 | **toplam** | **~120** | 100 % |
 
-**Kritik çıkarım:** adımda 75 matmul çağrısı var ama gerçek GEMM toplamı 1 ms. Yani "GEMM'leri GPU'da tut" (transferi sıfırlamak) üst sınır %17 kazandırır — asıl kazanç **hesabı da GPU'ya taşımaktan** gelir. GPU-native yol tam bunu yapar ve 46,7× verir.
+**Kritik çıkarım:** adımda 75 matmul çağrısı var ama gerçek GEMM toplamı 1 ms. Yani "GEMM'leri GPU'da tut" (transferi sıfırlamak) üst sınır %17 kazandırır — asıl kazanç **hesabı da GPU'ya taşımaktan** gelir. GPU-native yol tam bunu yapar: adım başına 28,6×, duvar saati 46,6× (§7.3).
 
 ---
 
@@ -865,7 +871,7 @@ CUDA 13.5 + RTX 5070 kurulu, `cudarc 0.19.10` eklendi. `gpu.rs` (`GpuMatrix`, cu
 | 16:32 | **GPU-native eğitici** (device-resident, o gün 15 çekirdek; bugün 33) | 6 epoch **54 dk → 70 s** = **46,7×**; 244.698 tok/s; val CE **1,6230** |
 | 17:14 | **İngilizce hat**: BPE-16k + u16 disk cache + 236 M model | TinyStories 2,1 GB → 450,9 M token, 4,7 karakter/token |
 
-**1. günün sonunda:** 40 test, ölü kod yok, eğitim 46,7× hızlı, ilk İngilizce model eğitiliyor.
+**1. günün sonunda:** 40 test, ölü kod yok, eğitim duvar saati 46,7× hızlı, ilk İngilizce model eğitiliyor.
 
 ### 17 Kasım 2026 · 2. gün — sıfır bağımlılık, v2 mimarisi, ölçüm (15 commit)
 
