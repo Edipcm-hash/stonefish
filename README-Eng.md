@@ -229,7 +229,7 @@ A `(batch, seq, d_model)` tensor is stored as a **`(batch·seq, d_model)` matrix
 (B, S, D) ──pack──▶ (B·S, D)
 ```
 
-LayerNorm, Linear, GELU, bias-add and softmax are already **row-wise**, so this transformation is free. The only exception is attention, handled inside `Op::CausalAttention` with `batch`/`seq`/`n_heads` metadata.
+RMSNorm, Linear, SwiGLU, embedding and softmax are already **row-wise**, so this transformation is free. The only exception is attention, handled inside `Op::CausalAttention` with `batch`/`seq`/`n_heads` metadata.
 
 **Result:** one engine instead of two parallel APIs, real batch gradients, a single `backward()` call. The old `Tensor3D` type was removed entirely.
 
@@ -268,7 +268,7 @@ This machine has no host C++ compiler (`cl.exe`), so `nvcc` fails. **NVRTC** onl
 | | CPU + cuBLAS | GPU-native |
 |---|---|---|
 | What | autograd graph | hand-written forward/backward |
-| Where | `main.rs` + `autograd.rs` | `gpu_train.rs` |
+| Where | `autograd.rs` + `trainer.rs` | `gpu_train.rs` |
 | Role | **reference** (gradient tests) | tied to CPU via equivalence tests |
 | Speed | 8,476 tok/s | **244,698 tok/s** |
 
@@ -282,10 +282,10 @@ BPE learning uses **incremental pair counting**: after each merge only words con
 
 ### 5.7 Data pipeline: u16 + disk cache
 
-`Vec<usize>` = 8 bytes per token → 3 B tokens would need **24 GB of RAM**. Instead:
+`Vec<usize>` = 8 bytes per token → 2 B tokens would need **16 GB of RAM**. Instead:
 
 - tokenized corpus is written to disk as **u16** (2 bytes/token)
-- training reads through a 64 MB **memory window**; the whole file is never loaded
+- training reads through a **window** (`len*8`, clamped to 4 KB - 1 MB); the whole file is never loaded
 - tokenization: **148 MB/s** (word-cached)
 
 ---

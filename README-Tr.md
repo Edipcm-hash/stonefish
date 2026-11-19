@@ -224,7 +224,7 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 (B, S, D) ──paketle──▶ (B·S, D)
 ```
 
-LayerNorm, Linear, GELU, bias-add ve softmax zaten **satır bazlı** olduğu için bu dönüşüm bedava. Tek istisna attention'dır ve o da `Op::CausalAttention` içinde `batch`/`seq`/`n_heads` bilgisiyle çözülür.
+RMSNorm, Linear, SwiGLU, embedding ve softmax zaten **satır bazlı** olduğu için bu dönüşüm bedava. Tek istisna attention'dır ve o da `Op::CausalAttention` içinde `batch`/`seq`/`n_heads` bilgisiyle çözülür.
 
 **Sonuç:** iki paralel API (2D autograd + 3D'siz tip) yerine **tek motor**, gerçek batch, tek `backward()`. Eski `Tensor3D` tipi tamamen kaldırıldı.
 
@@ -262,12 +262,12 @@ Bu makinede host C++ derleyicisi (`cl.exe`) yok; `nvcc` bu yüzden çalışmıyo
 
 | | CPU + cuBLAS | GPU-native |
 |---|---|---|
-| Ne | autograd grafiği | elle yazılmış ileri/geri |
-| Nerede | `main.rs` + `autograd.rs` | `gpu_train.rs` |
+| Ne | autograd grafiği | elle yazılmış forward/backward |
+| Nerede | `autograd.rs` + `trainer.rs` | `gpu_train.rs` |
 | Doğrulama | **referans** (gradyan testleri) | eşdeğerlik testleriyle CPU'ya bağlı |
 | Hız | 8.476 tok/s | **244.698 tok/s** |
 
-CUDA varsa `gpt-train` GPU yolunu otomatik seçer; yoksa CPU yoluna düşer.
+CUDA varsa `gpt-train`, `demo` ve `en-gen` GPU yolunu otomatik seçer; yoksa CPU yoluna düşer.
 
 ### 5.6 Tokenizer: önce karakter, sonra BPE
 
@@ -277,10 +277,10 @@ BPE öğrenimi **artımlı çift sayımı** ile yapılır: her merge'den sonra y
 
 ### 5.7 Veri hattı: u16 + disk cache
 
-`Vec<usize>` = token başına 8 bayt → 3 B token **24 GB RAM**. Bunun yerine:
+`Vec<usize>` = token başına 8 bayt → 2 B token **16 GB RAM**. Bunun yerine:
 
 - Tokenize edilmiş korpus diske **u16** olarak yazılır (2 bayt/token)
-- Eğitim 64 MB'lık **bellek penceresiyle** okur, tüm dosya yüklenmez
+- Eğitim **pencere tabanlı** okur (`len·8`, 4 KB – 1 MB), tüm dosya yüklenmez
 - Tokenize: **148 MB/s** (kelime önbellekli)
 
 ---
