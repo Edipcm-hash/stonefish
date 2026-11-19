@@ -184,10 +184,37 @@ def main() -> int:
                 "random_bpc": round(LU / cpt, 3),
             }
         )
+    # A reference point and the reading lines are part of the chart, not decoration:
+    # without them quality.png renders with no comparison bar and an empty "how to
+    # read this" box. The v1 figure is a measurement from the earlier release (same
+    # BPC metric, same validation file), so it is labelled as such.
+    reference = [
+        {
+            "name": "v1 model (236M, TinyStories only)",
+            "bpc": 0.691,
+            "note": "same metric, 450M tokens of training",
+        }
+    ]
+
+    reading = []
+    for c in corpora:
+        gain = c["random_bpc"] / c["bpc"] if c["bpc"] else 0
+        reading.append(
+            f"+ {gain:.1f}x better than random on {c['name'].split('(')[0].strip().lower()}"
+        )
+    v1 = reference[0]["bpc"]
+    if corpora and corpora[0]["bpc"] < v1:
+        reading.append(
+            f"+ lower BPC than v1 ({corpora[0]['bpc']:.3f} vs {v1:.3f}) "
+            "with 6% fewer parameters"
+        )
+    reading.append("- Not a chatbot: it continues text, it does not answer")
+    reading.append("- 9.2 tokens per parameter, below the 20 that scaling work recommends")
+
     report["quality"] = {
         "corpora": corpora,
-        "reference": [],
-        "reading": [],
+        "reference": reference,
+        "reading": reading,
     }
 
     # ---- PyTorch comparison ----
