@@ -151,22 +151,27 @@ skipped.
 
 ## 3. Hardware and measured limits
 
-Development/test environment: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 L SFF)**, Windows.
+Development/test machine: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (~10 L SFF)**, Windows.
 
 | Limit | Value | Consequence |
 |---|---|---|
-| VRAM | 12 GB | with the fp32 trainer, **~250 M parameters** is the ceiling |
-| RAM | 32 GB | 3 B tokens would **not fit** without the streaming pipeline (u16 + disk cache solves it) |
-| Thermals | SFF chassis | 80 °C at 250 W → **210 W power limit** applied, dropped to 76 °C |
-| Time | single GPU | 236 M model + 450 M tokens ≈ **12.5 hours** |
+| VRAM | 12 GB | **~250M parameter** ceiling in fp32 (v2: 222M, 8.4 GB) |
+| RAM | 32 GB | 2B tokens **do not fit** without the streaming pipeline (u16 + disk cache solves it) |
+| Thermals | SFF chassis, VBIOS cap 250 W | 76-80 C at 250 W, no throttling. A 210 W limit was tried as an experiment (76 C, 5 % slower); the driver reset it and it stayed at 250 W |
+| Time | single GPU | **222M model + 2.05B tokens = 56 hours** (measured) |
 
-Measured training throughput:
+Measured training speeds:
 
 | Model | Step time | Throughput |
 |---|---|---|
-| 842 K (GPU-native) | 4.2 ms | **244,698 tok/s** |
-| 842 K (CPU + cuBLAS) | 120.8 ms | 8,476 tok/s |
-| **236 M (GPU-native)** | ~3.27 s | **~10,000 tok/s** |
+| 842K (GPU-native) | 4.2 ms | **244,698 tok/s** |
+| 842K (CPU+cuBLAS) | 120.8 ms | 8,476 tok/s |
+| 236M, v1 (GPU-native) | ~3.27 s | ~10,000 tok/s |
+| **222M, v2 (GPU-native)** | **3.05 s** | **10,732 tok/s** |
+
+The 222M row is the mean of the last 200 samples over 62,483 steps; the whole run
+averaged 10,558 tok/s (the first hours carried the data-window bug and my own
+compile load).
 
 ---
 

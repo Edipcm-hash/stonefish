@@ -152,10 +152,10 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 
 | Sınır | Değer | Sonuç |
 |---|---|---|
-| VRAM | 12 GB | fp32 eğiticisiyle **~250 M parametre** tavanı |
-| RAM | 32 GB | Akışlı veri hattı olmadan 3 B token **sığmaz** (u16 + disk cache bunu çözer) |
-| Termal | SFF kasa | 250 W'da 80 °C → **210 W güç limiti** uygulandı, 76 °C'ye indi |
-| Süre | tek GPU | 236 M model + 450 M token ≈ **12,5 saat** |
+| VRAM | 12 GB | fp32 eğiticisiyle **~250 M parametre** tavanı (v2: 222 M, 8,4 GB) |
+| RAM | 32 GB | Akışlı veri hattı olmadan 2 B token **sığmaz** (u16 + disk cache bunu çözer) |
+| Termal | SFF kasa, VBIOS tavanı 250 W | 250 W'da 76-80 °C, throttle yok. Bir deney olarak 210 W uygulandı (76 °C, hız %5 düştü); sürücü sıfırlayınca 250 W'a döndü ve orada bırakıldı |
+| Süre | tek GPU | **222 M model + 2,05 B token = 56 saat** (ölçüldü) |
 
 Ölçülen eğitim hızları:
 
@@ -163,7 +163,11 @@ Geliştirme/test ortamı: **RTX 5070 (12 GB), 32 GB DDR5, MSI Trident AS (≈10 
 |---|---|---|
 | 842 K (GPU-native) | 4,2 ms | **244.698 tok/s** |
 | 842 K (CPU+cuBLAS) | 120,8 ms | 8.476 tok/s |
-| **236 M (GPU-native)** | ~3,27 s | **~10.000 tok/s** |
+| 236 M, v1 (GPU-native) | ~3,27 s | ~10.000 tok/s |
+| **222 M, v2 (GPU-native)** | **3,05 s** | **10.732 tok/s** |
+
+222 M satırı 62.483 adımın son 200 ölçümünün ortalamasıdır; tüm koşunun ortalaması
+10.558 tok/s (ilk saatlerde veri penceresi hatası ve derleme yükü vardı).
 
 ---
 
