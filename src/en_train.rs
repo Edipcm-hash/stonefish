@@ -581,7 +581,7 @@ pub fn generate(
     let dt = t_gen.elapsed().as_secs_f64();
     if n_tokens > 0 {
         println!(
-            "  ({n_tokens} token, {:.2} s, {:.1} token/s — KV-cache)",
+            "  ({n_tokens} tokens, {:.2} s, {:.1} tokens/s - KV-cache)",
             dt,
             n_tokens as f64 / dt
         );
