@@ -1,8 +1,9 @@
 # Reproducing the numbers in the README
 
-Every table in the README comes from one of the commands below, run on the
-machine described in §3 (one RTX 5070, 12 GB, 250 W). Nothing is estimated; if a
-number is not in this file, it is not in the README.
+Every *result* number in the README comes from one of the commands below, run on
+the machine described in §3 (one RTX 5070, 12 GB, 250 W). Nothing is estimated.
+Structural numbers (line counts, kernel counts, parameter counts) are audited by
+`tools/check_numbers.py` instead, against the artifacts themselves.
 
 Run them in this order — later steps assume the checkpoint from the earlier ones.
 
@@ -12,7 +13,8 @@ Run them in this order — later steps assume the checkpoint from the earlier on
 cargo build --release                     # needs CUDA for the GPU paths
 
 # data (not committed: 4 GB of token cache would bloat the repo)
-python tools/parquet_to_text.py           # Gutenberg parquet -> text, optional
+python tools/parquet_to_text.py           # Gutenberg parquet -> text; needed for
+                                          # the exact corpus (TinyStories + Gutenberg)
 cargo run --release -- en-prepare         # BPE + u16 caches under data/en/
 ```
 
@@ -47,11 +49,17 @@ same token budget again: the trainer reads `adam_t` from the checkpoint.
 cargo run --release -- en-eval 8 data/en/tiny stonefish_en.final.state
 ```
 
-Prints, for the first 8 batches of 8×512 tokens:
+Prints, for the first 8 batches of 8x512 tokens:
 
-```
-Model: d=1024, layers=16, heads=8, ctx=512, vocab=16384 (step 62483)
-loss : 3.xxxx   ppl: xx.xx   BPC: 0.xxxx
+```text
+Corpus : data/en/tiny
+State  : stonefish_en.final.state
+...
+--- RESULT ---
+Sampled        : 32768 tokens
+val loss       : 3.xxxx nat/token
+perplexity     : xx.xx
+BPC            : 0.xxxx bits/character
 ```
 
 BPC is `loss / ln(2) / (bytes(valid.txt) / tokens(valid.bin))`, so it does not
@@ -126,9 +134,11 @@ curve). `make_report.py` reads `docs/report.json`, which the steps above fill in
 
 ```bash
 python tools/check_no_turkish.py   # no Turkish outside README-Tr.md
-python tools/check_docs.py         # every relative link resolves
+python tools/check_docs.py         # links, anchors, table shape, per-file line counts
+python tools/check_numbers.py      # headline numbers vs the artifacts
+python tools/release_gate.py       # all of the above plus tests, clippy, fmt
 ```
 
-Both run in CI. The language guard has two passes: Turkish-specific characters,
+All of them run in CI. The language guard has two passes: Turkish-specific characters,
 and a word list of Turkish-only tokens — the second exists because the first
 missed short labels written without diacritics, which is most of them in code.
