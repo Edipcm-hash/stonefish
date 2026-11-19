@@ -112,16 +112,31 @@ cargo build --release
 |---|---|---|
 | `data/train-images-idx3-ubyte` + 3 siblings | MNIST | [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist/) |
 | `data/turkish.txt` | Turkish corpus (plain text) | your own text |
-| `data/en/train.txt` | English corpus | TinyStories v2 (~2.1 GB) |
-| `data/en/valid.txt` | English validation | TinyStories valid (~18 MB) |
+| `data/en/train.txt` | English corpus: **TinyStories v2 + Gutenberg** (~4.1 GB) | the two commands below, appended |
+| `data/en/valid.txt` | English validation (TinyStories valid only, ~18 MB) | TinyStories |
+
+> **Careful:** the released v2 model was trained on **both corpora together**
+> (exactly one epoch = 2.05B tokens). Training on TinyStories alone gives a
+> different, smaller model with a higher validation loss. To reproduce section 7's
+> numbers exactly, run both steps.
 
 `data/`, `*.bin`, `*.state`, `*.bpe` are **not committed** (`.gitignore`).
 
-Downloading TinyStories:
+TinyStories:
 ```powershell
 $b = "https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main"
 Invoke-WebRequest "$b/TinyStoriesV2-GPT4-train.txt" -OutFile data/en/train.txt
 Invoke-WebRequest "$b/TinyStories-valid.txt"        -OutFile data/en/valid.txt
+```
+
+Gutenberg (parquet shards on the Hub; the repository has the converter):
+```powershell
+# 1. download the shards (sedthh/gutenberg_english)
+huggingface-cli download sedthh/gutenberg_english --repo-type dataset --local-dir data/gb
+# 2. parquet -> plain text (needs pyarrow; data prep, not a project dependency)
+python tools/parquet_to_text.py          # -> data/gb/books.txt
+# 3. append to the corpus
+Get-Content data/gb/books.txt | Add-Content data/en/train.txt
 ```
 
 ### 2.1 Verify every claim yourself

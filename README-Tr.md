@@ -111,16 +111,31 @@ cargo build --release
 |---|---|---|
 | `data/train-images-idx3-ubyte` + 3 kardeşi | MNIST | [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist/) |
 | `data/turkish.txt` | Türkçe korpus (düz metin) | kendi metnin |
-| `data/en/train.txt` | İngilizce korpus | TinyStories v2 (~2,1 GB) |
-| `data/en/valid.txt` | İngilizce validasyon | TinyStories valid (~18 MB) |
+| `data/en/train.txt` | İngilizce korpus: **TinyStories v2 + Gutenberg** (~4,1 GB) | aşağıdaki iki komut, art arda eklenir |
+| `data/en/valid.txt` | İngilizce validasyon (yalnız TinyStories valid, ~18 MB) | TinyStories |
+
+> **Dikkat:** yayınlanan v2 modeli **iki korpusun birleşimiyle** eğitildi (tam 1
+> epoch = 2,05 B token). Yalnız TinyStories ile eğitirsen farklı bir model elde
+> edersin — daha küçük korpus, daha yüksek val loss. §7'deki sayıları birebir
+> yeniden üretmek için iki adımı da çalıştır.
 
 `data/`, `*.bin`, `*.state`, `*.bpe` **repoda tutulmaz** (`.gitignore`).
 
-TinyStories indirme komutu:
+TinyStories:
 ```powershell
 $b = "https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main"
 Invoke-WebRequest "$b/TinyStoriesV2-GPT4-train.txt" -OutFile data/en/train.txt
 Invoke-WebRequest "$b/TinyStories-valid.txt"        -OutFile data/en/valid.txt
+```
+
+Gutenberg (HF'de parquet shard'ları; metne çevirmek için repodaki araç):
+```powershell
+# 1. shard'lari indir (sedthh/gutenberg_english)
+huggingface-cli download sedthh/gutenberg_english --repo-type dataset --local-dir data/gb
+# 2. parquet -> duz metin (pyarrow gerekir; proje bagimliligi degil, veri hazirligi)
+python tools/parquet_to_text.py          # -> data/gb/books.txt
+# 3. korpusa ekle
+Get-Content data/gb/books.txt | Add-Content data/en/train.txt
 ```
 
 ### 2.1 Her iddiayı kendin doğrula
