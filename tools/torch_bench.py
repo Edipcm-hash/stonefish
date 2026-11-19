@@ -16,7 +16,14 @@ Two attention modes are reported:
 import argparse
 import time
 
-import torch
+try:
+    import torch
+except ImportError:  # the comparison scripts need PyTorch; the Rust project does not
+    raise SystemExit(
+        "PyTorch is required for this comparison script.\n"
+        "  pip install torch   (CUDA build: --index-url https://download.pytorch.org/whl/cu128)\n"
+        "The StonefishAI side has no dependencies at all; only these two tools do."
+    )
 import torch.nn as nn
 import torch.nn.functional as F
 

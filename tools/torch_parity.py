@@ -28,7 +28,14 @@ import struct
 import sys
 
 import numpy as np
-import torch
+try:
+    import torch
+except ImportError:  # the comparison scripts need PyTorch; the Rust project does not
+    raise SystemExit(
+        "PyTorch is required for this comparison script.\n"
+        "  pip install torch   (CUDA build: --index-url https://download.pytorch.org/whl/cu128)\n"
+        "The StonefishAI side has no dependencies at all; only these two tools do."
+    )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from torch_bench import GPT  # noqa: E402  (same architecture as the Rust side)
