@@ -64,7 +64,9 @@ The checkpoint is `SFEN001`, 848 MB, and cannot be rebuilt without 56 hours of
 GPU time, so it belongs somewhere durable:
 
 - Hugging Face model repo (`Edipcm-hash/stonefish-222m`), file
-  `stonefish_en.final.state`, plus a copy of `docs/MODEL-CARD.md` as the card.
+  `stonefish_en.final.state`, with `docs/huggingface-README.md` renamed to
+  `README.md` as the model card - it carries the YAML frontmatter the Hub
+  needs, which the in-repo model card does not.
 - Mention the tokeniser: `data/en/tiny.bpe` (126 KB) must ship with the weights,
   because the checkpoint alone cannot decode.
 
