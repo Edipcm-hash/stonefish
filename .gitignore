@@ -1,6 +1,7 @@
-# Rust build output
-/target/
-target2/
+# Rust build output (target3/ etc. are scratch build dirs for side checks)
+/target*/
+__pycache__/
+*.pyc
 
 # Model checkpoints and derived artifacts (reproducible, not kept in the repo)
 *.bin
