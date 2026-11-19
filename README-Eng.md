@@ -423,17 +423,24 @@ repeated once training finishes.)
 
 ## 9. Tests
 
-**62 tests** (with CUDA), **48 tests** (CPU-only) — all green, **0 clippy warnings**:
+**71 tests**, green in both feature configurations:
 
-| Group | Count | What it verifies |
+| Group | Count | What it proves |
 |---|---|---|
-| [tests/gradcheck.rs](tests/gradcheck.rs) | 29 | Every op: analytic vs numeric gradient by **central differences** |
-| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 12 | 15 CUDA kernels + device GEMM modes against CPU reference |
-| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU trainer ↔ CPU autograd: **all gradients** + 5-step Adam loss curve |
-| [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | Roundtrip, bad magic, truncated file, vocab mismatch, drift |
-| Unit tests | 14 | Tokenizer (4), optimizer/clip (4), BPE (4), corpus (2) |
+| [tests/gradcheck.rs](tests/gradcheck.rs) | 32 | analytic <-> numerical gradient by **central difference**, for every op |
+| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 16 | 33 CUDA kernels and the device GEMM modes, against the CPU reference |
+| [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | round-trip, bad magic, truncated file, vocab mismatch, drift |
+| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU trainer <-> CPU autograd: **every gradient** plus the loss curve of 5 Adam steps |
+| [tests/kv_cache.rs](tests/kv_cache.rs) | 2 | cached generation <-> full forward pass |
+| Unit tests (`src/`) | 14 | tokenizer (4), optimizer/clip (4), BPE (4), corpus (2) |
 
-Gradient coverage: `add`/`sub` (incl. broadcast), `mul_elem`, `matmul` (incl. square), `matmul+transpose`, `scale`, `relu`, `sigmoid`, `transpose`, `sum`, `softmax_ce`, `softmax_ce_ids` (sparse), `softmax`, `mask_causal`, `gelu`, `layer_norm`, `embedding`, `causal_attention` (single/multi-head + batched), end-to-end tiny GPT, causality contract, batch gradient = Σ per-sequence gradients.
+Gradient coverage: `add`/`sub` (including broadcast), `mul_elem`, `matmul`
+(including square), `matmul+transpose`, `scale`, `relu`, `sigmoid`, `transpose`,
+`sum`, `softmax_ce`, `softmax_ce_ids` (sparse), `softmax`, `mask_causal`, `gelu`,
+`layer_norm`, `rms_norm` (forward and the gamma gradient), `rope` (forward and
+gradient), `swiglu`, `embedding`, `causal_attention` (single head, multi head and
+batched), an end-to-end tiny GPT, the causality contract, and the identity that a
+batched gradient equals the sum of single-sequence gradients.
 
 ```bash
 cargo test --release                       # CUDA path
@@ -587,7 +594,7 @@ StonefishAI/
 ├── README-Tr.md          # Turkish
 ├── README-Eng.md         # this file
 ├── kernels/
-│   └── stonefish.cu      # 15 CUDA kernels (compiled via NVRTC)
+│   └── stonefish.cu      # 33 CUDA kernels (compiled via NVRTC)
 ├── src/                  # 28 modules (9,890 lines)
 ├── tests/                # 4 files, 62 tests
 ├── examples/
@@ -784,7 +791,7 @@ CUDA 13.5 + RTX 5070 installed, `cudarc 0.19.10` added. `gpu.rs` (`GpuMatrix`, `
 | 15:01 | Clean clippy + LF line endings | 9 → **0 warnings** |
 | 16:00 | **A proper training loop**: warmup + cosine, gradient clipping, best-val checkpoint, manifest | 6 epochs, 16,626 steps, **54.4 min**, val CE **1.6337** |
 | 16:08 | **Profile → 3 optimizations** | Step **177 → 120 ms** (+47 % tok/s) |
-| 16:32 | **GPU-native trainer** (device-resident, 15 CUDA kernels, NVRTC) | 6 epochs **54 min → 70 s** = **46.7×**; 244,698 tok/s; val CE **1.6230** |
+| 16:32 | **GPU-native trainer** (device-resident, 15 kernels that day, 33 now) | 6 epochs **54 min → 70 s** = **46.7×**; 244,698 tok/s; val CE **1.6230** |
 | 17:14 | **English pipeline**: BPE-16k + u16 disk cache + 236 M model | TinyStories 2.1 GB → 450.9 M tokens, 4.7 chars/token |
 
 **End of day 1:** 40 tests, no dead code, training 46.7× faster, the first English model training.

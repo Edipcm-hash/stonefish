@@ -425,17 +425,23 @@ tekrarlanacak.)
 
 ## 9. Testler
 
-**62 test**, iki feature config'inde de yeşil:
+**71 test**, iki feature config'inde de yeşil:
 
 | Grup | Adet | Ne doğrular |
 |---|---|---|
-| [tests/gradcheck.rs](tests/gradcheck.rs) | 29 | Her op için **merkezi fark** ile analitik ↔ numerik gradyan |
-| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 12 | 15 CUDA çekirdeği + device GEMM modları, CPU referansına karşı |
-| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU eğiticisi ↔ CPU autograd: **tüm gradyanlar** + 5 Adam adımının loss eğrisi |
+| [tests/gradcheck.rs](tests/gradcheck.rs) | 32 | Her op için **merkezi fark** ile analitik ↔ numerik gradyan |
+| [tests/gpu_kernels.rs](tests/gpu_kernels.rs) | 16 | 33 CUDA çekirdeği + device GEMM modları, CPU referansına karşı |
 | [tests/checkpoint.rs](tests/checkpoint.rs) | 5 | Roundtrip, bozuk magic, yarım dosya, vocab uyuşmazlığı, drift |
-| Birim testleri | 14 | Tokenizer (4), optimizer/clip (4), BPE (4), corpus (2) |
+| [tests/gpu_train_equiv.rs](tests/gpu_train_equiv.rs) | 2 | GPU eğiticisi ↔ CPU autograd: **tüm gradyanlar** + 5 Adam adımının loss eğrisi |
+| [tests/kv_cache.rs](tests/kv_cache.rs) | 2 | KV-cache'li üretim ↔ tam ileri geçiş |
+| Birim testleri (`src/`) | 14 | Tokenizer (4), optimizer/clip (4), BPE (4), corpus (2) |
 
-Gradyan kapsamı: `add`/`sub` (broadcast dahil), `mul_elem`, `matmul` (kare dahil), `matmul+transpose`, `scale`, `relu`, `sigmoid`, `transpose`, `sum`, `softmax_ce`, `softmax_ce_ids` (seyrek), `softmax`, `mask_causal`, `gelu`, `layer_norm`, `embedding`, `causal_attention` (tek/çok head + batch), uçtan uca küçük GPT, nedensellik sözleşmesi, batch gradyanı = Σ tek-sequence gradyanı.
+Gradyan kapsamı: `add`/`sub` (broadcast dahil), `mul_elem`, `matmul` (kare dahil),
+`matmul+transpose`, `scale`, `relu`, `sigmoid`, `transpose`, `sum`, `softmax_ce`,
+`softmax_ce_ids` (seyrek), `softmax`, `mask_causal`, `gelu`, `layer_norm`,
+`rms_norm` (forward + gamma gradyanı), `rope` (forward + gradyan), `swiglu`,
+`embedding`, `causal_attention` (tek/çok head + batch), uçtan uca küçük GPT,
+nedensellik sözleşmesi, batch gradyanı = Σ tek-sequence gradyanı.
 
 ```bash
 cargo test --release                       # CUDA yolu
@@ -590,7 +596,7 @@ StonefishAI/
 ├── README-Tr.md          # bu dosya
 ├── README-Eng.md         # İngilizce
 ├── kernels/
-│   └── stonefish.cu      # 15 CUDA çekirdeği (NVRTC ile derlenir)
+│   └── stonefish.cu      # 33 CUDA çekirdeği (NVRTC ile derlenir)
 ├── src/                  # 18 modül (~6.300 satır)
 ├── tests/                # 4 dosya, 62 test
 ├── examples/
@@ -788,7 +794,7 @@ CUDA 13.5 + RTX 5070 kurulu, `cudarc 0.19.10` eklendi. `gpu.rs` (`GpuMatrix`, cu
 | 15:01 | clippy temiz + LF satır sonları | 9 → **0 uyarı** |
 | 16:00 | **Usulüne uygun eğitim döngüsü**: warmup + cosine, gradyan kırpma, en iyi val'de checkpoint, manifest | 6 epoch, 16.626 adım, **54,4 dk**, val CE **1,6337** |
 | 16:08 | **Profil → 3 optimizasyon** | Adım **177 → 120 ms** (+%47 tok/s): upstream klonunu kaldır, `matmul_bt/ta`, attention backward'ı vektörleştir |
-| 16:32 | **GPU-native eğitici** (device-resident, 15 CUDA çekirdeği, NVRTC) | 6 epoch **54 dk → 70 s** = **46,7×**; 244.698 tok/s; val CE **1,6230** |
+| 16:32 | **GPU-native eğitici** (device-resident, o gün 15 çekirdek; bugün 33) | 6 epoch **54 dk → 70 s** = **46,7×**; 244.698 tok/s; val CE **1,6230** |
 | 17:14 | **İngilizce hat**: BPE-16k + u16 disk cache + 236 M model | TinyStories 2,1 GB → 450,9 M token, 4,7 karakter/token |
 
 **1. günün sonunda:** 40 test, ölü kod yok, eğitim 46,7× hızlı, ilk İngilizce model eğitiliyor.
