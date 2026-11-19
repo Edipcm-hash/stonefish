@@ -307,7 +307,8 @@ def chart_throughput(steps, toks, out_dir):
     # keep the envelope inside the frame (deep dips would paint over the border)
     env_lo = np.maximum(env_lo, ax.ylim[0])
     env_hi = np.minimum(env_hi, ax.ylim[1])
-    ax.band(steps, env_lo, env_hi, (26, 50, 78))
+    ax.polyline(steps, env_lo, (34, 62, 96), width=2)
+    ax.polyline(steps, env_hi, (34, 62, 96), width=2)
     ax.polyline(steps, smooth(toks, 60), BLUE, width=4)
 
     mean = float(np.mean(toks[-400:]))
@@ -316,10 +317,17 @@ def chart_throughput(steps, toks, out_dir):
         d.line([(x, y), (x + 8, y)], fill=GREEN, width=2)
     d.text((ax.x0 + 16, y - 34), f"final average  {mean:,.0f} tok/s", fill=GREEN, font=_font(21))
 
+    # wipe the margin below the frame, then draw the axis labels on a clean field
+    d.rectangle([0, ax.y1 + 3, W, H], fill=BG)
     f = _font(19)
-    d.text((ax.x1 - 40, ax.y1 + 14), "step", fill=MUTED, font=f)
+    for t in nice_ticks(0, steps[-1], 8):
+        x = ax.px(t)
+        d.line([(x, ax.y1), (x, ax.y1 + 6)], fill=AXIS, width=1)
+        lbl = f"{t:,.0f}"
+        d.text((x - d.textlength(lbl, font=f) / 2, ax.y1 + 12), lbl, fill=MUTED, font=f)
+    d.text((ax.x1 - 40, ax.y1 + 40), "step", fill=MUTED, font=f)
 
-    legend(img, [(BLUE, "tokens/s"), ((26, 50, 78), "5th-95th percentile"), (GREEN, "final average")],
+    legend(img, [(BLUE, "tokens/s"), ((34, 62, 96), "5th-95th percentile"), (GREEN, "final average")],
            PAD_L, H - 46)
     save(img, out_dir, "throughput.png")
 
