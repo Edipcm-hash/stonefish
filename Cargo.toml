@@ -3,10 +3,11 @@ name = "stonefish_ai"
 version = "1.0.0"
 edition = "2021"
 description = "From-scratch autograd engine and language-model stack in Rust — zero dependencies"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourname/stonefish"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Edipcm-hash/stonefish"
 keywords = ["llm", "transformer", "autograd", "cuda", "from-scratch"]
-categories = ["science", "algorithms"]
+categories = ["algorithms", "science"]
 
 [features]
 # On machines without CUDA: cargo test --no-default-features
