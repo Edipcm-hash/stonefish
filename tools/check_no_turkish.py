@@ -35,7 +35,7 @@ ALLOWED = {"README-Tr.md", "tools/check_no_turkish.py"}
 EXTENSIONS = (".rs", ".cu", ".py", ".yml", ".toml", ".md", ".txt")
 # Extensionless files that are still part of the project.
 EXACT_FILES = {".gitignore", ".gitattributes"}
-SKIP_DIRS = {".git", "__pycache__", "data", "docs", "runs", "node_modules"}
+SKIP_DIRS = {".git", "__pycache__", "data", "docs", "runs", "node_modules", ".tmp"}
 # target, target2, target3 ... are build directories (and `cargo package`
 # output lands inside them).
 SKIP_PREFIXES = ("target",)

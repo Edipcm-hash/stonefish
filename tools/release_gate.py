@@ -93,6 +93,13 @@ def main() -> int:
 
     env = dict(os.environ)
     env.setdefault("CARGO_TARGET_DIR", "target3")
+    # The corpus tests write under std::env::temp_dir(). In a restricted
+    # shell that directory can be unwritable, which makes three filesystem
+    # tests fail for reasons that have nothing to do with the code.
+    tmp = os.path.join(ROOT, "target3", "tmp")
+    os.makedirs(tmp, exist_ok=True)
+    env["TMP"] = tmp
+    env["TEMP"] = tmp
 
     checks = [
         ("git clean", check_git_clean),

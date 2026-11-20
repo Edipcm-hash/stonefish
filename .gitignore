@@ -23,3 +23,7 @@ desktop.ini
 *.log
 bench_results/
 runs/
+
+# Scratch directories from parallel work in this workspace.
+# .tmp/ has held private keys and service config from other sessions; never commit it.
+/.tmp/
